@@ -61,6 +61,39 @@ def build_dashboard_page(major_code: str) -> None:
             ui.button("⭐ 我的收藏", on_click=lambda: router.navigate_to(router.PAGE_FAVORITES, major_code=major_code)).props("color=secondary")
             ui.button("⚖️ 数据对比", on_click=lambda: router.navigate_to(router.PAGE_COMPARE, major_code=major_code)).props("color=primary")
 
+    # 数据质量看板
+    quality = service.get_data_quality_stats()
+    if quality["total"] > 0:
+        with ui.element("div").classes("yam-card q-pa-md q-mb-md"):
+            ui.label("数据质量概览").classes("text-subtitle1 text-weight-bold q-mb-sm")
+            with ui.row().classes("w-full gap-md"):
+                # 分数线覆盖率
+                for year in [2026, 2025, 2024, 2023]:
+                    count = quality["score_coverage"].get(year, 0)
+                    pct = int(count / quality["total"] * 100) if quality["total"] > 0 else 0
+                    color = SUCCESS if pct >= 80 else (WARNING if pct >= 50 else DANGER)
+                    with ui.column().classes("items-center"):
+                        ui.label(f"{year}").classes("text-caption text-weight-bold")
+                        ui.label(f"{count}/{quality['total']}").classes("text-body2")
+                        ui.linear_progress(value=pct / 100, show_value=False).style(f"width: 80px; height: 6px; color: {color};")
+                        ui.label(f"{pct}%").classes("text-caption").style(f"color: {color};")
+
+                # 招生计划
+                plan_pct = int(quality["plan_coverage"] / quality["total"] * 100) if quality["total"] > 0 else 0
+                with ui.column().classes("items-center"):
+                    ui.label("招生计划").classes("text-caption text-weight-bold")
+                    ui.label(f"{quality['plan_coverage']}/{quality['total']}").classes("text-body2")
+                    ui.linear_progress(value=plan_pct / 100, show_value=False).style("width: 80px; height: 6px;")
+                    ui.label(f"{plan_pct}%").classes("text-caption")
+
+                # 院系所
+                dept_pct = int(quality["dept_coverage"] / quality["total"] * 100) if quality["total"] > 0 else 0
+                with ui.column().classes("items-center"):
+                    ui.label("院系所").classes("text-caption text-weight-bold")
+                    ui.label(f"{quality['dept_coverage']}/{quality['total']}").classes("text-body2")
+                    ui.linear_progress(value=dept_pct / 100, show_value=False).style("width: 80px; height: 6px;")
+                    ui.label(f"{dept_pct}%").classes("text-caption")
+
     # 最近查看 + 异常概览
     with ui.row().classes("w-full gap-md"):
         # 最近查看

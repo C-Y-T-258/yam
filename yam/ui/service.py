@@ -352,6 +352,44 @@ class SchoolDataService:
             "last_update": row["last_update"] or "-",
         }
 
+    def get_data_quality_stats(self) -> dict[str, Any]:
+        """获取数据质量指标."""
+        total = self.db.conn.execute(
+            "SELECT COUNT(*) AS c FROM schools WHERE major_code = ?",
+            (self.major_code,),
+        ).fetchone()["c"]
+
+        if total == 0:
+            return {"total": 0, "score_coverage": {}, "plan_coverage": 0, "dept_coverage": 0}
+
+        # 各年份分数线覆盖率
+        score_coverage = {}
+        for year in [2026, 2025, 2024, 2023]:
+            count = self.db.conn.execute(
+                "SELECT COUNT(DISTINCT school_id) AS c FROM score_lines WHERE major_code = ? AND year = ?",
+                (self.major_code, year),
+            ).fetchone()["c"]
+            score_coverage[year] = count
+
+        # 招生计划覆盖率
+        plan_count = self.db.conn.execute(
+            "SELECT COUNT(DISTINCT school_id) AS c FROM admission_plans WHERE major_code = ?",
+            (self.major_code,),
+        ).fetchone()["c"]
+
+        # 院系所覆盖率
+        dept_count = self.db.conn.execute(
+            "SELECT COUNT(DISTINCT school_id) AS c FROM departments WHERE major_code = ?",
+            (self.major_code,),
+        ).fetchone()["c"]
+
+        return {
+            "total": total,
+            "score_coverage": score_coverage,
+            "plan_coverage": plan_count,
+            "dept_coverage": dept_count,
+        }
+
     def export_csv(self, school_ids: list[str] | None = None, format: str = "detail") -> str:
         """导出 CSV 文本."""
         if format == "compare":
