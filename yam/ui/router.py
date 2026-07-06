@@ -11,6 +11,7 @@ PAGE_SCHOOLS = "schools"
 PAGE_DETAIL = "detail"
 PAGE_COMPARE = "compare"
 PAGE_FAVORITES = "favorites"
+PAGE_FETCH = "fetch"
 PAGE_ABOUT = "about"
 
 _page_builders: dict[str, Callable[..., None]] = {}

@@ -6,11 +6,12 @@ from yam.ui.theme import BG_CARD, BORDER, DANGER, PRIMARY, SUCCESS, TEXT_SECONDA
 from yam.ui.service import list_all_majors_status
 
 
-def build_splash_page(on_select) -> None:
+def build_splash_page(on_select, on_fetch=None) -> None:
     """构建启动画面.
 
     Args:
         on_select: 选择专业后的回调，接收 major_code 参数
+        on_fetch: 去采集的回调，接收 major_code 参数（可选）
     """
     majors = list_all_majors_status()
 
@@ -28,7 +29,7 @@ def build_splash_page(on_select) -> None:
         # 专业卡片网格
         with ui.row().classes("wrap justify-center gap-md").style("max-width: 900px;"):
             for major in majors:
-                _major_card(major, on_select)
+                _major_card(major, on_select, on_fetch)
 
         ui.element("div").style("height: 24px;")
 
@@ -38,7 +39,7 @@ def build_splash_page(on_select) -> None:
         )
 
 
-def _major_card(major: dict, on_select) -> None:
+def _major_card(major: dict, on_select, on_fetch=None) -> None:
     """单个专业选择卡片."""
     status = major["status"]
     is_fetched = status == "fetched"
@@ -84,7 +85,8 @@ def _major_card(major: dict, on_select) -> None:
                     on_click=lambda c=major["code"]: on_select(c),
                 ).props("color=primary").classes("full-width")
             else:
+                fetch_cb = on_fetch if on_fetch else on_select
                 ui.button(
                     "去采集",
-                    on_click=lambda c=major["code"]: on_select(c),
+                    on_click=lambda c=major["code"]: fetch_cb(c),
                 ).props("outline color=warning").classes("full-width")

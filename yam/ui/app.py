@@ -9,6 +9,7 @@ from yam.ui.pages import (
     build_dashboard_page,
     build_detail_page,
     build_favorites_page,
+    build_fetch_page,
     build_schools_page,
     build_splash_page,
 )
@@ -19,6 +20,7 @@ _NAV_ITEMS = [
     (router.PAGE_SCHOOLS, "院校库"),
     (router.PAGE_COMPARE, "数据对比"),
     (router.PAGE_FAVORITES, "我的收藏"),
+    (router.PAGE_FETCH, "数据采集"),
     (router.PAGE_ABOUT, "数据说明"),
 ]
 
@@ -33,13 +35,18 @@ def _navigate(page: str, major_code: str) -> None:
         router.navigate_to(page, major_code=major_code)
 
 
-def _enter_major(major_code: str) -> None:
+def _enter_major(major_code: str, goto_page: str | None = None) -> None:
     """从启动画面进入指定专业的主界面."""
     if _root_container is None:
         return
     _root_container.clear()
     with _root_container:
-        _build_main_frame(major_code)
+        _build_main_frame(major_code, goto_page)
+
+
+def _enter_fetch(major_code: str) -> None:
+    """从启动画面进入采集页面."""
+    _enter_major(major_code, goto_page=router.PAGE_FETCH)
 
 
 def _back_to_splash() -> None:
@@ -48,10 +55,10 @@ def _back_to_splash() -> None:
         return
     _root_container.clear()
     with _root_container:
-        build_splash_page(on_select=_enter_major)
+        build_splash_page(on_select=_enter_major, on_fetch=_enter_fetch)
 
 
-def _build_main_frame(major_code: str) -> None:
+def _build_main_frame(major_code: str, goto_page: str | None = None) -> None:
     """构建主界面框架（侧边栏 + 内容区）."""
     ui.page_title(f"YAM - {major_code} 考研择校")
 
@@ -61,6 +68,7 @@ def _build_main_frame(major_code: str) -> None:
     router.register(router.PAGE_DETAIL, build_detail_page)
     router.register(router.PAGE_COMPARE, build_compare_page)
     router.register(router.PAGE_FAVORITES, build_favorites_page)
+    router.register(router.PAGE_FETCH, build_fetch_page)
     router.register(router.PAGE_ABOUT, build_about_page)
 
     with ui.element("div").classes("row no-wrap").style("height: 100vh; width: 100vw; overflow: hidden;"):
@@ -119,8 +127,9 @@ def _build_main_frame(major_code: str) -> None:
             )
             router.set_container(page_container)
 
-    # 默认打开首页
-    router.navigate_to(router.PAGE_DASHBOARD, major_code=major_code)
+    # 默认打开指定页面或首页
+    target = goto_page or router.PAGE_DASHBOARD
+    router.navigate_to(target, major_code=major_code)
 
 
 def build_app(major_code: str | None = None) -> None:
@@ -138,4 +147,4 @@ def build_app(major_code: str | None = None) -> None:
         if major_code:
             _build_main_frame(major_code)
         else:
-            build_splash_page(on_select=_enter_major)
+            build_splash_page(on_select=_enter_major, on_fetch=_enter_fetch)
