@@ -1,0 +1,19 @@
+categories:
+  - code: "0854"
+    name: "电子信息"
+    majors:
+      - code: "085410"
+        name: "人工智能"
+        degree_type: "专业学位"
+        study_mode: "全日制"
+        enabled: true
+      - code: "085401"
+        name: "计算机技术"
+        degree_type: "专业学位"
+        study_mode: "全日制"
+        enabled: false
+      - code: "085405"
+        name: "软件工程"
+        degree_type: "专业学位"
+        study_mode: "全日制"
+        enabled: false

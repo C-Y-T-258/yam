@@ -1,0 +1,58 @@
+[project]
+name = "kaoyan-yam"
+version = "0.1.0"
+description = "研喵 YAM - 本地优先的考研择校数据工具"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "YAM Contributors"}
+]
+keywords = ["kaoyan", "graduate", "school", "major", "china"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Education",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "typer>=0.12.0",
+    "pyyaml>=6.0",
+    "requests>=2.31.0",
+    "rich>=13.0.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+ui = [
+    "nicegui>=1.4.0",
+]
+dynamic = [
+    "playwright>=1.40.0",
+]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.4.0",
+]
+
+[project.scripts]
+yam = "yam.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/yourname/kaoyan-yam"
+Repository = "https://github.com/yourname/kaoyan-yam"
+Issues = "https://github.com/yourname/kaoyan-yam/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["yam"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
