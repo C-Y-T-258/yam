@@ -1,6 +1,6 @@
 [project]
 name = "kaoyan-yam"
-version = "0.1.0"
+version = "1.0.0"
 description = "研喵 YAM - 本地优先的考研择校数据工具"
 readme = "README.md"
 requires-python = ">=3.10"
