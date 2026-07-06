@@ -3,9 +3,49 @@
 import json
 from typing import Any
 
+from yam.config import config
 from yam.storage.db import Database
 from yam.ui import csv_export
 from yam.verify import CrossSourceVerifier
+
+
+def list_all_majors_status() -> list[dict[str, Any]]:
+    """返回所有专业的数据采集状态."""
+    db = Database()
+    majors = config.list_majors(enabled_only=False)
+    result = []
+    for major in majors:
+        code = major["code"]
+        row = db.conn.execute(
+            "SELECT COUNT(*) AS c, MAX(updated_at) AS last_update FROM schools WHERE major_code = ?",
+            (code,),
+        ).fetchone()
+        school_count = row["c"] if row else 0
+        last_update = row["last_update"] if row else None
+
+        score_count = db.conn.execute(
+            "SELECT COUNT(*) AS c FROM score_lines WHERE major_code = ?",
+            (code,),
+        ).fetchone()["c"]
+
+        plan_count = db.conn.execute(
+            "SELECT COUNT(*) AS c FROM admission_plans WHERE major_code = ?",
+            (code,),
+        ).fetchone()["c"]
+
+        result.append({
+            "code": code,
+            "name": major["name"],
+            "category_name": major.get("category_name", ""),
+            "enabled": major.get("enabled", False),
+            "school_count": school_count,
+            "score_count": score_count,
+            "plan_count": plan_count,
+            "last_update": last_update or "-",
+            "status": "fetched" if school_count > 0 else "empty",
+        })
+    db.close()
+    return result
 
 
 class SchoolDataService:

@@ -10,6 +10,6 @@ from yam.ui import run
 
 
 if __name__ == "__main__":
-    major = sys.argv[1] if len(sys.argv) > 1 else "085410"
+    major = sys.argv[1] if len(sys.argv) > 1 else None
     port = int(sys.argv[2]) if len(sys.argv) > 2 else 8080
     run(major, port)

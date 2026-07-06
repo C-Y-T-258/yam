@@ -366,7 +366,7 @@ def cross_check(
 
 @app.command()
 def serve(
-    major: str = typer.Option(..., "--major", "-m", help="专业代码"),
+    major: str = typer.Option(None, "--major", "-m", help="专业代码（可选，不指定则从启动画面选择）"),
     port: int = typer.Option(8080, "--port", "-p", help="UI 端口"),
 ) -> None:
     """启动本地桌面 UI."""
@@ -381,12 +381,19 @@ def serve(
     import subprocess
     import sys
 
-    console.print(f"[bold]启动 {major} 桌面 UI，端口 {port}...[/bold]")
+    if major:
+        console.print(f"[bold]启动 {major} 桌面 UI，端口 {port}...[/bold]")
+    else:
+        console.print(f"[bold]启动研喵 YAM，端口 {port}...[/bold]")
+        console.print("[cyan]请在启动画面选择专业[/cyan]")
     console.print(f"[cyan]请打开浏览器访问：http://localhost:{port}[/cyan]")
-    subprocess.run(
-        [sys.executable, "-m", "yam.ui_entry", major, str(port)],
-        cwd=str(config.project_dir),
-    )
+
+    args = [sys.executable, "-m", "yam.ui_entry"]
+    if major:
+        args.append(major)
+    args.append(str(port))
+
+    subprocess.run(args, cwd=str(config.project_dir))
 
 
 @app.callback()
