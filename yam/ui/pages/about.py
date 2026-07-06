@@ -2,20 +2,44 @@
 
 from nicegui import ui
 
-from yam.ui.theme import PRIMARY
+from yam.ui.theme import PRIMARY, TEXT_SECONDARY
 
 
 def build_about_page(major_code: str) -> None:
     """构建数据说明页."""
-    ui.label("数据来源说明").classes("text-h4").style(f"color: {PRIMARY};")
-    ui.markdown("""
-## 数据来源
+    ui.label("数据说明").classes("text-h4 q-mb-md").style(f"color: {PRIMARY};")
 
-- **研招网（yz.chsi.com.cn）**：院校、院系、招生人数、考试科目等。
-- **掌上考研**：历年招生计划、复试分数线等。
+    # 项目简介
+    with ui.element("div").classes("yam-card q-pa-md q-mb-md"):
+        ui.label("研喵 YAM").classes("text-h5 text-weight-bold q-mb-sm").style(f"color: {PRIMARY};")
+        ui.label("本地优先的考研择校数据工具").classes("text-body1 q-mb-sm")
+        ui.label("版本: 1.0.0").classes("text-caption").style(f"color: {TEXT_SECONDARY};")
 
-## 数据异常说明
+    # 数据来源
+    with ui.element("div").classes("yam-card q-pa-md q-mb-md"):
+        ui.label("数据来源").classes("text-subtitle1 text-weight-bold q-mb-sm")
+        with ui.row().classes("gap-md"):
+            with ui.column().classes("col"):
+                ui.label("研招网").classes("text-weight-bold")
+                ui.label("yz.chsi.com.cn").classes("text-body2").style(f"color: {PRIMARY};")
+                ui.label("院校列表、院系所、招生人数、考试科目").classes("text-caption").style(f"color: {TEXT_SECONDARY};")
+            with ui.column().classes("col"):
+                ui.label("掌上考研").classes("text-weight-bold")
+                ui.label("api.kaoyan.cn").classes("text-body2").style(f"color: {PRIMARY};")
+                ui.label("历年分数线、招生计划").classes("text-caption").style(f"color: {TEXT_SECONDARY};")
 
-由于两个来源的统计口径不同，可能会出现招生人数、年份覆盖不一致的情况。
-所有异常数据均已用 ⚠️ 标记，请用户到院校官网核实最终信息。
-    """).classes("text-body1")
+    # 异常说明
+    with ui.element("div").classes("yam-card q-pa-md q-mb-md"):
+        ui.label("数据异常说明").classes("text-subtitle1 text-weight-bold q-mb-sm")
+        ui.label(
+            "由于两个来源的统计口径不同，可能会出现招生人数、年份覆盖不一致的情况。"
+            "所有异常数据均已用 ⚠️ 标记，请用户到院校官网核实最终信息。"
+        ).classes("text-body2")
+
+    # 免责声明
+    with ui.element("div").classes("yam-card q-pa-md"):
+        ui.label("免责声明").classes("text-subtitle1 text-weight-bold q-mb-sm")
+        ui.label(
+            "数据来自公开渠道，仅供学习参考，不保证完全准确。"
+            "使用本工具产生的任何决策，由用户自行承担责任。"
+        ).classes("text-body2").style(f"color: {TEXT_SECONDARY};")
