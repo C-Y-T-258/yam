@@ -5,7 +5,10 @@ from nicegui import ui
 from yam.ui import router
 from yam.ui.components.cards import kpi_card
 from yam.ui.service import SchoolDataService
-from yam.ui.theme import BG_CARD, BORDER, DANGER, PRIMARY, SUCCESS, TEXT_SECONDARY, WARNING
+from yam.ui.theme import (
+    BG_CARD, BORDER, DANGER, PRIMARY, SUCCESS, TEXT_SECONDARY, WARNING,
+    score_color, tag_color,
+)
 
 
 def build_detail_page(major_code: str, school_id: str | None = None) -> None:
@@ -24,25 +27,28 @@ def build_detail_page(major_code: str, school_id: str | None = None) -> None:
         return
 
     # 顶部：返回按钮 + 院校名称
-    with ui.row().classes("items-center gap-sm q-mb-md"):
+    with ui.row().classes("items-center gap-sm q-mb-sm"):
         ui.button("", on_click=lambda: router.navigate_to(router.PAGE_SCHOOLS, major_code=major_code)).props(
             "flat dense round icon=arrow_back"
         )
         ui.label(summary["name"]).classes("text-h4 text-weight-bold").style(f"color: {PRIMARY};")
 
-    # 标签行
-    with ui.row().classes("gap-sm q-mb-md"):
-        if summary.get("province"):
-            ui.badge(summary["province"], color="primary").props("rounded")
+    # Color-coded 标签行
+    with ui.row().classes("gap-sm q-mb-md items-center"):
         if summary.get("level"):
-            color = "primary" if "985" in (summary["level"] or "") else (
-                "positive" if "211" in (summary["level"] or "") else (
-                    "purple" if "一流" in (summary["level"] or "") else "grey"
-                )
-            )
-            ui.badge(summary["level"], color=color).props("rounded")
+            level = summary["level"]
+            if "985" in (level or ""):
+                ui.html('<span class="yam-tag yam-tag-985">985</span>')
+            elif "211" in (level or ""):
+                ui.html('<span class="yam-tag yam-tag-211">211</span>')
+            elif "一流" in (level or ""):
+                ui.html('<span class="yam-tag yam-tag-double">双一流</span>')
+            else:
+                ui.html(f'<span class="yam-tag yam-tag-normal">{level}</span>')
+        if summary.get("province"):
+            ui.badge(summary["province"], color="grey-5").props("rounded")
         if summary.get("school_id"):
-            ui.badge(summary["school_id"], color="grey").props("rounded")
+            ui.html(f'<span class="yam-tag yam-tag-code">{summary["school_id"]}</span>')
 
     # KPI 概要
     with ui.row().classes("w-full gap-md q-mb-md"):
@@ -52,6 +58,7 @@ def build_detail_page(major_code: str, school_id: str | None = None) -> None:
                 str(summary.get("yanzhao_2026", 0)),
                 "人",
                 variant="primary",
+                icon="school",
             )
         with ui.column().classes("col"):
             kpi_card(
@@ -59,6 +66,7 @@ def build_detail_page(major_code: str, school_id: str | None = None) -> None:
                 str(summary.get("zhangshangkaoyan_2026", 0)),
                 "人",
                 variant="primary",
+                icon="analytics",
             )
         with ui.column().classes("col"):
             years = summary.get("score_years", [])
@@ -67,6 +75,7 @@ def build_detail_page(major_code: str, school_id: str | None = None) -> None:
                 str(len(years)),
                 ", ".join(str(y) for y in years) if years else "暂无",
                 variant="success" if years else "warning",
+                icon="timeline",
             )
         with ui.column().classes("col"):
             issues = summary.get("issues", [])
@@ -75,6 +84,7 @@ def build_detail_page(major_code: str, school_id: str | None = None) -> None:
                 str(len(issues)),
                 "建议核实" if issues else "数据正常",
                 variant="warning" if issues else "success",
+                icon="warning" if issues else "check_circle",
             )
 
     # 收藏 + 导出按钮
@@ -85,7 +95,7 @@ def build_detail_page(major_code: str, school_id: str | None = None) -> None:
             on_click=lambda: _toggle_favorite(service, school_id, fav_btn),
         ).props("outline color=primary" if not is_fav else "color=primary")
 
-        ui.button("导出 CSV", on_click=lambda: _export_detail(service, school_id)).props("outline color=primary")
+        ui.button("导出 CSV", on_click=lambda: _export_detail(service, school_id)).props("outline color=primary icon=file_download")
 
     # Tab 分组
     with ui.tabs().classes("w-full") as tabs:
@@ -108,30 +118,44 @@ def build_detail_page(major_code: str, school_id: str | None = None) -> None:
 
 
 def _render_info_tab(service: SchoolDataService, school_id: str, summary: dict) -> None:
-    """渲染基本信息Tab."""
+    """渲染基本信息Tab — 院系所卡片式."""
     departments = service.get_departments(school_id)
 
     if departments:
-        ui.label("院系所及招生人数").classes("text-subtitle1 text-weight-bold q-mb-sm")
+        ui.label("院系所及招生人数").classes("text-subtitle1 text-weight-bold q-mb-sm").style(f"color: {PRIMARY};")
 
-        columns = [
-            {"name": "name", "label": "院系所", "field": "name", "align": "left"},
-            {"name": "count", "label": "招生人数", "field": "enrollment_count", "align": "right"},
-            {"name": "direction", "label": "研究方向", "field": "research_direction", "align": "left"},
-            {"name": "exam", "label": "考试科目", "field": "exam_subjects", "align": "left"},
-        ]
-        rows = []
-        for d in departments:
-            exam = d.get("exam_subjects", [])
-            if isinstance(exam, list):
-                exam = " / ".join(str(e) for e in exam[:3])
-            rows.append({
-                "name": d["name"],
-                "enrollment_count": d.get("enrollment_count") or "-",
-                "research_direction": d.get("research_direction") or "-",
-                "exam_subjects": exam or "-",
-            })
-        ui.table(columns=columns, rows=rows, row_key="name").classes("w-full")
+        for dept in departments:
+            with ui.element("div").classes("yam-department-card"):
+                # 院系名 + 招生人数
+                with ui.row().classes("items-center justify-between q-mb-sm"):
+                    ui.label(dept["name"]).classes("text-body1 text-weight-bold").style(f"color: {PRIMARY};")
+                    count = dept.get("enrollment_count") or "-"
+                    ui.label(f"招生 {count} 人").classes("text-body2").style(f"color: {SUCCESS}; font-weight: 600;")
+
+                # 研究方向标签
+                direction = dept.get("research_direction", "")
+                if direction:
+                    ui.label("研究方向").classes("text-caption text-weight-bold q-mb-xs").style(f"color: {TEXT_SECONDARY};")
+                    with ui.row().classes("wrap gap-xs"):
+                        for d in (direction.split("/") if isinstance(direction, str) else [direction]):
+                            d = d.strip()
+                            if d:
+                                ui.html(f'<span class="yam-direction-tag">{d}</span>')
+
+                # 考试科目标签
+                exam = dept.get("exam_subjects", [])
+                if exam:
+                    ui.label("考试科目").classes("text-caption text-weight-bold q-mt-sm q-mb-xs").style(f"color: {TEXT_SECONDARY};")
+                    with ui.row().classes("wrap gap-xs"):
+                        for e in (exam if isinstance(exam, list) else [exam]):
+                            e = str(e).strip()
+                            if e:
+                                ui.html(f'<span class="yam-exam-tag">{e}</span>')
+
+                # 导师
+                advisor = dept.get("advisor", "")
+                if advisor:
+                    ui.label(f"导师: {advisor}").classes("text-caption q-mt-sm").style(f"color: {TEXT_SECONDARY};")
     else:
         ui.label("暂无院系所数据").classes("text-body2 text-grey-6 q-pa-md")
 
@@ -141,7 +165,9 @@ def _render_scores_tab(service: SchoolDataService, school_id: str) -> None:
     scores = service.get_score_lines(school_id)
 
     if not scores:
-        ui.label("暂无分数线数据").classes("text-body2 text-grey-6 q-pa-md")
+        with ui.column().classes("items-center q-pa-lg"):
+            ui.label("📊").classes("text-h4")
+            ui.label("暂无分数线数据").classes("text-body2").style(f"color: {TEXT_SECONDARY};")
         return
 
     # 按年份分组
@@ -151,7 +177,7 @@ def _render_scores_tab(service: SchoolDataService, school_id: str) -> None:
 
     for year in sorted(by_year.keys(), reverse=True):
         year_scores = by_year[year]
-        ui.label(f"{year} 年").classes("text-subtitle1 text-weight-bold q-mb-sm q-mt-md")
+        ui.label(f"{year} 年").classes("text-subtitle1 text-weight-bold q-mb-sm q-mt-md").style(f"color: {PRIMARY};")
 
         columns = [
             {"name": "dept", "label": "院系", "field": "department_id", "align": "left"},
@@ -164,9 +190,10 @@ def _render_scores_tab(service: SchoolDataService, school_id: str) -> None:
         ]
         rows = []
         for s in year_scores:
+            total = s.get("total")
             rows.append({
                 "department_id": s.get("department_id") or "-",
-                "total": s.get("total") or "-",
+                "total": f'{total}' if total else "-",
                 "politics": s.get("politics") or "-",
                 "english": s.get("english") or "-",
                 "special_one": s.get("special_one") or "-",
@@ -177,11 +204,13 @@ def _render_scores_tab(service: SchoolDataService, school_id: str) -> None:
 
 
 def _render_plans_tab(service: SchoolDataService, school_id: str) -> None:
-    """渲染招生计划Tab."""
+    """渲染招生计划Tab — 卡片式."""
     plans = service.get_admission_plans(school_id)
 
     if not plans:
-        ui.label("暂无招生计划数据").classes("text-body2 text-grey-6 q-pa-md")
+        with ui.column().classes("items-center q-pa-lg"):
+            ui.label("📋").classes("text-h4")
+            ui.label("暂无招生计划数据").classes("text-body2").style(f"color: {TEXT_SECONDARY};")
         return
 
     # 按年份分组
@@ -191,39 +220,51 @@ def _render_plans_tab(service: SchoolDataService, school_id: str) -> None:
 
     for year in sorted(by_year.keys(), reverse=True):
         year_plans = by_year[year]
-        ui.label(f"{year} 年").classes("text-subtitle1 text-weight-bold q-mb-sm q-mt-md")
+        ui.label(f"{year} 年").classes("text-subtitle1 text-weight-bold q-mb-sm q-mt-md").style(f"color: {PRIMARY};")
 
-        columns = [
-            {"name": "dept", "label": "院系", "field": "department_name", "align": "left"},
-            {"name": "count", "label": "招生人数", "field": "enrollment_count", "align": "right"},
-            {"name": "direction", "label": "研究方向", "field": "research_direction", "align": "left"},
-            {"name": "exam", "label": "考试科目", "field": "exam_subjects", "align": "left"},
-            {"name": "note", "label": "备注", "field": "note", "align": "left"},
-        ]
-        rows = []
-        for p in year_plans:
-            exam = p.get("exam_subjects", [])
-            if isinstance(exam, list):
-                exam = " / ".join(str(e) for e in exam[:3])
-            rows.append({
-                "department_name": p.get("department_name") or "-",
-                "enrollment_count": p.get("enrollment_count") or "-",
-                "research_direction": p.get("research_direction") or "-",
-                "exam_subjects": exam or "-",
-                "note": p.get("note") or "",
-            })
-        ui.table(columns=columns, rows=rows, row_key="department_name").classes("w-full")
+        for plan in year_plans:
+            with ui.element("div").classes("yam-plan-card"):
+                # 卡片 Header：院系名 + 招生人数
+                with ui.element("div").classes("yam-plan-card-header"):
+                    ui.label(plan.get("department_name") or "-").classes("text-body1 text-weight-bold").style(f"color: {PRIMARY};")
+                    count = plan.get("enrollment_count")
+                    ui.label(f"招生 {count} 人" if count else "").classes("text-body2").style(f"color: {SUCCESS}; font-weight: 600;")
+
+                # 卡片 Body
+                with ui.element("div").classes("yam-plan-card-body"):
+                    # 研究方向
+                    direction = plan.get("research_direction", "")
+                    if direction:
+                        with ui.row().classes("items-center gap-sm q-mb-sm"):
+                            ui.label("方向:").classes("text-caption text-weight-bold").style(f"color: {TEXT_SECONDARY};")
+                            ui.label(direction).classes("text-body2")
+
+                    # 考试科目标签
+                    exam = plan.get("exam_subjects", [])
+                    if exam:
+                        with ui.row().classes("items-center gap-sm q-mb-sm"):
+                            ui.label("科目:").classes("text-caption text-weight-bold").style(f"color: {TEXT_SECONDARY};")
+                            with ui.row().classes("wrap gap-xs"):
+                                for e in (exam if isinstance(exam, list) else [exam]):
+                                    e = str(e).strip()
+                                    if e:
+                                        ui.html(f'<span class="yam-exam-tag">{e}</span>')
+
+                    # 备注
+                    note = plan.get("note", "")
+                    if note:
+                        ui.label(f"备注: {note}").classes("text-caption").style(f"color: {TEXT_SECONDARY};")
 
 
 def _render_issues_tab(service: SchoolDataService, school_id: str, issues: list) -> None:
     """渲染异常提醒Tab."""
     if not issues:
         with ui.column().classes("items-center q-pa-lg"):
-            ui.label("✅").classes("text-h3")
-            ui.label("数据正常，无异常提醒").classes("text-body1 text-grey-6")
+            ui.label("✅").classes("text-h4")
+            ui.label("数据正常，无异常提醒").classes("text-body1").style(f"color: {SUCCESS};")
         return
 
-    ui.label(f"共 {len(issues)} 条异常").classes("text-subtitle1 text-weight-bold q-mb-sm")
+    ui.label(f"共 {len(issues)} 条异常").classes("text-subtitle1 text-weight-bold q-mb-sm").style(f"color: {WARNING};")
     for issue in issues:
         with ui.element("div").classes("yam-card q-pa-sm q-mb-sm").style(
             f"border-left: 3px solid {WARNING};"

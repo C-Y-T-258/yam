@@ -17,11 +17,14 @@ def build_splash_page(on_select, on_fetch=None) -> None:
 
     # 全屏居中容器
     with ui.element("div").classes("column items-center justify-center").style(
-        "height: 100vh; width: 100vw; background: #F5F7FA;"
+        "height: 100vh; width: 100vw; background: #F0F2F5;"
     ):
         # Logo + 标题
         ui.label("研喵 YAM").classes("text-h2 text-weight-bold").style(f"color: {PRIMARY};")
         ui.label("本地优先的考研择校数据工具").classes("text-subtitle1").style(
+            f"color: {TEXT_SECONDARY};"
+        )
+        ui.label("选择专业进入，或先采集数据").classes("text-caption q-mt-sm").style(
             f"color: {TEXT_SECONDARY};"
         )
         ui.element("div").style("height: 32px;")
@@ -32,11 +35,6 @@ def build_splash_page(on_select, on_fetch=None) -> None:
                 _major_card(major, on_select, on_fetch)
 
         ui.element("div").style("height: 24px;")
-
-        # 底部提示
-        ui.label("选择专业进入，或先采集数据").classes("text-caption").style(
-            f"color: {TEXT_SECONDARY};"
-        )
 
 
 def _major_card(major: dict, on_select, on_fetch=None) -> None:

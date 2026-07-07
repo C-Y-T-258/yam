@@ -10,7 +10,11 @@ from yam import fetcher
 
 def build_fetch_page(major_code: str | None = None) -> None:
     """构建数据采集页面."""
-    ui.label("数据采集").classes("text-h4 q-mb-md").style(f"color: {PRIMARY};")
+    with ui.element("div").classes("yam-gradient-header"):
+        ui.label("数据采集").classes("text-h4 text-weight-bold").style("color: white;")
+        ui.label("从研招网和掌上考研采集院校招生数据").classes("text-body2").style(
+            "color: rgba(255,255,255,0.75); margin-top: 4px;"
+        )
 
     majors = list_all_majors_status()
 

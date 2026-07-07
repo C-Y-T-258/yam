@@ -19,7 +19,7 @@ def build_favorites_page(major_code: str) -> None:
         service.close()
         return
 
-    ui.label(f"共 {len(favorites)} 所关注院校").classes("text-caption text-grey-6 q-mb-md")
+    ui.label(f"共 {len(favorites)} 所关注院校").classes("text-caption q-mb-md").style(f"color: {TEXT_SECONDARY};")
 
     # 卡片列表
     with ui.row().classes("w-full wrap gap-md"):
@@ -38,20 +38,28 @@ def _render_empty(major_code: str) -> None:
         ui.button(
             "去院校库",
             on_click=lambda: router.navigate_to(router.PAGE_SCHOOLS, major_code=major_code),
-        ).props("color=primary")
+        ).props("color=primary").classes("q-mt-md")
 
 
 def _render_favorite_card(major_code: str, service: SchoolDataService, school: dict) -> None:
     """渲染单个收藏卡片."""
-    with ui.element("div").classes("yam-card q-pa-md").style("width: 300px;"):
+    with ui.element("div").classes("yam-card yam-card-hover q-pa-md").style("width: 300px;"):
         with ui.row().classes("items-center justify-between q-mb-sm"):
             ui.label(school["name"]).classes("text-subtitle1 text-weight-bold").style(f"color: {PRIMARY};")
             if school.get("has_issue"):
                 ui.badge("异常", color="warning").props("rounded")
 
         with ui.row().classes("gap-sm q-mb-sm"):
-            ui.badge(school.get("province", "-"), color="primary").props("rounded")
-            ui.badge(school.get("level", "-"), color="secondary").props("rounded")
+            level = school.get("level", "")
+            if "985" in (level or ""):
+                ui.html('<span class="yam-tag yam-tag-985">985</span>')
+            elif "211" in (level or ""):
+                ui.html('<span class="yam-tag yam-tag-211">211</span>')
+            elif "一流" in (level or ""):
+                ui.html('<span class="yam-tag yam-tag-double">双一流</span>')
+            else:
+                ui.html(f'<span class="yam-tag yam-tag-normal">{level or "普通"}</span>')
+            ui.badge(school.get("province", "-"), color="grey-5").props("rounded")
 
         ui.label(f"研招网 2026: {school.get('yanzhao_total', 0)} 人").classes("text-body2")
         ui.label(f"掌上考研 2026: {school.get('zskyy_total', 0)} 人").classes("text-body2")

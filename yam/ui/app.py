@@ -1,38 +1,32 @@
-"""YAM UI 应用框架."""
+"""YAM UI 应用框架 — Fluent 风格."""
 
 from nicegui import ui
 
 from yam.ui import router
 from yam.ui.pages import (
-    build_about_page,
     build_compare_page,
-    build_dashboard_page,
-    build_detail_page,
-    build_favorites_page,
     build_fetch_page,
     build_schools_page,
     build_splash_page,
 )
-from yam.ui.theme import PRIMARY, TEXT_PRIMARY, css_variables
-
-_NAV_ITEMS = [
-    (router.PAGE_DASHBOARD, "首页"),
-    (router.PAGE_SCHOOLS, "院校库"),
-    (router.PAGE_COMPARE, "数据对比"),
-    (router.PAGE_FAVORITES, "我的收藏"),
-    (router.PAGE_FETCH, "数据采集"),
-    (router.PAGE_ABOUT, "数据说明"),
-]
+from yam.ui.theme import BG_BODY, BORDER, PRIMARY, TEXT_PRIMARY, TEXT_SECONDARY, css_variables
 
 _root_container: ui.element | None = None
+_filter_visible = True
+_filter_container: ui.element | None = None
+_content_container: ui.element | None = None
+_status_label: ui.element | None = None
 
 
-def _navigate(page: str, major_code: str) -> None:
-    """导航到指定页面."""
-    if page == router.PAGE_DETAIL:
-        router.navigate_to(page, major_code=major_code, school_id=router.get_state().get("school_id"))
-    else:
-        router.navigate_to(page, major_code=major_code)
+def _toggle_filter() -> None:
+    """切换筛选面板显示/隐藏."""
+    global _filter_visible
+    _filter_visible = not _filter_visible
+    if _filter_container:
+        if _filter_visible:
+            _filter_container.style("display: block; width: 260px; min-width: 260px;")
+        else:
+            _filter_container.style("display: none;")
 
 
 def _enter_major(major_code: str, goto_page: str | None = None) -> None:
@@ -41,12 +35,12 @@ def _enter_major(major_code: str, goto_page: str | None = None) -> None:
         return
     _root_container.clear()
     with _root_container:
-        _build_main_frame(major_code, goto_page)
+        _build_main_frame(major_code)
 
 
 def _enter_fetch(major_code: str) -> None:
-    """从启动画面进入采集页面."""
-    _enter_major(major_code, goto_page=router.PAGE_FETCH)
+    """从启动画面进入采集."""
+    _enter_major(major_code)
 
 
 def _back_to_splash() -> None:
@@ -58,78 +52,129 @@ def _back_to_splash() -> None:
         build_splash_page(on_select=_enter_major, on_fetch=_enter_fetch)
 
 
-def _build_main_frame(major_code: str, goto_page: str | None = None) -> None:
-    """构建主界面框架（侧边栏 + 内容区）."""
+def _build_main_frame(major_code: str) -> None:
+    """构建主界面框架：菜单栏 + 筛选面板 + 内容区 + 状态栏."""
     ui.page_title(f"YAM - {major_code} 考研择校")
 
     # 注册页面
-    router.register(router.PAGE_DASHBOARD, build_dashboard_page)
     router.register(router.PAGE_SCHOOLS, build_schools_page)
-    router.register(router.PAGE_DETAIL, build_detail_page)
     router.register(router.PAGE_COMPARE, build_compare_page)
-    router.register(router.PAGE_FAVORITES, build_favorites_page)
     router.register(router.PAGE_FETCH, build_fetch_page)
-    router.register(router.PAGE_ABOUT, build_about_page)
 
-    with ui.element("div").classes("row no-wrap").style("height: 100vh; width: 100vw; overflow: hidden;"):
-        # 左侧导航栏
-        with ui.element("div").classes("column").style(
-            f"width: 220px; min-width: 220px; background: #1E293B; color: white;"
-        ):
-            # Logo + 返回
-            with ui.row().classes("items-center justify-between q-pa-md"):
-                ui.label("研喵 YAM").classes("text-h6 text-weight-bold").style("color: white;")
-                ui.button("", on_click=_back_to_splash).props("flat dense round color=white icon=swap_horiz").tooltip("切换专业")
+    with ui.element("div").classes("column").style("height: 100vh; width: 100vw; overflow: hidden;"):
 
-            ui.separator().style("background: #334155;")
+        # === 菜单栏 ===
+        _build_menubar(major_code)
 
-            # 导航项
-            for page, label in _NAV_ITEMS:
-                item = ui.element("div").classes("row items-center q-pa-md").style(
-                    "cursor: pointer; border-radius: 8px; margin: 2px 8px; transition: background 0.2s;"
-                ).on("mouseenter", lambda e: e.sender.style("background: #334155;")) \
-                 .on("mouseleave", lambda e: e.sender.style("background: transparent;"))
-                with item:
-                    ui.label(label).classes("text-body2").style("color: #CBD5E1;")
-                item.on("click", lambda p=page: _navigate(p, major_code))
-                router.bind_nav_item(page, item)
+        # === 中间区域：筛选面板 + 内容区 ===
+        with ui.element("div").classes("row no-wrap").style("flex: 1 1 auto; overflow: hidden;"):
 
-            # 底部：当前专业
-            ui.element("div").style("flex: 1 1 auto;")
-            with ui.element("div").classes("q-pa-md"):
-                with ui.row().classes("items-center gap-sm"):
-                    ui.badge(major_code, color="primary").props("rounded")
-                    from yam.config import config
-                    major_info = config.get_major(major_code)
-                    ui.label(major_info["name"] if major_info else "").classes("text-caption").style("color: #94A3B8;")
-
-        # 右侧主区域
-        with ui.element("div").classes("column").style("flex: 1 1 auto; min-width: 0;"):
-            # 顶部工具栏
-            with ui.element("div").classes("row items-center justify-between q-px-md q-py-sm").style(
-                "background: white; border-bottom: 1px solid #E5E7EB; height: 56px;"
-            ):
-                with ui.row().classes("items-center gap-sm"):
-                    ui.label("考研择校数据浏览器").classes("text-subtitle1 text-weight-medium").style(
-                        f"color: {TEXT_PRIMARY};"
-                    )
-                with ui.row().classes("items-center gap-sm"):
-                    ui.button("院校库", on_click=lambda: _navigate(router.PAGE_SCHOOLS, major_code)).props(
-                        "flat dense color=primary"
-                    )
-                    ui.button("对比", on_click=lambda: _navigate(router.PAGE_COMPARE, major_code)).props(
-                        "flat dense color=primary"
-                    )
-
-            # 主内容区
-            page_container = ui.element("div").classes("column").style(
-                "flex: 1 1 auto; overflow: auto; padding: 20px; background: #F3F4F6;"
+            # 左侧筛选面板
+            global _filter_container
+            _filter_container = ui.element("div").classes("column").style(
+                f"width: 260px; min-width: 260px; background: {BG_BODY}; border-right: 1px solid {BORDER}; overflow-y: auto; padding: 16px;"
             )
-            router.set_container(page_container)
+            with _filter_container:
+                _build_filter_panel(major_code)
 
-    # 默认打开指定页面或首页
-    target = goto_page or router.PAGE_DASHBOARD
-    router.navigate_to(target, major_code=major_code)
+            # 右侧主内容区
+            with ui.element("div").classes("column").style("flex: 1 1 auto; min-width: 0; overflow: hidden;"):
+                # 顶部操作栏
+                with ui.element("div").classes("row items-center justify-between q-px-md q-py-sm").style(
+                    f"background: white; border-bottom: 1px solid {BORDER}; height: 48px;"
+                ):
+                    with ui.row().classes("items-center gap-sm"):
+                        ui.icon("search", size="18px").style(f"color: {TEXT_SECONDARY};")
+                        ui.input(placeholder="搜索院校...").props("borderless dense").classes("col-grow").style(
+                            f"color: {TEXT_PRIMARY};"
+                        )
+                    with ui.row().classes("items-center gap-sm"):
+                        ui.select(
+                            options={"name": "按名称", "yanzhao_total": "按研招网招生", "zskyy_total": "按掌上考研招生", "province": "按省份"},
+                            value="name",
+                            label="排序",
+                        ).props("dense outlined").classes("col").style("width: 160px;")
+                        ui.button("对比 0/3", on_click=lambda: router.navigate_to(router.PAGE_COMPARE, major_code=major_code)).props(
+                            "outline color=primary dense"
+                        )
+                        ui.button("导出", on_click=lambda: None).props("outline color=primary dense icon=file_download")
+
+                # 主内容区（滚动）
+                global _content_container
+                _content_container = ui.element("div").classes("column").style(
+                    f"flex: 1 1 auto; overflow-y: auto; padding: 20px; background: {BG_BODY};"
+                )
+                router.set_container(_content_container)
+
+        # === 状态栏 ===
+        _build_status_bar(major_code)
+
+    # 默认进入院校列表
+    router.navigate_to(router.PAGE_SCHOOLS, major_code=major_code)
+
+
+def _build_menubar(major_code: str) -> None:
+    """构建 Fluent 风格菜单栏."""
+    with ui.element("div").classes("yam-menubar"):
+        ui.label("≡ 研喵 YAM").classes("yam-menubar-logo")
+        ui.label("文件").classes("yam-menubar-item")
+        ui.label("数据").classes("yam-menubar-item")
+        ui.label("视图").classes("yam-menubar-item").on("click", _toggle_filter)
+        ui.label("帮助").classes("yam-menubar-item")
+
+
+def _build_filter_panel(major_code: str) -> None:
+    """构建左侧筛选面板."""
+    ui.label("筛选").classes("text-subtitle1 text-weight-bold q-mb-md").style(f"color: {PRIMARY};")
+
+    # 只显示收藏
+    ui.switch("只显示收藏", value=False).classes("q-mb-md")
+
+    # 学校层次
+    ui.label("学校层次").classes("yam-filter-label")
+    ui.checkbox("985")
+    ui.checkbox("211")
+    ui.checkbox("双一流")
+    ui.checkbox("普通本科")
+
+    ui.separator().classes("q-my-md")
+
+    # 省份
+    ui.label("所在地区").classes("yam-filter-label")
+    ui.select(
+        options=["北京", "上海", "江苏", "浙江", "广东", "湖北", "四川", "陕西", "辽宁", "山东", "天津", "重庆", "湖南", "福建", "安徽", "吉林", "黑龙江", "甘肃", "山西", "河南", "河北", "云南", "贵州", "广西", "内蒙古", "新疆", "宁夏", "青海", "西藏", "海南", "江西"],
+        label="省份",
+        multiple=True,
+    ).props("use-chips clearable dense")
+
+    ui.separator().classes("q-my-md")
+
+    # 专业
+    ui.label("专业").classes("yam-filter-label")
+    ui.label(f"当前: {major_code}").classes("text-body2").style(f"color: {TEXT_SECONDARY};")
+
+    ui.separator().classes("q-my-md")
+
+    # 招生人数范围
+    ui.label("招生人数").classes("yam-filter-label")
+    with ui.row().classes("w-full gap-sm"):
+        ui.number(label="最小", min=0, value=0).props("dense outlined").classes("col")
+        ui.number(label="最大", min=0).props("dense outlined").classes("col")
+
+    ui.separator().classes("q-my-md")
+
+    # 重置
+    ui.button("重置筛选", on_click=lambda: None).props("flat color=grey-7 icon=refresh").classes("text-caption")
+
+
+def _build_status_bar(major_code: str) -> None:
+    """构建底部状态栏."""
+    global _status_label
+    with ui.element("div").classes("row items-center justify-between q-px-md").style(
+        f"background: white; border-top: 1px solid {BORDER}; height: 32px; font-size: 12px; color: {TEXT_SECONDARY};"
+    ):
+        _status_label = ui.label(f"专业: {major_code}")
+        ui.label("共 0 所院校 | 收藏 0 所 | 已选 0/3 对比")
 
 
 def build_app(major_code: str | None = None) -> None:

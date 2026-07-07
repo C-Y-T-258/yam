@@ -4,7 +4,7 @@ from nicegui import ui
 
 from yam.ui import router
 from yam.ui.service import SchoolDataService
-from yam.ui.theme import DANGER, PRIMARY, SUCCESS, TEXT_SECONDARY, WARNING
+from yam.ui.theme import BG_CARD, BORDER, DANGER, PRIMARY, SUCCESS, TEXT_SECONDARY, WARNING
 
 
 def build_compare_page(major_code: str) -> None:
@@ -14,17 +14,17 @@ def build_compare_page(major_code: str) -> None:
     compare_ids = router.get_state().get("compare_ids", [])
 
     if not compare_ids:
-        _render_empty()
+        _render_empty(major_code)
         return
 
     service = SchoolDataService(major_code)
 
     # 操作栏
     with ui.row().classes("items-center justify-between q-mb-md"):
-        ui.label(f"对比 {len(compare_ids)} 所院校").classes("text-subtitle1 text-weight-medium")
+        ui.label(f"对比 {len(compare_ids)} 所院校").classes("text-subtitle1 text-weight-medium").style(f"color: {PRIMARY};")
         with ui.row().classes("gap-sm"):
-            ui.button("导出对比", on_click=lambda: _export(service, compare_ids)).props("outline color=primary")
-            ui.button("清空对比", on_click=lambda: _clear(service)).props("outline color=negative")
+            ui.button("导出对比", on_click=lambda: _export(service, compare_ids)).props("outline color=primary icon=file_download")
+            ui.button("清空对比", on_click=lambda: _clear(service)).props("outline color=negative icon=delete")
 
     # 对比表格
     summaries = []
@@ -44,16 +44,23 @@ def build_compare_page(major_code: str) -> None:
     service.close()
 
 
-def _render_empty() -> None:
-    """渲染空状态."""
+def _render_empty(major_code: str) -> None:
+    """渲染空状态 + 占位卡片."""
     with ui.column().classes("items-center q-pa-lg"):
         ui.label("⚖️").classes("text-h3")
         ui.label("暂无对比数据").classes("text-body1 text-grey-6 q-mb-sm")
-        ui.label("在院校库中点击「对比」按钮添加院校").classes("text-caption text-grey-5")
+        ui.label("在院校库中点击「对比」按钮添加院校（最多 3 所）").classes("text-caption text-grey-5")
         ui.button(
             "去院校库",
-            on_click=lambda: router.navigate_to(router.PAGE_SCHOOLS, major_code=router.get_state().get("major_code", "")),
-        ).props("color=primary")
+            on_click=lambda: router.navigate_to(router.PAGE_SCHOOLS, major_code=major_code),
+        ).props("color=primary").classes("q-mt-md")
+
+    # 占位卡片
+    with ui.row().classes("w-full gap-md q-mt-lg justify-center"):
+        for i in range(3):
+            with ui.element("div").classes("yam-empty-placeholder").style("width: 280px; min-height: 160px;"):
+                ui.label(f"院校 {i + 1}").classes("text-body1 text-weight-medium").style(f"color: {TEXT_SECONDARY};")
+                ui.label("在院校库中添加").classes("text-caption").style(f"color: {TEXT_SECONDARY};")
 
 
 def _render_comparison_table(summaries: list[dict]) -> None:
@@ -102,7 +109,7 @@ def _render_comparison_table(summaries: list[dict]) -> None:
         if row["field"] not in ("学校代码", "省份", "层次", "异常"):
             unique = set(str(v) for v in values)
             if len(unique) > 1:
-                r["_highlight"] = True
+                r["_classes"] = "yam-highlight-row"
 
         table_rows.append(r)
 
@@ -127,7 +134,6 @@ def _get_field(school: dict, field: str) -> str:
         return str(school.get("zhangshangkaoyan_2026", 0))
     if field.startswith("score_"):
         year = int(field.split("_")[1])
-        # 简化：显示是否有该年数据
         years = school.get("score_years", [])
         return "有数据" if year in years else "暂无"
     if field == "异常":

@@ -66,9 +66,9 @@ def _update_nav_active() -> None:
     """更新导航项激活状态."""
     for page, item in _nav_items.items():
         if page == _current_page:
-            item.classes(add="active", remove="text-grey-7")
+            item.classes(add="active")
         else:
-            item.classes(remove="active", add="text-grey-7")
+            item.classes(remove="active")
 
 
 _nav_items: dict[str, ui.element] = {}
