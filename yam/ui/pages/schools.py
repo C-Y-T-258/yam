@@ -5,6 +5,7 @@ from typing import Any
 from nicegui import ui
 
 from yam.ui import router
+from yam.ui.filter_state import filter_state, compare_ids, toggle_compare
 from yam.ui.service import SchoolDataService
 from yam.ui.theme import (
     BG_BODY, BORDER, PRIMARY, TEXT_SECONDARY, WARNING, SUCCESS, DANGER,
@@ -17,7 +18,20 @@ _expanded_schools: set[str] = set()
 def build_schools_page(major_code: str, **kwargs: Any) -> None:
     """构建院校列表页面 — 全宽列表视图."""
     service = SchoolDataService(major_code)
-    schools = service.search_schools(sort="name")
+
+    # 应用筛选
+    schools = service.search_schools(
+        keyword=filter_state["keyword"],
+        provinces=filter_state["provinces"] or None,
+        levels=filter_state["levels"] or None,
+        min_plan=filter_state["min_plan"],
+        max_plan=filter_state["max_plan"],
+        sort=filter_state["sort"],
+    )
+
+    # 收藏筛选
+    if filter_state["favorites_only"]:
+        schools = [s for s in schools if service.is_favorite(s["school_id"])]
 
     with ui.column().classes("w-full"):
         ui.label(f"共 {len(schools)} 所院校").classes("text-caption q-mb-sm").style(f"color: {TEXT_SECONDARY};")
@@ -36,7 +50,6 @@ def _render_school_item(major_code: str, service: SchoolDataService, school: dic
     issues = summary.get("issues", [])
     yz = summary.get("yanzhao_2026", 0)
     zs = summary.get("zhangshangkaoyan_2026", 0)
-    score_years = summary.get("score_years", [])
 
     # 获取各年份分数线
     scores_by_year = {}
@@ -71,14 +84,14 @@ def _render_school_item(major_code: str, service: SchoolDataService, school: dic
                     ui.html(f'<span class="yam-tag yam-tag-normal">{level or "普通"}</span>')
 
                 ui.badge(school.get("province", "-"), color="grey-5").props("rounded")
-
-                # 专业代码
                 ui.html(f'<span class="yam-tag yam-tag-code">{major_code}</span>')
 
             # 对比复选框
-            ui.checkbox("对比", value=False).props("dense").style("color: #6B7280; font-size: 12px;")
+            is_in_compare = sid in compare_ids
+            cb = ui.checkbox("对比", value=is_in_compare).props("dense").style("color: #6B7280; font-size: 12px;")
+            cb.on("change", lambda e, s=sid: _on_compare_toggle(s, e.value))
 
-        # 第2行：招生人数（分数显示）+ 学制
+        # 第2行：招生人数 + 学制
         with ui.row().classes("items-center gap-lg q-mt-sm"):
             with ui.row().classes("items-center gap-xs"):
                 ui.label("招生").classes("text-body2").style(f"color: {TEXT_SECONDARY};")
@@ -88,7 +101,6 @@ def _render_school_item(major_code: str, service: SchoolDataService, school: dic
                 if zs != yz:
                     zs_label += "*"
                 ui.label(zs_label).classes("text-body2 text-weight-bold").style(f"color: {PRIMARY};")
-
             ui.label("学制 3年").classes("text-body2").style(f"color: {TEXT_SECONDARY};")
 
         # 第3行：分数线趋势
@@ -96,15 +108,12 @@ def _render_school_item(major_code: str, service: SchoolDataService, school: dic
             with ui.row().classes("items-center gap-xs q-mt-sm"):
                 ui.label("分数线:").classes("text-caption").style(f"color: {TEXT_SECONDARY};")
                 sorted_years = sorted(scores_by_year.keys())
-                parts = []
                 for i, y in enumerate(sorted_years):
                     sc = scores_by_year[y]
                     color = score_color(sc)
-                    parts.append((str(y)[-2:], sc, color))
-                for i, (year_short, sc, color) in enumerate(parts):
                     if i > 0:
                         ui.label("→").classes("text-caption").style(f"color: {TEXT_SECONDARY};")
-                    ui.label(f"{year_short}: {sc}").classes("text-caption text-weight-bold").style(f"color: {color};")
+                    ui.label(f"{str(y)[-2:]}: {sc}").classes("text-caption text-weight-bold").style(f"color: {color};")
 
         # 第4行：异常警告横幅
         if issues:
@@ -112,21 +121,24 @@ def _render_school_item(major_code: str, service: SchoolDataService, school: dic
                 f"background: #FFF3CD; border-left: 3px solid {WARNING}; padding: 8px 12px; "
                 f"border-radius: 0 6px 6px 0; margin-top: 10px;"
             ):
-                ui.label(f"⚠️ {issues[0][:60]}{'...' if len(issues[0]) > 60 else ''}").classes("text-caption").style(
-                    f"color: #856404;"
-                )
+                ui.label(f"⚠️ {issues[0][:60]}{'...' if len(issues[0]) > 60 else ''}").classes("text-caption").style("color: #856404;")
 
-        # 第5行：展开/收起按钮
+        # 第5行：展开/收起
         with ui.row().classes("w-full q-mt-sm"):
             expand_text = "收起 ▲" if is_expanded else "展开详情 ▼"
             ui.button(expand_text, on_click=lambda s=sid: _toggle_expand(s, major_code)).classes("yam-expand-btn")
 
         # 展开内容
         if is_expanded:
-            _render_expanded_content(service, sid, summary, scores_by_year, issues)
+            _render_expanded_content(service, sid, scores_by_year, issues)
 
 
-def _render_expanded_content(service: SchoolDataService, sid: str, summary: dict, scores_by_year: dict, issues: list) -> None:
+def _on_compare_toggle(school_id: str, checked: bool) -> None:
+    """处理对比复选框变化."""
+    toggle_compare(school_id)
+
+
+def _render_expanded_content(service: SchoolDataService, sid: str, scores_by_year: dict, issues: list) -> None:
     """渲染展开的详情内容."""
     ui.separator().style(f"margin: 12px 0; border-color: {BORDER};")
 
