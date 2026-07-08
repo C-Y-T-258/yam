@@ -4,9 +4,11 @@ import { AppLayout } from './components/AppLayout';
 import { SchoolCard } from './components/SchoolCard';
 import { SearchBar } from './components/SearchBar';
 import { FilterPanel } from './components/FilterPanel';
+import { CompareModal } from './components/CompareModal';
 import { useTheme } from './lib/theme';
 import { fetchSchools, fetchScoreLines, School, ScoreLine } from './lib/db';
 import { useFilterStore } from './stores/filterStore';
+import { useCompareStore } from './stores/compareStore';
 
 function ThemeToggle() {
   const { theme, toggle } = useTheme();
@@ -24,6 +26,8 @@ export default function App() {
   const [schools, setSchools] = useState<School[]>([]);
   const [scoreLines, setScoreLines] = useState<Record<string, ScoreLine[]>>({});
   const { searchQuery, selectedLevels } = useFilterStore();
+  const { selectedIds } = useCompareStore();
+  const [isCompareOpen, setIsCompareOpen] = useState(false);
 
   useEffect(() => {
     fetchSchools('085410').then(async (s) => {
@@ -75,6 +79,19 @@ export default function App() {
             ))}
           </div>
         </AppLayout>
+        <CompareModal
+          isOpen={isCompareOpen}
+          onClose={() => setIsCompareOpen(false)}
+          schools={schools.filter(s => selectedIds.includes(s.school_id))}
+        />
+        {selectedIds.length > 0 && (
+          <button
+            onClick={() => setIsCompareOpen(true)}
+            className="fixed bottom-12 right-4 px-4 py-2 bg-primary text-white rounded-lg shadow-lg hover:opacity-90 transition-opacity z-40"
+          >
+            对比 ({selectedIds.length})
+          </button>
+        )}
       </div>
     </ThemeProvider>
   );

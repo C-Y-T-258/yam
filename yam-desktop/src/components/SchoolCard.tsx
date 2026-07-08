@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Heart, ChevronDown, AlertTriangle } from 'lucide-react';
 import { School, ScoreLine } from '../lib/db';
 import { ScoreTrend } from './ScoreTrend';
+import { useCompareStore } from '../stores/compareStore';
 
 interface SchoolCardProps {
   school: School;
@@ -13,6 +14,7 @@ interface SchoolCardProps {
 export function SchoolCard({ school, scoreLines, index }: SchoolCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [favorited, setFavorited] = useState(false);
+  const { isSelected, toggle } = useCompareStore();
 
   const scoresByYear = scoreLines
     .filter(s => s.total)
@@ -55,7 +57,12 @@ export function SchoolCard({ school, scoreLines, index }: SchoolCardProps) {
           <span className="text-xs text-gray-500">{school.province}</span>
         </div>
         <label className="flex items-center gap-1 text-xs text-gray-500 cursor-pointer">
-          <input type="checkbox" className="rounded" />
+          <input
+            type="checkbox"
+            className="rounded"
+            checked={isSelected(school.school_id)}
+            onChange={() => toggle(school.school_id)}
+          />
           对比
         </label>
       </div>

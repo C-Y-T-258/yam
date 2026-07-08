@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Menubar } from './Menubar';
 import { Sidebar } from './Sidebar';
 import { StatusBar } from './StatusBar';
+import { useCompareStore } from '../stores/compareStore';
 
 interface AppLayoutProps {
   children: React.ReactNode;
@@ -11,6 +12,7 @@ interface AppLayoutProps {
 
 export function AppLayout({ children, majorCode, totalSchools }: AppLayoutProps) {
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const { selectedIds } = useCompareStore();
 
   return (
     <div className="flex flex-col h-screen">
@@ -21,7 +23,7 @@ export function AppLayout({ children, majorCode, totalSchools }: AppLayoutProps)
           {children}
         </main>
       </div>
-      <StatusBar majorCode={majorCode} totalSchools={totalSchools} favoriteCount={0} compareCount={0} />
+      <StatusBar majorCode={majorCode} totalSchools={totalSchools} favoriteCount={0} compareCount={selectedIds.length} />
     </div>
   );
 }
