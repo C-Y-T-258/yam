@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { MOCK_SCHOOLS, getMockScoreLines } from '../data/mock-schools';
 
 export interface School {
   school_id: string;
@@ -17,13 +17,26 @@ export interface ScoreLine {
   department_name: string | null;
 }
 
+// Check if running in Tauri
+const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
+
 export async function fetchSchools(majorCode: string): Promise<School[]> {
-  return invoke('fetch_schools', { majorCode });
+  if (isTauri) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke('fetch_schools', { majorCode });
+  }
+  // Mock data for browser testing
+  return MOCK_SCHOOLS;
 }
 
 export async function fetchScoreLines(
   schoolId: string,
   majorCode: string
 ): Promise<ScoreLine[]> {
-  return invoke('fetch_score_lines', { schoolId, majorCode });
+  if (isTauri) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke('fetch_score_lines', { schoolId, majorCode });
+  }
+  // Mock data for browser testing
+  return getMockScoreLines(schoolId);
 }
