@@ -1,4 +1,5 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useState } from 'react';
+import { SplashScreen } from './components/SplashScreen';
 import { ThemeProvider } from './components/ThemeProvider';
 import { AppLayout } from './components/AppLayout';
 import { SchoolCard } from './components/SchoolCard';
@@ -9,6 +10,7 @@ import { useTheme } from './lib/theme';
 import { fetchSchools, fetchScoreLines, School, ScoreLine } from './lib/db';
 import { useFilterStore } from './stores/filterStore';
 import { useCompareStore } from './stores/compareStore';
+import { useEffect, useMemo } from 'react';
 
 function ThemeToggle() {
   const { theme, toggle } = useTheme();
@@ -23,6 +25,7 @@ function ThemeToggle() {
 }
 
 export default function App() {
+  const [currentMajor, setCurrentMajor] = useState<string | null>(null);
   const [schools, setSchools] = useState<School[]>([]);
   const [scoreLines, setScoreLines] = useState<Record<string, ScoreLine[]>>({});
   const { searchQuery, selectedLevels } = useFilterStore();
@@ -30,15 +33,17 @@ export default function App() {
   const [isCompareOpen, setIsCompareOpen] = useState(false);
 
   useEffect(() => {
-    fetchSchools('085410').then(async (s) => {
-      setSchools(s);
-      const scores: Record<string, ScoreLine[]> = {};
-      for (const school of s.slice(0, 20)) {
-        scores[school.school_id] = await fetchScoreLines(school.school_id, '085410');
-      }
-      setScoreLines(scores);
-    });
-  }, []);
+    if (currentMajor) {
+      fetchSchools(currentMajor).then(async (s) => {
+        setSchools(s);
+        const scores: Record<string, ScoreLine[]> = {};
+        for (const school of s.slice(0, 50)) {
+          scores[school.school_id] = await fetchScoreLines(school.school_id, currentMajor);
+        }
+        setScoreLines(scores);
+      });
+    }
+  }, [currentMajor]);
 
   const filteredSchools = useMemo(() => {
     return schools.filter((school) => {
@@ -59,11 +64,19 @@ export default function App() {
     });
   }, [schools, searchQuery, selectedLevels]);
 
+  if (!currentMajor) {
+    return (
+      <ThemeProvider>
+        <SplashScreen onSelect={setCurrentMajor} />
+      </ThemeProvider>
+    );
+  }
+
   return (
     <ThemeProvider>
       <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-300">
         <ThemeToggle />
-        <AppLayout majorCode="085410" totalSchools={filteredSchools.length}>
+        <AppLayout majorCode={currentMajor} totalSchools={filteredSchools.length}>
           <div className="max-w-4xl">
             <div className="mb-6 space-y-4">
               <SearchBar />
