@@ -3,4 +3,7 @@
 @theme {
   --color-primary: #0F3460;
   --color-accent: #E94560;
+  --color-dark-bg: #1a1a2e;
+  --color-dark-card: #2d2d44;
+  --color-dark-text: #e0e0e0;
 }
