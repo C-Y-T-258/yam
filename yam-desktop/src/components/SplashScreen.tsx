@@ -1,37 +1,90 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import {
+  ACADEMIC_CATEGORIES,
+  PROFESSIONAL_DEGREE_CATEGORIES,
+} from '../data/majors';
+import type {
+  DisciplineCategory,
+  FirstLevelDiscipline,
+  Major,
+  ProfessionalDegreeCategory,
+} from '../data/majors';
 
-const CATEGORY_TREE = {
-  '工学': {
-    '计算机科学与技术': [
-      { code: '085410', name: '人工智能' },
-      { code: '085401', name: '计算机技术' },
-      { code: '085404', name: '软件工程' },
-    ],
-    '电子科学与技术': [
-      { code: '085405', name: '控制工程' },
-    ],
-  },
-  '理学': {
-    '数学': [
-      { code: '070101', name: '基础数学' },
-    ],
-  },
-};
+type DegreeType = 'academic' | 'professional';
 
 interface SplashScreenProps {
   onSelect: (majorCode: string) => void;
 }
 
 export function SplashScreen({ onSelect }: SplashScreenProps) {
-  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
-  const [selectedSubject, setSelectedSubject] = useState<string | null>(null);
+  const [degreeType, setDegreeType] = useState<DegreeType>('academic');
+  const [selectedCategory, setSelectedCategory] = useState<DisciplineCategory | null>(null);
+  const [selectedDiscipline, setSelectedDiscipline] = useState<FirstLevelDiscipline | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
 
-  const categories = Object.keys(CATEGORY_TREE);
-  const subjects = selectedCategory ? Object.keys(CATEGORY_TREE[selectedCategory as keyof typeof CATEGORY_TREE]) : [];
-  const majors = selectedCategory && selectedSubject
-    ? CATEGORY_TREE[selectedCategory as keyof typeof CATEGORY_TREE][selectedSubject as keyof typeof CATEGORY_TREE[string]]
-    : [];
+  const filteredAcademicMajors = useMemo(() => {
+    if (!searchQuery.trim()) return [];
+    const q = searchQuery.toLowerCase();
+    const results: Array<{
+      type: 'academic';
+      category: DisciplineCategory;
+      discipline: FirstLevelDiscipline;
+      major: Major;
+    }> = [];
+
+    for (const cat of ACADEMIC_CATEGORIES) {
+      for (const disc of cat.disciplines) {
+        if (disc.majors.length === 0) {
+          if (
+            disc.name.toLowerCase().includes(q) ||
+            disc.code.includes(q)
+          ) {
+            results.push({
+              type: 'academic',
+              category: cat,
+              discipline: disc,
+              major: { code: disc.code, name: disc.name },
+            });
+          }
+          continue;
+        }
+        for (const major of disc.majors) {
+          if (
+            major.name.toLowerCase().includes(q) ||
+            major.code.includes(q)
+          ) {
+            results.push({
+              type: 'academic',
+              category: cat,
+              discipline: disc,
+              major,
+            });
+          }
+        }
+      }
+    }
+    return results;
+  }, [searchQuery]);
+
+  const filteredProfessionalMajors = useMemo(() => {
+    if (!searchQuery.trim()) return [];
+    const q = searchQuery.toLowerCase();
+    const results: ProfessionalDegreeCategory[] = [];
+
+    for (const cat of PROFESSIONAL_DEGREE_CATEGORIES) {
+      if (
+        cat.name.toLowerCase().includes(q) ||
+        cat.code.includes(q) ||
+        cat.subFields?.some(f => f.toLowerCase().includes(q))
+      ) {
+        results.push(cat);
+      }
+    }
+    return results;
+  }, [searchQuery]);
+
+  const isSearching = searchQuery.trim().length > 0;
 
   return (
     <motion.div
@@ -48,75 +101,234 @@ export function SplashScreen({ onSelect }: SplashScreenProps) {
         <h1 className="text-3xl font-bold text-center text-primary mb-2">研喵 YAM</h1>
         <p className="text-center text-gray-500 mb-6">本地优先的考研择校数据工具</p>
 
+        {/* Degree Type Selector */}
+        <div className="flex justify-center mb-4">
+          <div className="inline-flex rounded-lg bg-gray-100 dark:bg-gray-700 p-1">
+            <button
+              onClick={() => {
+                setDegreeType('academic');
+                setSelectedCategory(null);
+                setSelectedDiscipline(null);
+                setSearchQuery('');
+              }}
+              className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                degreeType === 'academic'
+                  ? 'bg-white dark:bg-gray-600 text-primary shadow-sm'
+                  : 'text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white'
+              }`}
+            >
+              学术学位
+            </button>
+            <button
+              onClick={() => {
+                setDegreeType('professional');
+                setSelectedCategory(null);
+                setSelectedDiscipline(null);
+                setSearchQuery('');
+              }}
+              className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                degreeType === 'professional'
+                  ? 'bg-white dark:bg-gray-600 text-primary shadow-sm'
+                  : 'text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white'
+              }`}
+            >
+              专业学位
+            </button>
+          </div>
+        </div>
+
+        {/* Search */}
         <div className="relative mb-6">
           <input
             type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="搜索专业名称或代码..."
             className="w-full p-3 border rounded-lg dark:bg-gray-700 dark:border-gray-600"
           />
+          {isSearching && (
+            <button
+              onClick={() => setSearchQuery('')}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+            >
+              ✕
+            </button>
+          )}
         </div>
 
-        <div className="grid grid-cols-3 gap-4">
-          {/* Column 1: 学科门类 */}
+        {/* Search Results */}
+        {isSearching ? (
           <div className="border rounded-lg p-3 h-64 overflow-auto">
-            <h3 className="text-sm font-medium text-gray-500 mb-2">学科门类</h3>
-            {categories.map(cat => (
+            {degreeType === 'academic' ? (
+              filteredAcademicMajors.length > 0 ? (
+                filteredAcademicMajors.map((item) => (
+                  <motion.button
+                    key={item.major.code}
+                    initial={{ opacity: 0, x: -10 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    whileHover={{ x: 4 }}
+                    onClick={() => {
+                      setSelectedCategory(item.category);
+                      setSelectedDiscipline(item.discipline);
+                      setSearchQuery('');
+                    }}
+                    className="w-full text-left px-3 py-2 rounded text-sm mb-1 hover:bg-primary/10 transition-colors"
+                  >
+                    <span className="text-gray-500 mr-2">{item.major.code}</span>
+                    {item.major.name}
+                    <span className="text-xs text-gray-400 ml-2">
+                      {item.category.name} · {item.discipline.name}
+                    </span>
+                  </motion.button>
+                ))
+              ) : (
+                <p className="text-center text-gray-500 py-8">未找到匹配的专业</p>
+              )
+            ) : filteredProfessionalMajors.length > 0 ? (
+              filteredProfessionalMajors.map((cat) => (
+                <motion.button
+                  key={cat.code}
+                  initial={{ opacity: 0, x: -10 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  whileHover={{ x: 4 }}
+                  onClick={() => onSelect(cat.code)}
+                  className="w-full text-left px-3 py-2 rounded text-sm mb-1 hover:bg-primary/10 transition-colors"
+                >
+                  <span className="text-gray-500 mr-2">{cat.code}</span>
+                  {cat.name}
+                  {cat.subFields && (
+                    <span className="text-xs text-gray-400 ml-2">
+                      ({cat.subFields.length}个方向)
+                    </span>
+                  )}
+                </motion.button>
+              ))
+            ) : (
+              <p className="text-center text-gray-500 py-8">未找到匹配的专业</p>
+            )}
+          </div>
+        ) : degreeType === 'academic' ? (
+          /* Academic: 3-column cascading */
+          <div className="grid grid-cols-3 gap-4">
+            {/* Column 1: 门类 */}
+            <div className="border rounded-lg p-3 h-64 overflow-auto">
+              <h3 className="text-sm font-medium text-gray-500 mb-2">学科门类</h3>
+              {ACADEMIC_CATEGORIES.map((cat) => (
+                <motion.button
+                  key={cat.code}
+                  whileHover={{ x: 4 }}
+                  onClick={() => {
+                    setSelectedCategory(cat);
+                    setSelectedDiscipline(null);
+                  }}
+                  className={`w-full text-left px-3 py-2 rounded text-sm mb-1 transition-colors ${
+                    selectedCategory?.code === cat.code
+                      ? 'bg-primary text-white'
+                      : 'hover:bg-gray-100 dark:hover:bg-gray-700'
+                  }`}
+                >
+                  <span className="text-xs opacity-60 mr-1">{cat.code}</span>
+                  {cat.name}
+                </motion.button>
+              ))}
+            </div>
+
+            {/* Column 2: 一级学科 */}
+            <div className="border rounded-lg p-3 h-64 overflow-auto">
+              <h3 className="text-sm font-medium text-gray-500 mb-2">一级学科</h3>
+              <AnimatePresence mode="wait">
+                {selectedCategory ? (
+                  selectedCategory.disciplines.map((disc) => (
+                    <motion.button
+                      key={disc.code}
+                      initial={{ opacity: 0, x: -10 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, x: 10 }}
+                      whileHover={{ x: 4 }}
+                      onClick={() => setSelectedDiscipline(disc)}
+                      className={`w-full text-left px-3 py-2 rounded text-sm mb-1 transition-colors ${
+                        selectedDiscipline?.code === disc.code
+                          ? 'bg-primary text-white'
+                          : 'hover:bg-gray-100 dark:hover:bg-gray-700'
+                      }`}
+                    >
+                      <span className="text-xs opacity-60 mr-1">{disc.code}</span>
+                      {disc.name}
+                    </motion.button>
+                  ))
+                ) : (
+                  <p className="text-center text-gray-400 py-8 text-sm">请选择门类</p>
+                )}
+              </AnimatePresence>
+            </div>
+
+            {/* Column 3: 专业 */}
+            <div className="border rounded-lg p-3 h-64 overflow-auto">
+              <h3 className="text-sm font-medium text-gray-500 mb-2">专业</h3>
+              <AnimatePresence mode="wait">
+                {selectedDiscipline ? (
+                  selectedDiscipline.majors.length > 0 ? (
+                    selectedDiscipline.majors.map((m) => (
+                      <motion.button
+                        key={m.code}
+                        initial={{ opacity: 0, x: -10 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        exit={{ opacity: 0, x: 10 }}
+                        whileHover={{ x: 4 }}
+                        onClick={() => onSelect(m.code)}
+                        className="w-full text-left px-3 py-2 rounded text-sm mb-1 hover:bg-primary/10 transition-colors"
+                      >
+                        <span className="text-gray-500 mr-2">{m.code}</span>
+                        {m.name}
+                      </motion.button>
+                    ))
+                  ) : (
+                    <div className="py-4">
+                      <p className="text-sm text-gray-500 mb-3">
+                        按一级学科招生
+                      </p>
+                      <motion.button
+                        initial={{ opacity: 0, x: -10 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        whileHover={{ x: 4 }}
+                        onClick={() => onSelect(selectedDiscipline.code)}
+                        className="w-full text-left px-3 py-2 rounded text-sm mb-1 hover:bg-primary/10 transition-colors bg-primary/5"
+                      >
+                        <span className="text-gray-500 mr-2">{selectedDiscipline.code}</span>
+                        {selectedDiscipline.name}
+                      </motion.button>
+                    </div>
+                  )
+                ) : (
+                  <p className="text-center text-gray-400 py-8 text-sm">请选择一级学科</p>
+                )}
+              </AnimatePresence>
+            </div>
+          </div>
+        ) : (
+          /* Professional: Direct list */
+          <div className="border rounded-lg p-3 h-64 overflow-auto">
+            <h3 className="text-sm font-medium text-gray-500 mb-2">专业学位类别</h3>
+            {PROFESSIONAL_DEGREE_CATEGORIES.map((cat) => (
               <motion.button
-                key={cat}
+                key={cat.code}
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
                 whileHover={{ x: 4 }}
-                onClick={() => { setSelectedCategory(cat); setSelectedSubject(null); }}
-                className={`w-full text-left px-3 py-2 rounded text-sm mb-1 transition-colors ${
-                  selectedCategory === cat ? 'bg-primary text-white' : 'hover:bg-gray-100 dark:hover:bg-gray-700'
-                }`}
+                onClick={() => onSelect(cat.code)}
+                className="w-full text-left px-3 py-2 rounded text-sm mb-1 hover:bg-primary/10 transition-colors"
               >
-                {cat}
+                <span className="text-gray-500 mr-2">{cat.code}</span>
+                {cat.name}
+                {cat.subFields && (
+                  <span className="text-xs text-gray-400 ml-2">
+                    ({cat.subFields.length}个方向)
+                  </span>
+                )}
               </motion.button>
             ))}
           </div>
-
-          {/* Column 2: 一级学科 */}
-          <div className="border rounded-lg p-3 h-64 overflow-auto">
-            <h3 className="text-sm font-medium text-gray-500 mb-2">一级学科</h3>
-            <AnimatePresence mode="wait">
-              {subjects.map(sub => (
-                <motion.button
-                  key={sub}
-                  initial={{ opacity: 0, x: -10 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: 10 }}
-                  whileHover={{ x: 4 }}
-                  onClick={() => setSelectedSubject(sub)}
-                  className={`w-full text-left px-3 py-2 rounded text-sm mb-1 transition-colors ${
-                    selectedSubject === sub ? 'bg-primary text-white' : 'hover:bg-gray-100 dark:hover:bg-gray-700'
-                  }`}
-                >
-                  {sub}
-                </motion.button>
-              ))}
-            </AnimatePresence>
-          </div>
-
-          {/* Column 3: 专业 */}
-          <div className="border rounded-lg p-3 h-64 overflow-auto">
-            <h3 className="text-sm font-medium text-gray-500 mb-2">专业</h3>
-            <AnimatePresence mode="wait">
-              {majors?.map((m: any) => (
-                <motion.button
-                  key={m.code}
-                  initial={{ opacity: 0, x: -10 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: 10 }}
-                  whileHover={{ x: 4 }}
-                  onClick={() => onSelect(m.code)}
-                  className="w-full text-left px-3 py-2 rounded text-sm mb-1 hover:bg-primary/10 transition-colors"
-                >
-                  <span className="text-gray-500 mr-2">{m.code}</span>
-                  {m.name}
-                </motion.button>
-              ))}
-            </AnimatePresence>
-          </div>
-        </div>
+        )}
       </motion.div>
     </motion.div>
   );
