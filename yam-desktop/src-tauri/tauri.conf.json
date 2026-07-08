@@ -1,0 +1,21 @@
+{
+  "productName": "YAM",
+  "version": "1.0.0",
+  "identifier": "com.yam.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "研喵 YAM",
+        "width": 1200,
+        "height": 800,
+        "resizable": true
+      }
+    ]
+  }
+}
