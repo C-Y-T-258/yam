@@ -121,6 +121,9 @@ def _build_menubar(major_code: str) -> None:
         ui.label("数据").classes("yam-menubar-item")
         ui.label("视图").classes("yam-menubar-item").on("click", _toggle_filter)
         ui.label("帮助").classes("yam-menubar-item")
+        ui.element("div").style("flex: 1 1 auto;")
+        ui.icon("search", size="18px").style(f"color: {TEXT_SECONDARY}; cursor: pointer; padding: 4px 8px;")
+        ui.icon("settings", size="18px").style(f"color: {TEXT_SECONDARY}; cursor: pointer; padding: 4px 8px;")
 
 
 def _build_filter_panel(major_code: str) -> None:
@@ -169,12 +172,25 @@ def _build_filter_panel(major_code: str) -> None:
 
 def _build_status_bar(major_code: str) -> None:
     """构建底部状态栏."""
-    global _status_label
+    from yam.ui.service import SchoolDataService
+    service = SchoolDataService(major_code)
+    stats = service.get_dashboard_stats()
+    service.close()
+
+    update_time = stats.get("last_update", "-")
+    total = stats.get("total_schools", 0)
+    fav_count = stats.get("favorite_count", 0)
+
     with ui.element("div").classes("row items-center justify-between q-px-md").style(
         f"background: white; border-top: 1px solid {BORDER}; height: 32px; font-size: 12px; color: {TEXT_SECONDARY};"
     ):
-        _status_label = ui.label(f"专业: {major_code}")
-        ui.label("共 0 所院校 | 收藏 0 所 | 已选 0/3 对比")
+        with ui.row().classes("items-center gap-md"):
+            ui.label(f"专业: {major_code}")
+            ui.label(f"数据更新于 {update_time}")
+        with ui.row().classes("items-center gap-md"):
+            ui.label(f"共 {total} 所院校")
+            ui.label(f"收藏 {fav_count} 所")
+            ui.label("已选 0/3 对比")
 
 
 def build_app(major_code: str | None = None) -> None:
