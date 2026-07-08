@@ -12,6 +12,13 @@ import { useFilterStore } from './stores/filterStore';
 import { useCompareStore } from './stores/compareStore';
 import { useEffect, useMemo } from 'react';
 
+// Mock crawled majors data (simulates existing data)
+const MOCK_CRAWLED_MAJORS = [
+  { code: '085410', name: '人工智能', schoolCount: 217, lastUpdated: '2026-06-14' },
+  { code: '085401', name: '计算机技术', schoolCount: 189, lastUpdated: '2026-06-14' },
+  { code: '085404', name: '软件工程', schoolCount: 156, lastUpdated: '2026-06-13' },
+];
+
 function ThemeToggle() {
   const { theme, toggle } = useTheme();
   return (
@@ -67,7 +74,15 @@ export default function App() {
   if (!currentMajor) {
     return (
       <ThemeProvider>
-        <SplashScreen onSelect={setCurrentMajor} />
+        <SplashScreen
+          onSelect={setCurrentMajor}
+          onStartCrawl={(code) => {
+            console.log('Start crawling:', code);
+            // In real app, this would trigger the crawl process
+            setCurrentMajor(code);
+          }}
+          crawledMajors={MOCK_CRAWLED_MAJORS}
+        />
       </ThemeProvider>
     );
   }

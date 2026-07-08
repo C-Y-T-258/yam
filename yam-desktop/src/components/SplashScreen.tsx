@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { Check, ChevronRight, RefreshCw, Database } from 'lucide-react';
 import {
   ACADEMIC_CATEGORIES,
   PROFESSIONAL_DEGREE_CATEGORIES,
@@ -13,15 +14,27 @@ import type {
 
 type DegreeType = 'academic' | 'professional';
 
-interface SplashScreenProps {
-  onSelect: (majorCode: string) => void;
+interface CrawledMajor {
+  code: string;
+  name: string;
+  schoolCount: number;
+  lastUpdated: string;
 }
 
-export function SplashScreen({ onSelect }: SplashScreenProps) {
+interface SplashScreenProps {
+  onSelect: (majorCode: string) => void;
+  onStartCrawl?: (majorCode: string) => void;
+  crawledMajors?: CrawledMajor[];
+}
+
+export function SplashScreen({ onSelect, onStartCrawl, crawledMajors = [] }: SplashScreenProps) {
   const [degreeType, setDegreeType] = useState<DegreeType>('academic');
   const [selectedCategory, setSelectedCategory] = useState<DisciplineCategory | null>(null);
   const [selectedDiscipline, setSelectedDiscipline] = useState<FirstLevelDiscipline | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedMajors, setSelectedMajors] = useState<Set<string>>(new Set());
+
+  const hasData = crawledMajors.length > 0;
 
   const filteredAcademicMajors = useMemo(() => {
     if (!searchQuery.trim()) return [];
@@ -86,6 +99,132 @@ export function SplashScreen({ onSelect }: SplashScreenProps) {
 
   const isSearching = searchQuery.trim().length > 0;
 
+  const toggleMajorSelection = (code: string) => {
+    setSelectedMajors(prev => {
+      const next = new Set(prev);
+      if (next.has(code)) {
+        next.delete(code);
+      } else {
+        next.add(code);
+      }
+      return next;
+    });
+  };
+
+  const totalSchools = crawledMajors.reduce((sum, m) => sum + m.schoolCount, 0);
+
+  // Has data view
+  if (hasData) {
+    return (
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary/5 to-accent/5"
+      >
+        <motion.div
+          initial={{ y: 30, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          transition={{ delay: 0.2 }}
+          className="bg-white rounded-2xl shadow-xl p-8 w-[700px]"
+        >
+          <h1 className="text-3xl font-bold text-center text-primary mb-2">研喵 YAM</h1>
+          <p className="text-center text-gray-500 mb-6">本地优先的考研择校数据工具</p>
+
+          {/* Enter Main Button */}
+          <div className="flex justify-center mb-6">
+            <motion.button
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={() => {
+                if (selectedMajors.size > 0) {
+                  onSelect(Array.from(selectedMajors)[0]);
+                } else if (crawledMajors.length > 0) {
+                  onSelect(crawledMajors[0].code);
+                }
+              }}
+              className="px-8 py-3 bg-primary text-white rounded-full font-medium text-lg shadow-lg hover:shadow-xl transition-shadow"
+            >
+              进入主界面
+            </motion.button>
+          </div>
+
+          {/* Crawled Majors List */}
+          <div className="border rounded-xl overflow-hidden">
+            {/* Header */}
+            <div className="grid grid-cols-[auto_1fr_auto_auto_auto] gap-4 px-4 py-3 bg-gray-50 text-sm text-gray-500 font-medium">
+              <div className="w-5"></div>
+              <div>专业名</div>
+              <div className="text-right">已采集</div>
+              <div className="text-right">院校</div>
+              <div className="w-8"></div>
+            </div>
+
+            {/* List */}
+            {crawledMajors.map((major, index) => (
+              <motion.div
+                key={major.code}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: index * 0.05 }}
+                className="grid grid-cols-[auto_1fr_auto_auto_auto] gap-4 px-4 py-3 border-t hover:bg-gray-50 transition-colors items-center"
+              >
+                {/* Checkbox */}
+                <input
+                  type="checkbox"
+                  checked={selectedMajors.has(major.code)}
+                  onChange={() => toggleMajorSelection(major.code)}
+                  className="w-5 h-5 rounded border-gray-300 text-primary focus:ring-primary"
+                />
+
+                {/* Major Name */}
+                <div className="flex items-center gap-2">
+                  <span className="text-gray-500 font-mono">{major.code}</span>
+                  <span className="font-medium">{major.name}</span>
+                </div>
+
+                {/* Collected Status */}
+                <div className="flex items-center gap-1 text-green-600">
+                  <Check size={16} />
+                  <span>{major.schoolCount}所</span>
+                </div>
+
+                {/* School Count */}
+                <div className="flex items-center gap-1 text-green-600">
+                  <Check size={16} />
+                  <span>{major.schoolCount}所</span>
+                </div>
+
+                {/* Actions */}
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => onStartCrawl?.(major.code)}
+                    className="p-1 text-gray-400 hover:text-primary transition-colors"
+                    title="刷新数据"
+                  >
+                    <RefreshCw size={16} />
+                  </button>
+                  <button
+                    onClick={() => onSelect(major.code)}
+                    className="p-1 text-gray-400 hover:text-primary transition-colors"
+                    title="进入查看"
+                  >
+                    <ChevronRight size={16} />
+                  </button>
+                </div>
+              </motion.div>
+            ))}
+          </div>
+
+          {/* Summary */}
+          <p className="text-sm text-gray-500 mt-4 text-center">
+            共 {crawledMajors.length} 个专业, {totalSchools} 所院校
+          </p>
+        </motion.div>
+      </motion.div>
+    );
+  }
+
+  // No data view - original three-column selector
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -96,14 +235,14 @@ export function SplashScreen({ onSelect }: SplashScreenProps) {
         initial={{ y: 30, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
         transition={{ delay: 0.2 }}
-        className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl p-8 w-[800px]"
+        className="bg-white rounded-2xl shadow-xl p-8 w-[800px]"
       >
         <h1 className="text-3xl font-bold text-center text-primary mb-2">研喵 YAM</h1>
         <p className="text-center text-gray-500 mb-6">本地优先的考研择校数据工具</p>
 
         {/* Degree Type Selector */}
         <div className="flex justify-center mb-4">
-          <div className="inline-flex rounded-lg bg-gray-100 dark:bg-gray-700 p-1">
+          <div className="inline-flex rounded-lg bg-gray-100 p-1">
             <button
               onClick={() => {
                 setDegreeType('academic');
@@ -113,8 +252,8 @@ export function SplashScreen({ onSelect }: SplashScreenProps) {
               }}
               className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
                 degreeType === 'academic'
-                  ? 'bg-white dark:bg-gray-600 text-primary shadow-sm'
-                  : 'text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white'
+                  ? 'bg-white text-primary shadow-sm'
+                  : 'text-gray-600 hover:text-gray-900'
               }`}
             >
               学术学位
@@ -128,8 +267,8 @@ export function SplashScreen({ onSelect }: SplashScreenProps) {
               }}
               className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
                 degreeType === 'professional'
-                  ? 'bg-white dark:bg-gray-600 text-primary shadow-sm'
-                  : 'text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white'
+                  ? 'bg-white text-primary shadow-sm'
+                  : 'text-gray-600 hover:text-gray-900'
               }`}
             >
               专业学位
@@ -144,7 +283,7 @@ export function SplashScreen({ onSelect }: SplashScreenProps) {
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="搜索专业名称或代码..."
-            className="w-full p-3 border rounded-lg dark:bg-gray-700 dark:border-gray-600"
+            className="w-full p-3 border rounded-lg"
           />
           {isSearching && (
             <button
@@ -191,7 +330,7 @@ export function SplashScreen({ onSelect }: SplashScreenProps) {
                   initial={{ opacity: 0, x: -10 }}
                   animate={{ opacity: 1, x: 0 }}
                   whileHover={{ x: 4 }}
-                  onClick={() => onSelect(cat.code)}
+                  onClick={() => onStartCrawl?.(cat.code)}
                   className="w-full text-left px-3 py-2 rounded text-sm mb-1 hover:bg-primary/10 transition-colors"
                 >
                   <span className="text-gray-500 mr-2">{cat.code}</span>
@@ -224,7 +363,7 @@ export function SplashScreen({ onSelect }: SplashScreenProps) {
                   className={`w-full text-left px-3 py-2 rounded text-sm mb-1 transition-colors ${
                     selectedCategory?.code === cat.code
                       ? 'bg-primary text-white'
-                      : 'hover:bg-gray-100 dark:hover:bg-gray-700'
+                      : 'hover:bg-gray-100'
                   }`}
                 >
                   <span className="text-xs opacity-60 mr-1">{cat.code}</span>
@@ -249,7 +388,7 @@ export function SplashScreen({ onSelect }: SplashScreenProps) {
                       className={`w-full text-left px-3 py-2 rounded text-sm mb-1 transition-colors ${
                         selectedDiscipline?.code === disc.code
                           ? 'bg-primary text-white'
-                          : 'hover:bg-gray-100 dark:hover:bg-gray-700'
+                          : 'hover:bg-gray-100'
                       }`}
                     >
                       <span className="text-xs opacity-60 mr-1">{disc.code}</span>
@@ -275,7 +414,7 @@ export function SplashScreen({ onSelect }: SplashScreenProps) {
                         animate={{ opacity: 1, x: 0 }}
                         exit={{ opacity: 0, x: 10 }}
                         whileHover={{ x: 4 }}
-                        onClick={() => onSelect(m.code)}
+                        onClick={() => onStartCrawl?.(m.code)}
                         className="w-full text-left px-3 py-2 rounded text-sm mb-1 hover:bg-primary/10 transition-colors"
                       >
                         <span className="text-gray-500 mr-2">{m.code}</span>
@@ -291,7 +430,7 @@ export function SplashScreen({ onSelect }: SplashScreenProps) {
                         initial={{ opacity: 0, x: -10 }}
                         animate={{ opacity: 1, x: 0 }}
                         whileHover={{ x: 4 }}
-                        onClick={() => onSelect(selectedDiscipline.code)}
+                        onClick={() => onStartCrawl?.(selectedDiscipline.code)}
                         className="w-full text-left px-3 py-2 rounded text-sm mb-1 hover:bg-primary/10 transition-colors bg-primary/5"
                       >
                         <span className="text-gray-500 mr-2">{selectedDiscipline.code}</span>
@@ -315,7 +454,7 @@ export function SplashScreen({ onSelect }: SplashScreenProps) {
                 initial={{ opacity: 0, x: -10 }}
                 animate={{ opacity: 1, x: 0 }}
                 whileHover={{ x: 4 }}
-                onClick={() => onSelect(cat.code)}
+                onClick={() => onStartCrawl?.(cat.code)}
                 className="w-full text-left px-3 py-2 rounded text-sm mb-1 hover:bg-primary/10 transition-colors"
               >
                 <span className="text-gray-500 mr-2">{cat.code}</span>
@@ -329,6 +468,11 @@ export function SplashScreen({ onSelect }: SplashScreenProps) {
             ))}
           </div>
         )}
+
+        {/* Manual Input Link */}
+        <p className="text-center text-sm text-gray-500 mt-4">
+          或 <button className="text-primary hover:underline">手动输入专业代码</button>
+        </p>
       </motion.div>
     </motion.div>
   );
