@@ -4,10 +4,10 @@ from nicegui import ui
 
 from yam.ui import router
 from yam.ui.pages import (
-    build_compare_page,
     build_fetch_page,
     build_schools_page,
     build_splash_page,
+    show_compare_dialog,
 )
 from yam.ui.theme import BG_BODY, BORDER, PRIMARY, TEXT_PRIMARY, TEXT_SECONDARY, css_variables
 
@@ -58,7 +58,6 @@ def _build_main_frame(major_code: str) -> None:
 
     # 注册页面
     router.register(router.PAGE_SCHOOLS, build_schools_page)
-    router.register(router.PAGE_COMPARE, build_compare_page)
     router.register(router.PAGE_FETCH, build_fetch_page)
 
     with ui.element("div").classes("column").style("height: 100vh; width: 100vw; overflow: hidden;"):
@@ -94,7 +93,7 @@ def _build_main_frame(major_code: str) -> None:
                             value="name",
                             label="排序",
                         ).props("dense outlined").classes("col").style("width: 160px;")
-                        ui.button("对比 0/3", on_click=lambda: router.navigate_to(router.PAGE_COMPARE, major_code=major_code)).props(
+                        ui.button("对比 0/3", on_click=lambda: show_compare_dialog(major_code, router.get_state().get("compare_ids", []))).props(
                             "outline color=primary dense"
                         )
                         ui.button("导出", on_click=lambda: None).props("outline color=primary dense icon=file_download")

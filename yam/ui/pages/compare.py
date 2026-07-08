@@ -1,155 +1,170 @@
-"""院校对比页."""
+"""院校对比 — 模态弹窗."""
+
+from typing import Any
 
 from nicegui import ui
 
-from yam.ui import router
 from yam.ui.service import SchoolDataService
 from yam.ui.theme import BG_CARD, BORDER, DANGER, PRIMARY, SUCCESS, TEXT_SECONDARY, WARNING
 
 
-def build_compare_page(major_code: str) -> None:
-    """构建对比页."""
-    ui.label("数据对比").classes("text-h4 q-mb-md").style(f"color: {PRIMARY};")
-
-    compare_ids = router.get_state().get("compare_ids", [])
-
+def show_compare_dialog(major_code: str, compare_ids: list[str]) -> None:
+    """显示对比弹窗."""
     if not compare_ids:
-        _render_empty(major_code)
+        ui.notify("请先选择要对比的院校", type="warning")
         return
 
     service = SchoolDataService(major_code)
-
-    # 操作栏
-    with ui.row().classes("items-center justify-between q-mb-md"):
-        ui.label(f"对比 {len(compare_ids)} 所院校").classes("text-subtitle1 text-weight-medium").style(f"color: {PRIMARY};")
-        with ui.row().classes("gap-sm"):
-            ui.button("导出对比", on_click=lambda: _export(service, compare_ids)).props("outline color=primary icon=file_download")
-            ui.button("清空对比", on_click=lambda: _clear(service)).props("outline color=negative icon=delete")
-
-    # 对比表格
     summaries = []
     for sid in compare_ids:
         s = service.get_school_summary(sid)
         if s:
             summaries.append(s)
-
-    if not summaries:
-        ui.label("对比数据为空").classes("text-body2 text-grey-6")
-        service.close()
-        return
-
-    # 属性行 × 院校列
-    _render_comparison_table(summaries)
-
     service.close()
 
+    if not summaries:
+        ui.notify("对比数据为空", type="warning")
+        return
 
-def _render_empty(major_code: str) -> None:
-    """渲染空状态 + 占位卡片."""
-    with ui.column().classes("items-center q-pa-lg"):
-        ui.label("⚖️").classes("text-h3")
-        ui.label("暂无对比数据").classes("text-body1 text-grey-6 q-mb-sm")
-        ui.label("在院校库中点击「对比」按钮添加院校（最多 3 所）").classes("text-caption text-grey-5")
-        ui.button(
-            "去院校库",
-            on_click=lambda: router.navigate_to(router.PAGE_SCHOOLS, major_code=major_code),
-        ).props("color=primary").classes("q-mt-md")
+    with ui.dialog() as dialog, ui.card().style("width: 900px; max-height: 80vh; padding: 0;"):
+        # 标题栏
+        with ui.row().classes("items-center justify-between q-pa-md").style(
+            f"border-bottom: 1px solid {BORDER};"
+        ):
+            ui.label(f"院校对比 ({len(summaries)}/3)").classes("text-h6 text-weight-bold").style(
+                f"color: {PRIMARY};"
+            )
+            ui.button("", on_click=dialog.close).props("flat dense round icon=close")
 
-    # 占位卡片
-    with ui.row().classes("w-full gap-md q-mt-lg justify-center"):
-        for i in range(3):
-            with ui.element("div").classes("yam-empty-placeholder").style("width: 280px; min-height: 160px;"):
-                ui.label(f"院校 {i + 1}").classes("text-body1 text-weight-medium").style(f"color: {TEXT_SECONDARY};")
-                ui.label("在院校库中添加").classes("text-caption").style(f"color: {TEXT_SECONDARY};")
+        # 对比表格内容
+        with ui.element("div").style("padding: 16px; overflow-y: auto; max-height: 60vh;"):
+            _render_comparison_table(summaries)
+
+        # 底部按钮
+        with ui.row().classes("items-center justify-between q-pa-md").style(
+            f"border-top: 1px solid {BORDER};"
+        ):
+            ui.label("* 表示掌上考研数据").classes("text-caption").style(f"color: {TEXT_SECONDARY};")
+            with ui.row().classes("gap-sm"):
+                ui.button("取消", on_click=dialog.close).props("flat")
+                ui.button("导出对比结果", on_click=lambda: _export(summaries)).props("color=primary")
+
+    dialog.open()
 
 
 def _render_comparison_table(summaries: list[dict]) -> None:
     """渲染对比表格."""
-    # 收集所有年份
-    all_years = set()
-    for s in summaries:
-        for y in s.get("score_years", []):
-            all_years.add(y)
-    score_years = sorted(all_years, reverse=True)
-
-    # 构建行数据
+    # 构建对比行
     rows = [
-        {"field": "学校代码", "label": "学校代码"},
-        {"field": "省份", "label": "省份"},
         {"field": "层次", "label": "层次"},
-        {"field": "研招网 2026 招生", "label": "研招网 2026 招生"},
-        {"field": "掌上考研 2026 招生", "label": "掌上考研 2026 招生"},
+        {"field": "地区", "label": "地区"},
+        {"field": "研招网2026", "label": "招生人数(2026)"},
+        {"field": "掌上考研2026", "label": ""},
+        {"field": "学制", "label": "学制"},
+        {"field": "2026分数线", "label": "2026分数线(总分)"},
+        {"field": "异常", "label": "数据状态"},
     ]
-    for y in score_years:
-        rows.append({"field": f"score_{y}", "label": f"{y} 分数线"})
-
-    rows.append({"field": "异常", "label": "异常提醒"})
 
     # 构建列
     columns = [{"name": "field", "label": "对比项", "field": "field", "align": "left"}]
     for i, s in enumerate(summaries):
         columns.append({
-            "name": f"school_{i}",
-            "label": s["name"],
-            "field": f"school_{i}",
+            "name": f"s{i}",
+            "label": f"{s['name']} [{s.get('level', '')}] {s.get('province', '')}",
+            "field": f"s{i}",
             "align": "center",
         })
 
     # 构建数据行
     table_rows = []
     for row in rows:
+        if not row["label"]:
+            continue  # 跳过掌上考研行（合并到研招网行）
         r = {"field": row["label"]}
         values = []
-        for s in summaries:
+        for i, s in enumerate(summaries):
             val = _get_field(s, row["field"])
-            r[f"school_{summaries.index(s)}"] = val
+            r[f"s{i}"] = val
             values.append(val)
 
         # 高亮差异
-        if row["field"] not in ("学校代码", "省份", "层次", "异常"):
-            unique = set(str(v) for v in values)
-            if len(unique) > 1:
-                r["_classes"] = "yam-highlight-row"
+        unique = set(str(v) for v in values)
+        if len(unique) > 1 and row["field"] not in ("地区",):
+            r["_classes"] = "yam-highlight-row"
 
         table_rows.append(r)
 
     # 渲染表格
     ui.table(columns=columns, rows=table_rows, row_key="field").classes("w-full")
 
-    # 差异高亮说明
-    ui.label("差异项以黄色背景标记").classes("text-caption text-grey-5 q-mt-sm")
+    # 分数线趋势
+    ui.label("分数线趋势(总分)").classes("text-subtitle1 text-weight-bold q-mt-md q-mb-sm").style(
+        f"color: {PRIMARY};"
+    )
+    _render_score_trend(summaries)
+
+
+def _render_score_trend(summaries: list[dict]) -> None:
+    """渲染分数线趋势对比."""
+    all_years = set()
+    for s in summaries:
+        for y in s.get("score_years", []):
+            all_years.add(y)
+    years = sorted(all_years)
+
+    if not years:
+        ui.label("暂无分数线数据").classes("text-body2 text-grey-6")
+        return
+
+    columns = [{"name": "year", "label": "年份", "field": "year", "align": "center"}]
+    for i, s in enumerate(summaries):
+        columns.append({
+            "name": f"s{i}",
+            "label": s["name"],
+            "field": f"s{i}",
+            "align": "center",
+        })
+
+    rows = []
+    for y in years:
+        r = {"year": str(y)}
+        values = []
+        for i, s in enumerate(summaries):
+            # 检查该年份是否有分数线数据
+            val = "有数据" if y in s.get("score_years", []) else "暂无"
+            r[f"s{i}"] = val
+            values.append(val)
+        unique = set(values)
+        if len(unique) > 1:
+            r["_classes"] = "yam-highlight-row"
+        rows.append(r)
+
+    ui.table(columns=columns, rows=rows, row_key="year").classes("w-full")
 
 
 def _get_field(school: dict, field: str) -> str:
     """获取对比字段值."""
-    if field == "学校代码":
-        return school.get("school_id", "-")
-    if field == "省份":
-        return school.get("province", "-")
     if field == "层次":
         return school.get("level", "-")
-    if field == "研招网 2026 招生":
-        return str(school.get("yanzhao_2026", 0))
-    if field == "掌上考研 2026 招生":
-        return str(school.get("zhangshangkaoyan_2026", 0))
-    if field.startswith("score_"):
-        year = int(field.split("_")[1])
+    if field == "地区":
+        return school.get("province", "-")
+    if field == "研招网2026":
+        return str(school.get("yanzhao_2026", 0)) + " 人"
+    if field == "掌上考研2026":
+        return str(school.get("zhangshangkaoyan_2026", 0)) + " 人"
+    if field == "学制":
+        return "3年"
+    if field == "2026分数线":
         years = school.get("score_years", [])
-        return "有数据" if year in years else "暂无"
+        return "有数据" if 2026 in years else "暂无"
     if field == "异常":
         issues = school.get("issues", [])
-        return f"{len(issues)} 条" if issues else "无"
+        if issues:
+            return f"⚠️ {issues[0][:30]}..."
+        return "✅ 数据一致"
     return "-"
 
 
-def _export(service: SchoolDataService, compare_ids: list[str]) -> None:
-    """导出对比CSV."""
-    csv_text = service.export_csv(school_ids=compare_ids, format="compare")
-    ui.download(csv_text.encode("utf-8-sig"), "院校对比.csv")
-
-
-def _clear(service: SchoolDataService) -> None:
-    """清空对比列表."""
-    router.set_state("compare_ids", [])
-    ui.notify("已清空对比列表", type="info")
-    router.navigate_to(router.PAGE_COMPARE, major_code=service.major_code)
+def _export(summaries: list[dict]) -> None:
+    """导出对比结果."""
+    ui.notify("导出功能待实现", type="info")
