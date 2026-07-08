@@ -1,6 +1,7 @@
-import { ThemeProvider } from './components/ThemeProvider';
-import { useTheme } from './lib/theme';
 import { useEffect, useState } from 'react';
+import { ThemeProvider } from './components/ThemeProvider';
+import { AppLayout } from './components/AppLayout';
+import { useTheme } from './lib/theme';
 import { fetchSchools, School } from './lib/db';
 
 function ThemeToggle() {
@@ -8,7 +9,7 @@ function ThemeToggle() {
   return (
     <button
       onClick={toggle}
-      className="fixed top-4 right-4 p-2 rounded-lg bg-gray-200 dark:bg-gray-700 transition-colors"
+      className="fixed top-4 right-4 p-2 rounded-lg bg-gray-200 dark:bg-gray-700 transition-colors z-50"
     >
       {theme === 'light' ? '🌙' : '☀️'}
     </button>
@@ -24,14 +25,11 @@ export default function App() {
 
   return (
     <ThemeProvider>
-      <div className="min-h-screen bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-300">
+      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-300">
         <ThemeToggle />
-        <div className="p-4">
-          <h1>共 {schools.length} 所院校</h1>
-          {schools.slice(0, 5).map(s => (
-            <div key={s.school_id}>{s.name} - {s.province}</div>
-          ))}
-        </div>
+        <AppLayout majorCode="085410" totalSchools={schools.length}>
+          <div>School list will go here</div>
+        </AppLayout>
       </div>
     </ThemeProvider>
   );
