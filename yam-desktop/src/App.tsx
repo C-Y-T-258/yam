@@ -1,9 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { ThemeProvider } from './components/ThemeProvider';
 import { AppLayout } from './components/AppLayout';
 import { SchoolCard } from './components/SchoolCard';
+import { SearchBar } from './components/SearchBar';
+import { FilterPanel } from './components/FilterPanel';
 import { useTheme } from './lib/theme';
 import { fetchSchools, fetchScoreLines, School, ScoreLine } from './lib/db';
+import { useFilterStore } from './stores/filterStore';
 
 function ThemeToggle() {
   const { theme, toggle } = useTheme();
@@ -20,6 +23,7 @@ function ThemeToggle() {
 export default function App() {
   const [schools, setSchools] = useState<School[]>([]);
   const [scoreLines, setScoreLines] = useState<Record<string, ScoreLine[]>>({});
+  const { searchQuery, selectedLevels } = useFilterStore();
 
   useEffect(() => {
     fetchSchools('085410').then(async (s) => {
@@ -32,13 +36,36 @@ export default function App() {
     });
   }, []);
 
+  const filteredSchools = useMemo(() => {
+    return schools.filter((school) => {
+      // Search filter
+      const matchesSearch = searchQuery === '' || 
+        school.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (school.province && school.province.toLowerCase().includes(searchQuery.toLowerCase()));
+      
+      // Level filter
+      const levelTag = school.level?.includes('985') ? '985'
+        : school.level?.includes('211') ? '211'
+        : school.level?.includes('一流') ? '双一流'
+        : '普通';
+      
+      const matchesLevel = selectedLevels.length === 0 || selectedLevels.includes(levelTag);
+      
+      return matchesSearch && matchesLevel;
+    });
+  }, [schools, searchQuery, selectedLevels]);
+
   return (
     <ThemeProvider>
       <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-300">
         <ThemeToggle />
-        <AppLayout majorCode="085410" totalSchools={schools.length}>
+        <AppLayout majorCode="085410" totalSchools={filteredSchools.length}>
           <div className="max-w-4xl">
-            {schools.slice(0, 20).map((school, i) => (
+            <div className="mb-6 space-y-4">
+              <SearchBar />
+              <FilterPanel />
+            </div>
+            {filteredSchools.map((school, i) => (
               <SchoolCard
                 key={school.school_id}
                 school={school}
