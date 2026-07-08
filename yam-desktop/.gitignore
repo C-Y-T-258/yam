@@ -16,3 +16,8 @@ Thumbs.db
 # Environment
 .env
 .env.local
+
+# Database (user data)
+yam.db
+yam.db-shm
+yam.db-wal
