@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { ThemeProvider } from './components/ThemeProvider';
 import { AppLayout } from './components/AppLayout';
+import { SchoolCard } from './components/SchoolCard';
 import { useTheme } from './lib/theme';
-import { fetchSchools, School } from './lib/db';
+import { fetchSchools, fetchScoreLines, School, ScoreLine } from './lib/db';
 
 function ThemeToggle() {
   const { theme, toggle } = useTheme();
@@ -18,9 +19,17 @@ function ThemeToggle() {
 
 export default function App() {
   const [schools, setSchools] = useState<School[]>([]);
+  const [scoreLines, setScoreLines] = useState<Record<string, ScoreLine[]>>({});
 
   useEffect(() => {
-    fetchSchools('085410').then(setSchools);
+    fetchSchools('085410').then(async (s) => {
+      setSchools(s);
+      const scores: Record<string, ScoreLine[]> = {};
+      for (const school of s.slice(0, 20)) {
+        scores[school.school_id] = await fetchScoreLines(school.school_id, '085410');
+      }
+      setScoreLines(scores);
+    });
   }, []);
 
   return (
@@ -28,7 +37,16 @@ export default function App() {
       <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors duration-300">
         <ThemeToggle />
         <AppLayout majorCode="085410" totalSchools={schools.length}>
-          <div>School list will go here</div>
+          <div className="max-w-4xl">
+            {schools.slice(0, 20).map((school, i) => (
+              <SchoolCard
+                key={school.school_id}
+                school={school}
+                scoreLines={scoreLines[school.school_id] || []}
+                index={i}
+              />
+            ))}
+          </div>
         </AppLayout>
       </div>
     </ThemeProvider>
