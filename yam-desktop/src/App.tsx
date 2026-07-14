@@ -3,7 +3,7 @@ import { useAppStore, type Page } from './stores/appStore';
 import { fetchAvailableMajors } from './lib/db';
 import {
   ACADEMIC_CATEGORIES,
-  PROFESSIONAL_DEGREE_CATEGORIES,
+  PROFESSIONAL_CATEGORIES,
 } from './data/majors';
 
 // Pages
@@ -26,17 +26,12 @@ function findMajorName(code: string): string {
       }
     }
   }
-  // 2. 专业学位：精确匹配 4 位 category code
-  for (const cat of PROFESSIONAL_DEGREE_CATEGORIES) {
-    if (cat.code === code) return cat.name;
-  }
-  // 3. 专业学位 6 位代码：前 4 位匹配 category，后 2 位映射 subField
-  if (code.length === 6) {
-    const catCode = code.slice(0, 4);
-    const subIdx = parseInt(code.slice(4), 10) - 1;
-    for (const cat of PROFESSIONAL_DEGREE_CATEGORIES) {
-      if (cat.code === catCode && cat.subFields && subIdx >= 0 && subIdx < cat.subFields.length) {
-        return `${cat.name}（${cat.subFields[subIdx]}）`;
+  // 2. 专业学位：精确匹配 4 位类别代码或 6 位专业代码
+  for (const cat of PROFESSIONAL_CATEGORIES) {
+    for (const disc of cat.disciplines) {
+      if (disc.code === code) return disc.name;
+      for (const m of disc.majors) {
+        if (m.code === code) return m.name;
       }
     }
   }

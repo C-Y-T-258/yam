@@ -1,113 +1,86 @@
-import { useState, useMemo, useRef, useEffect } from 'react';
+import { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronLeft } from 'lucide-react';
-import {
-  ACADEMIC_CATEGORIES,
-  PROFESSIONAL_DEGREE_CATEGORIES,
-} from '../data/majors';
-import type {
-  DisciplineCategory,
-  FirstLevelDiscipline,
-  Major,
-  ProfessionalDegreeCategory,
-} from '../data/majors';
+import { ChevronLeft, GraduationCap, Award } from 'lucide-react';
+import { ACADEMIC_CATEGORIES, PROFESSIONAL_CATEGORIES } from '../data/majors';
+import type { DisciplineCategory, FirstLevelDiscipline, Major } from '../data/majors';
 import { useAppStore } from '../stores/appStore';
 
 type DegreeType = 'academic' | 'professional';
+
+interface SearchResult {
+  type: DegreeType;
+  category: DisciplineCategory;
+  discipline: FirstLevelDiscipline;
+  major: Major;
+}
 
 export function MajorSelectPage() {
   const { setPage, addMajor, crawledMajors, setCrawlTarget } = useAppStore();
   const [degreeType, setDegreeType] = useState<DegreeType>('academic');
   const [selectedCategory, setSelectedCategory] = useState<DisciplineCategory | null>(null);
   const [selectedDiscipline, setSelectedDiscipline] = useState<FirstLevelDiscipline | null>(null);
-  const [selectedProfCategory, setSelectedProfCategory] = useState<ProfessionalDegreeCategory | null>(null);
-  const [showSubFields, setShowSubFields] = useState(false);
-  const [selectedSubField, setSelectedSubField] = useState<string | null>(null);
-  const [selectedMajor, setSelectedMajor] = useState<{ code: string; name: string } | null>(null);
+  const [selectedMajor, setSelectedMajor] = useState<Major | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const subFieldsRef = useRef<HTMLDivElement>(null);
 
-  const filteredAcademicMajors = useMemo(() => {
-    if (!searchQuery.trim()) return [];
-    const q = searchQuery.toLowerCase();
-    const results: Array<{
-      type: 'academic';
-      category: DisciplineCategory;
-      discipline: FirstLevelDiscipline;
-      major: Major;
-    }> = [];
+  const categories = degreeType === 'academic' ? ACADEMIC_CATEGORIES : PROFESSIONAL_CATEGORIES;
 
-    for (const cat of ACADEMIC_CATEGORIES) {
-      for (const disc of cat.disciplines) {
-        if (disc.majors.length === 0) {
-          if (disc.name.toLowerCase().includes(q) || disc.code.includes(q)) {
-            results.push({
-              type: 'academic',
-              category: cat,
-              discipline: disc,
-              major: { code: disc.code, name: disc.name },
-            });
-          }
-          continue;
-        }
-        for (const major of disc.majors) {
-          if (major.name.toLowerCase().includes(q) || major.code.includes(q)) {
-            results.push({
-              type: 'academic',
-              category: cat,
-              discipline: disc,
-              major,
-            });
+  // 构建跨学位类型的统一搜索索引
+  const allSearchResults = useMemo<SearchResult[]>(() => {
+    const results: SearchResult[] = [];
+    const collect = (type: DegreeType, cats: DisciplineCategory[]) => {
+      for (const cat of cats) {
+        for (const disc of cat.disciplines) {
+          for (const major of disc.majors) {
+            results.push({ type, category: cat, discipline: disc, major });
           }
         }
       }
-    }
+    };
+    collect('academic', ACADEMIC_CATEGORIES);
+    collect('professional', PROFESSIONAL_CATEGORIES);
     return results;
-  }, [searchQuery]);
+  }, []);
 
-  const filteredProfessionalMajors = useMemo(() => {
+  const filteredResults = useMemo(() => {
     if (!searchQuery.trim()) return [];
     const q = searchQuery.toLowerCase();
-    return PROFESSIONAL_DEGREE_CATEGORIES.filter(
-      (cat) =>
-        cat.name.toLowerCase().includes(q) ||
-        cat.code.includes(q) ||
-        cat.subFields?.some((f) => f.toLowerCase().includes(q))
+    return allSearchResults.filter(
+      (item) =>
+        item.major.name.toLowerCase().includes(q) ||
+        item.major.code.includes(q) ||
+        item.discipline.name.toLowerCase().includes(q) ||
+        item.discipline.code.includes(q) ||
+        item.category.name.toLowerCase().includes(q) ||
+        item.category.code.includes(q)
     );
-  }, [searchQuery]);
+  }, [searchQuery, allSearchResults]);
 
   const isSearching = searchQuery.trim().length > 0;
   const isExistingMajor = selectedMajor
     ? crawledMajors.some((m) => m.code === selectedMajor.code)
     : false;
 
-  const handleSelectMajor = (code: string, name: string) => {
-    setSelectedMajor({ code, name });
-    setShowSubFields(false);
+  const handleSelectMajor = (major: Major) => {
+    setSelectedMajor(major);
   };
 
-  const handleSelectProfCategory = (cat: ProfessionalDegreeCategory) => {
-    const hasSubFields = !!(cat.subFields && cat.subFields.length > 0);
-    setSelectedProfCategory(cat);
-    setSelectedSubField(null);
+  const handleSelectDiscipline = (disc: FirstLevelDiscipline) => {
+    setSelectedDiscipline(disc);
     setSelectedMajor(null);
-    // 只在状态变化时更新，避免动画重复播放
-    if (hasSubFields !== showSubFields) {
-      setShowSubFields(hasSubFields);
-    }
-    if (!hasSubFields) {
-      setSelectedMajor({ code: cat.code, name: cat.name });
-    }
   };
 
-  const handleSelectSubField = (subField: string) => {
-    setSelectedSubField(subField);
-    if (selectedProfCategory) {
-      setSelectedMajor({
-        code: selectedProfCategory.code,
-        name: `${selectedProfCategory.name} - ${subField}`,
-      });
-    }
+  const handleSelectCategory = (cat: DisciplineCategory) => {
+    setSelectedCategory(cat);
+    setSelectedDiscipline(null);
+    setSelectedMajor(null);
+  };
+
+  const handleSelectSearchResult = (result: SearchResult) => {
+    setDegreeType(result.type);
+    setSelectedCategory(result.category);
+    setSelectedDiscipline(result.discipline);
+    setSelectedMajor(result.major);
+    setSearchQuery('');
   };
 
   const handleConfirm = () => {
@@ -131,15 +104,13 @@ export function MajorSelectPage() {
     setPage('major-management');
   };
 
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (subFieldsRef.current && !subFieldsRef.current.contains(event.target as Node)) {
-        setShowSubFields(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
+  const handleDegreeTypeChange = (type: DegreeType) => {
+    setDegreeType(type);
+    setSelectedCategory(null);
+    setSelectedDiscipline(null);
+    setSelectedMajor(null);
+    setSearchQuery('');
+  };
 
   return (
     <div className="min-h-screen bg-white">
@@ -157,49 +128,33 @@ export function MajorSelectPage() {
       </div>
 
       {/* Content */}
-      <div className="max-w-4xl mx-auto px-6 py-8">
+      <div className="max-w-5xl mx-auto px-6 py-8">
         <h1 className="text-3xl font-bold text-gray-900 mb-2">选择专业</h1>
-        <p className="text-gray-500 mb-6">选择需要采集数据的专业。</p>
+        <p className="text-gray-500 mb-6">选择需要采集数据的专业。数据来自掌上考研专业目录。</p>
 
         {/* Degree Type Selector */}
         <div className="flex justify-center mb-4">
           <div className="inline-flex rounded-lg bg-gray-100 p-1">
             <button
-              onClick={() => {
-                setDegreeType('academic');
-                setSelectedCategory(null);
-                setSelectedDiscipline(null);
-                setSelectedProfCategory(null);
-                setShowSubFields(false);
-                setSelectedSubField(null);
-                setSelectedMajor(null);
-                setSearchQuery('');
-              }}
-              className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+              onClick={() => handleDegreeTypeChange('academic')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
                 degreeType === 'academic'
                   ? 'bg-white text-[#1e3a5f] shadow-sm'
                   : 'text-gray-600 hover:text-gray-900'
               }`}
             >
+              <GraduationCap size={16} />
               学术学位
             </button>
             <button
-              onClick={() => {
-                setDegreeType('professional');
-                setSelectedCategory(null);
-                setSelectedDiscipline(null);
-                setSelectedProfCategory(null);
-                setShowSubFields(false);
-                setSelectedSubField(null);
-                setSelectedMajor(null);
-                setSearchQuery('');
-              }}
-              className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+              onClick={() => handleDegreeTypeChange('professional')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
                 degreeType === 'professional'
                   ? 'bg-white text-[#1e3a5f] shadow-sm'
                   : 'text-gray-600 hover:text-gray-900'
               }`}
             >
+              <Award size={16} />
               专业学位
             </button>
           </div>
@@ -211,7 +166,7 @@ export function MajorSelectPage() {
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="搜索专业名称或代码..."
+            placeholder="搜索专业名称或代码，支持跨学位类型搜索..."
             className="w-full p-3 border border-gray-200 rounded-lg focus:outline-none focus:border-[#1e3a5f]"
           />
           {isSearching && (
@@ -226,73 +181,54 @@ export function MajorSelectPage() {
 
         {/* Search Results */}
         {isSearching ? (
-          <div className="border border-gray-200 rounded-lg p-3 h-64 overflow-auto">
-            {degreeType === 'academic' ? (
-              filteredAcademicMajors.length > 0 ? (
-                filteredAcademicMajors.map((item) => (
-                  <motion.button
-                    key={item.major.code}
-                    initial={{ opacity: 0, x: -10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    whileHover={{ x: 4 }}
-                    onClick={() => handleSelectMajor(item.major.code, item.major.name)}
-                    className={`w-full text-left px-3 py-2 rounded text-sm mb-1 transition-colors ${
-                      selectedMajor?.code === item.major.code
-                        ? 'bg-[#1e3a5f] text-white'
-                        : 'hover:bg-[#1e3a5f]/10'
-                    }`}
-                  >
-                    <span className="text-gray-500 mr-2">{item.major.code}</span>
-                    {item.major.name}
-                    <span className="text-xs text-gray-400 ml-2">
-                      {item.category.name} · {item.discipline.name}
-                    </span>
-                  </motion.button>
-                ))
-              ) : (
-                <p className="text-center text-gray-500 py-8">未找到匹配的专业</p>
-              )
-            ) : filteredProfessionalMajors.length > 0 ? (
-              filteredProfessionalMajors.map((cat) => (
+          <div className="border border-gray-200 rounded-lg p-3 h-80 overflow-auto">
+            {filteredResults.length > 0 ? (
+              filteredResults.map((item, index) => (
                 <motion.button
-                  key={cat.code}
+                  key={`${item.type}-${item.major.code}-${index}`}
                   initial={{ opacity: 0, x: -10 }}
                   animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: Math.min(index * 0.01, 0.2) }}
                   whileHover={{ x: 4 }}
-                  onClick={() => handleSelectProfCategory(cat)}
+                  onClick={() => handleSelectSearchResult(item)}
                   className={`w-full text-left px-3 py-2 rounded text-sm mb-1 transition-colors ${
-                    selectedProfCategory?.code === cat.code
+                    selectedMajor?.code === item.major.code && degreeType === item.type
                       ? 'bg-[#1e3a5f] text-white'
                       : 'hover:bg-[#1e3a5f]/10'
                   }`}
                 >
-                  <span className="text-gray-500 mr-2">{cat.code}</span>
-                  {cat.name}
-                  {cat.subFields && (
-                    <span className="text-xs text-gray-400 ml-2">
-                      ({cat.subFields.length}个方向)
+                  <div className="flex items-center gap-2">
+                    <span className="text-gray-500 mr-2 font-mono">{item.major.code}</span>
+                    <span className="font-medium">{item.major.name}</span>
+                    <span
+                      className={`text-xs px-1.5 py-0.5 rounded ${
+                        item.type === 'academic'
+                          ? 'bg-blue-50 text-blue-600'
+                          : 'bg-green-50 text-green-600'
+                      }`}
+                    >
+                      {item.type === 'academic' ? '学硕' : '专硕'}
                     </span>
-                  )}
+                  </div>
+                  <div className="text-xs text-gray-400 ml-[72px]">
+                    {item.category.name} · {item.discipline.name}
+                  </div>
                 </motion.button>
               ))
             ) : (
               <p className="text-center text-gray-500 py-8">未找到匹配的专业</p>
             )}
           </div>
-        ) : degreeType === 'academic' ? (
-          /* Academic: 3-column cascading */
+        ) : (
+          /* Cascading: 3-column layout for both degree types */
           <div className="grid grid-cols-3 gap-4">
-            <div className="border rounded-lg p-3 h-64 overflow-auto">
+            <div className="border rounded-lg p-3 h-80 overflow-auto">
               <h3 className="text-sm font-medium text-gray-500 mb-2">学科门类</h3>
-              {ACADEMIC_CATEGORIES.map((cat) => (
+              {categories.map((cat) => (
                 <motion.button
                   key={cat.code}
                   whileHover={{ x: 4 }}
-                  onClick={() => {
-                    setSelectedCategory(cat);
-                    setSelectedDiscipline(null);
-                    setSelectedMajor(null);
-                  }}
+                  onClick={() => handleSelectCategory(cat)}
                   className={`w-full text-left px-3 py-2 rounded text-sm mb-1 transition-colors ${
                     selectedCategory?.code === cat.code
                       ? 'bg-[#1e3a5f] text-white'
@@ -305,8 +241,10 @@ export function MajorSelectPage() {
               ))}
             </div>
 
-            <div className="border rounded-lg p-3 h-64 overflow-auto">
-              <h3 className="text-sm font-medium text-gray-500 mb-2">一级学科</h3>
+            <div className="border rounded-lg p-3 h-80 overflow-auto">
+              <h3 className="text-sm font-medium text-gray-500 mb-2">
+                {degreeType === 'academic' ? '一级学科' : '专业学位类别'}
+              </h3>
               <AnimatePresence mode="wait">
                 {selectedCategory ? (
                   selectedCategory.disciplines.map((disc) => (
@@ -316,10 +254,7 @@ export function MajorSelectPage() {
                       animate={{ opacity: 1, x: 0 }}
                       exit={{ opacity: 0, x: 10 }}
                       whileHover={{ x: 4 }}
-                      onClick={() => {
-                        setSelectedDiscipline(disc);
-                        setSelectedMajor(null);
-                      }}
+                      onClick={() => handleSelectDiscipline(disc)}
                       className={`w-full text-left px-3 py-2 rounded text-sm mb-1 transition-colors ${
                         selectedDiscipline?.code === disc.code
                           ? 'bg-[#1e3a5f] text-white'
@@ -336,7 +271,7 @@ export function MajorSelectPage() {
               </AnimatePresence>
             </div>
 
-            <div className="border rounded-lg p-3 h-64 overflow-auto">
+            <div className="border rounded-lg p-3 h-80 overflow-auto">
               <h3 className="text-sm font-medium text-gray-500 mb-2">专业</h3>
               <AnimatePresence mode="wait">
                 {selectedDiscipline ? (
@@ -348,14 +283,14 @@ export function MajorSelectPage() {
                         animate={{ opacity: 1, x: 0 }}
                         exit={{ opacity: 0, x: 10 }}
                         whileHover={{ x: 4 }}
-                        onClick={() => handleSelectMajor(m.code, m.name)}
+                        onClick={() => handleSelectMajor(m)}
                         className={`w-full text-left px-3 py-2 rounded text-sm mb-1 transition-colors ${
                           selectedMajor?.code === m.code
                             ? 'bg-[#1e3a5f] text-white'
                             : 'hover:bg-[#1e3a5f]/10'
                         }`}
                       >
-                        <span className="text-gray-500 mr-2">{m.code}</span>
+                        <span className="text-gray-500 mr-2 font-mono">{m.code}</span>
                         {m.name}
                       </motion.button>
                     ))
@@ -366,87 +301,24 @@ export function MajorSelectPage() {
                         initial={{ opacity: 0, x: -10 }}
                         animate={{ opacity: 1, x: 0 }}
                         whileHover={{ x: 4 }}
-                        onClick={() => handleSelectMajor(selectedDiscipline.code, selectedDiscipline.name)}
+                        onClick={() => handleSelectMajor(selectedDiscipline)}
                         className={`w-full text-left px-3 py-2 rounded text-sm transition-colors bg-[#1e3a5f]/5 ${
                           selectedMajor?.code === selectedDiscipline.code
                             ? 'bg-[#1e3a5f] text-white'
                             : ''
                         }`}
                       >
-                        <span className="text-gray-500 mr-2">{selectedDiscipline.code}</span>
+                        <span className="text-gray-500 mr-2 font-mono">{selectedDiscipline.code}</span>
                         {selectedDiscipline.name}
                       </motion.button>
                     </div>
                   )
                 ) : (
-                  <p className="text-center text-gray-400 py-8 text-sm">请选择一级学科</p>
+                  <p className="text-center text-gray-400 py-8 text-sm">
+                    {degreeType === 'academic' ? '请选择一级学科' : '请选择专业学位类别'}
+                  </p>
                 )}
               </AnimatePresence>
-            </div>
-          </div>
-        ) : (
-          /* Professional: Two-column layout */
-          <div className="flex gap-4 h-64">
-            {/* Left: Category list */}
-            <div
-              onMouseDown={(e) => e.stopPropagation()}
-              className={`border rounded-lg overflow-hidden transition-all duration-200 ${showSubFields ? 'w-1/2' : 'w-full'}`}
-            >
-              <div className="px-3 py-2 bg-gray-50 border-b">
-                <h3 className="text-sm font-medium text-gray-600">专业学位类别</h3>
-              </div>
-              <div className="h-[calc(100%-36px)] overflow-auto">
-                {PROFESSIONAL_DEGREE_CATEGORIES.map((cat) => (
-                  <button
-                    key={cat.code}
-                    onClick={() => handleSelectProfCategory(cat)}
-                    className={`w-full text-left px-3 py-2 text-sm transition-colors flex items-center justify-between ${
-                      selectedProfCategory?.code === cat.code
-                        ? 'bg-[#1e3a5f] text-white'
-                        : 'hover:bg-[#1e3a5f]/10'
-                    }`}
-                  >
-                    <div>
-                      <span className="text-gray-500 mr-2">{cat.code}</span>
-                      {cat.name}
-                    </div>
-                    {cat.subFields && cat.subFields.length > 0 && (
-                      <span className={`text-xs ${selectedProfCategory?.code === cat.code ? 'text-white/70' : 'text-gray-400'}`}>
-                        ({cat.subFields.length}个方向)
-                      </span>
-                    )}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Right: SubFields - always rendered when showSubFields is true */}
-            <div
-              ref={subFieldsRef}
-              className={`border rounded-lg overflow-hidden transition-all duration-200 ${
-                showSubFields ? 'w-1/2 opacity-100' : 'w-0 opacity-0 border-0'
-              }`}
-            >
-              <div className="px-3 py-2 bg-gray-50 border-b">
-                <h3 className="text-sm font-medium text-gray-600">
-                  {selectedProfCategory?.name || '选择'} - 研究方向
-                </h3>
-              </div>
-              <div className="h-[calc(100%-36px)] overflow-auto">
-                {selectedProfCategory?.subFields?.map((field) => (
-                  <button
-                    key={field}
-                    onClick={() => handleSelectSubField(field)}
-                    className={`w-full text-left px-3 py-2 text-sm transition-colors ${
-                      selectedSubField === field
-                        ? 'bg-[#1e3a5f] text-white'
-                        : 'hover:bg-[#1e3a5f]/10'
-                    }`}
-                  >
-                    {field}
-                  </button>
-                ))}
-              </div>
             </div>
           </div>
         )}
