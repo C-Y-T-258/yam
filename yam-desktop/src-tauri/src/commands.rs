@@ -6,6 +6,7 @@ use crate::db::{
     WorkspaceSchool,
 };
 use serde::Serialize;
+use std::sync::{Arc, Mutex};
 use tauri::State;
 
 #[tauri::command]
@@ -200,4 +201,121 @@ pub fn sync_workspace_data(major_code: String) -> Result<String, String> {
     } else {
         Err(String::from_utf8_lossy(&output.stderr).to_string())
     }
+}
+
+#[derive(Clone, Serialize, Default)]
+pub struct CrawlProgress {
+    pub running: bool,
+    pub major_code: String,
+    pub current: i32,
+    pub total: i32,
+    pub current_name: String,
+    pub done: bool,
+    pub success: i32,
+    pub failed: i32,
+    pub skipped: i32,
+    pub error: Option<String>,
+}
+
+pub type CrawlState = Arc<Mutex<CrawlProgress>>;
+
+#[tauri::command]
+pub fn run_crawl(state: State<'_, CrawlState>, major_code: String) -> Result<(), String> {
+    {
+        let mut progress = state.lock().unwrap();
+        if progress.running {
+            return Err("已有采集任务在运行".to_string());
+        }
+        *progress = CrawlProgress {
+            running: true,
+            major_code: major_code.clone(),
+            current: 0,
+            total: 0,
+            current_name: String::new(),
+            done: false,
+            success: 0,
+            failed: 0,
+            skipped: 0,
+            error: None,
+        };
+    }
+
+    let state_clone = state.inner().clone();
+    std::thread::spawn(move || {
+        let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.to_path_buf())
+            .expect("无法确定仓库根目录");
+
+        let python = if cfg!(windows) { "python" } else { "python3" };
+
+        let mut child = std::process::Command::new(python)
+            .arg("-m")
+            .arg("yam.cli")
+            .arg("fetch")
+            .arg("--major")
+            .arg(&major_code)
+            .current_dir(&repo_root)
+            .env("PYTHONPATH", &repo_root)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("启动采集脚本失败");
+
+        let stdout = child.stdout.take().expect("无法获取 stdout");
+        use std::io::{BufRead, BufReader};
+        let reader = BufReader::new(stdout);
+        for line in reader.lines().flatten() {
+            if line.starts_with("YAM_TOTAL ") {
+                if let Ok(total) = line[10..].trim().parse::<i32>() {
+                    let mut p = state_clone.lock().unwrap();
+                    p.total = total;
+                }
+            } else if line.starts_with("YAM_PROGRESS ") {
+                let rest = &line[13..];
+                let space_idx = rest.find(' ').unwrap_or(rest.len());
+                let progress_part = &rest[..space_idx];
+                let name = rest[space_idx..].trim().to_string();
+                let nums: Vec<&str> = progress_part.split('/').collect();
+                if nums.len() == 2 {
+                    if let (Ok(current), Ok(total)) = (nums[0].parse::<i32>(), nums[1].parse::<i32>()) {
+                        let mut p = state_clone.lock().unwrap();
+                        p.current = current;
+                        p.total = total;
+                        p.current_name = name;
+                    }
+                }
+            } else if line.starts_with("YAM_DONE ") {
+                let parts: Vec<&str> = line[9..].split_whitespace().collect();
+                if parts.len() == 3 {
+                    if let (Ok(success), Ok(failed), Ok(skipped)) = (
+                        parts[0].parse::<i32>(),
+                        parts[1].parse::<i32>(),
+                        parts[2].parse::<i32>(),
+                    ) {
+                        let mut p = state_clone.lock().unwrap();
+                        p.success = success;
+                        p.failed = failed;
+                        p.skipped = skipped;
+                    }
+                }
+            }
+        }
+
+        let status = child.wait().expect("等待子进程失败");
+        let mut p = state_clone.lock().unwrap();
+        p.running = false;
+        p.done = true;
+        if !status.success() {
+            p.error = Some("采集脚本异常退出".to_string());
+        }
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_crawl_progress(state: State<'_, CrawlState>) -> CrawlProgress {
+    state.lock().unwrap().clone()
 }

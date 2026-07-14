@@ -23,6 +23,7 @@ fn main() {
             db::init_schema(&conn).expect("Failed to initialize database schema");
             db::seed_data(&conn).expect("Failed to seed database");
             app.manage(DbConn(Mutex::new(conn)));
+            app.manage(commands::CrawlState::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -37,6 +38,8 @@ fn main() {
             commands::add_recent_view_command,
             commands::clear_recent_views_command,
             commands::sync_workspace_data,
+            commands::run_crawl,
+            commands::get_crawl_progress,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

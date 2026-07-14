@@ -1,6 +1,18 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { SlidersHorizontal, MapPin, ChevronDown, ChevronRight } from 'lucide-react';
+import {
+  SlidersHorizontal,
+  MapPin,
+  GraduationCap,
+  BookOpen,
+  Clock,
+  FileText,
+  Award,
+  ChevronDown,
+  ChevronRight,
+  X,
+  ArrowUpDown,
+} from 'lucide-react';
 import {
   REGION_ONE_PROVINCES,
   REGION_TWO_PROVINCES,
@@ -24,6 +36,9 @@ export function WorkspaceFilterPanel({
   const [showProvincePanel, setShowProvincePanel] = useState(false);
   const [showLevelPanel, setShowLevelPanel] = useState(false);
   const [showExamSubjectPanel, setShowExamSubjectPanel] = useState(false);
+  const [showStudyModePanel, setShowStudyModePanel] = useState(false);
+  const [showExamTypePanel, setShowExamTypePanel] = useState(false);
+  const [showSpecialPlanPanel, setShowSpecialPlanPanel] = useState(false);
   const [showMoreFilters, setShowMoreFilters] = useState(false);
   const [moreFiltersDraft, setMoreFiltersDraft] = useState({
     minScoreMin: '',
@@ -39,8 +54,8 @@ export function WorkspaceFilterPanel({
     businessTwoMax: '',
   });
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
-    score: false,
-    enroll: false,
+    score: true,
+    enroll: true,
     subjectScore: false,
     department: false,
   });
@@ -48,27 +63,63 @@ export function WorkspaceFilterPanel({
   const provincePanelRef = useRef<HTMLDivElement>(null);
   const levelPanelRef = useRef<HTMLDivElement>(null);
   const examSubjectPanelRef = useRef<HTMLDivElement>(null);
+  const studyModePanelRef = useRef<HTMLDivElement>(null);
+  const examTypePanelRef = useRef<HTMLDivElement>(null);
+  const specialPlanPanelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (provincePanelRef.current && !provincePanelRef.current.contains(event.target as Node)) {
+      const target = event.target as Node;
+      if (provincePanelRef.current && !provincePanelRef.current.contains(target)) {
         setShowProvincePanel(false);
       }
-      if (levelPanelRef.current && !levelPanelRef.current.contains(event.target as Node)) {
+      if (levelPanelRef.current && !levelPanelRef.current.contains(target)) {
         setShowLevelPanel(false);
       }
-      if (examSubjectPanelRef.current && !examSubjectPanelRef.current.contains(event.target as Node)) {
+      if (examSubjectPanelRef.current && !examSubjectPanelRef.current.contains(target)) {
         setShowExamSubjectPanel(false);
       }
+      if (studyModePanelRef.current && !studyModePanelRef.current.contains(target)) {
+        setShowStudyModePanel(false);
+      }
+      if (examTypePanelRef.current && !examTypePanelRef.current.contains(target)) {
+        setShowExamTypePanel(false);
+      }
+      if (specialPlanPanelRef.current && !specialPlanPanelRef.current.contains(target)) {
+        setShowSpecialPlanPanel(false);
+      }
     };
-    if (showProvincePanel || showLevelPanel || showExamSubjectPanel) {
+    if (
+      showProvincePanel ||
+      showLevelPanel ||
+      showExamSubjectPanel ||
+      showStudyModePanel ||
+      showExamTypePanel ||
+      showSpecialPlanPanel
+    ) {
       document.addEventListener('mousedown', handleClickOutside);
     }
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showProvincePanel, showLevelPanel, showExamSubjectPanel]);
+  }, [
+    showProvincePanel,
+    showLevelPanel,
+    showExamSubjectPanel,
+    showStudyModePanel,
+    showExamTypePanel,
+    showSpecialPlanPanel,
+  ]);
 
   const selectedProvinces = filters.provinces ?? [];
   const activeRegionGroup = filters.regionGroup ?? null;
+  const selectedLevels = filters.levels ?? [];
+  const selectedStudyModes = filters.studyModes ?? [];
+  const selectedExamTypes = filters.examTypes ?? [];
+  const selectedSpecialPlans = filters.specialPlans ?? [];
+  const selectedForeign = filters.foreignSubjects ?? [];
+  const selectedBusinessOne = filters.businessOneSubjects ?? [];
+  const selectedBusinessTwo = filters.businessTwoSubjects ?? [];
+
+  const totalExamSubjects = selectedForeign.length + selectedBusinessOne.length + selectedBusinessTwo.length;
 
   const toggleProvince = (province: string) => {
     const next = selectedProvinces.includes(province)
@@ -90,11 +141,7 @@ export function WorkspaceFilterPanel({
   };
 
   const clearProvinces = () => {
-    onChange({
-      ...filters,
-      provinces: undefined,
-      regionGroup: undefined,
-    });
+    onChange({ ...filters, provinces: undefined, regionGroup: undefined });
   };
 
   const toggleArrayFilter = (key: 'studyModes' | 'examTypes' | 'specialPlans', value: string) => {
@@ -117,16 +164,21 @@ export function WorkspaceFilterPanel({
   };
 
   const toggleLevel = (tag: string) => {
-    const current = filters.levels ?? [];
-    const next = current.includes(tag)
-      ? current.filter((v) => v !== tag)
-      : [...current, tag];
+    const next = selectedLevels.includes(tag)
+      ? selectedLevels.filter((v) => v !== tag)
+      : [...selectedLevels, tag];
     onChange({ ...filters, levels: next.length > 0 ? next : undefined });
   };
 
-  const toggleFeature = (key: 'selfScoring' | 'doctoralProgram' | 'doubleFirstClass') => {
-    onChange({ ...filters, [key]: filters[key] ? undefined : true });
-  };
+  const clearLevels = () => onChange({ ...filters, levels: undefined });
+
+  const clearExamSubjects = () =>
+    onChange({
+      ...filters,
+      foreignSubjects: undefined,
+      businessOneSubjects: undefined,
+      businessTwoSubjects: undefined,
+    });
 
   const parseNumber = (value: string) => {
     const num = value ? Number(value) : NaN;
@@ -223,84 +275,202 @@ export function WorkspaceFilterPanel({
     filters.businessOneMin !== undefined ||
     filters.businessOneMax !== undefined ||
     filters.businessTwoMin !== undefined ||
-    filters.businessTwoMax !== undefined ||
-    filters.foreignSubjects !== undefined ||
-    filters.businessOneSubjects !== undefined ||
-    filters.businessTwoSubjects !== undefined ||
-    filters.levels !== undefined;
+    filters.businessTwoMax !== undefined;
 
-  const provinceButtonText = activeRegionGroup
-    ? activeRegionGroup
-    : selectedProvinces.length > 0
-      ? `已选 ${selectedProvinces.length} 个地区`
-      : '全部地区';
+  const activeChips = useMemo(() => {
+    const chips: { label: string; onRemove: () => void }[] = [];
+    if (activeRegionGroup) {
+      chips.push({ label: activeRegionGroup, onRemove: clearProvinces });
+    }
+    selectedProvinces.forEach((p) =>
+      chips.push({
+        label: p,
+        onRemove: () => toggleProvince(p),
+      })
+    );
+    selectedLevels.forEach((l) =>
+      chips.push({
+        label: l,
+        onRemove: () => toggleLevel(l),
+      })
+    );
+    selectedStudyModes.forEach((s) =>
+      chips.push({
+        label: s,
+        onRemove: () => toggleArrayFilter('studyModes', s),
+      })
+    );
+    selectedExamTypes.forEach((e) =>
+      chips.push({
+        label: e,
+        onRemove: () => toggleArrayFilter('examTypes', e),
+      })
+    );
+    selectedSpecialPlans.forEach((s) =>
+      chips.push({
+        label: s,
+        onRemove: () => toggleArrayFilter('specialPlans', s),
+      })
+    );
+    selectedForeign.forEach((s) =>
+      chips.push({
+        label: `外语：${s}`,
+        onRemove: () => toggleExamSubject('foreignSubjects', s),
+      })
+    );
+    selectedBusinessOne.forEach((s) =>
+      chips.push({
+        label: `业务课一：${s}`,
+        onRemove: () => toggleExamSubject('businessOneSubjects', s),
+      })
+    );
+    selectedBusinessTwo.forEach((s) =>
+      chips.push({
+        label: `业务课二：${s}`,
+        onRemove: () => toggleExamSubject('businessTwoSubjects', s),
+      })
+    );
+    return chips;
+  }, [
+    activeRegionGroup,
+    selectedProvinces,
+    selectedLevels,
+    selectedStudyModes,
+    selectedExamTypes,
+    selectedSpecialPlans,
+    selectedForeign,
+    selectedBusinessOne,
+    selectedBusinessTwo,
+  ]);
 
-  const selectedLevels = filters.levels ?? [];
-  const levelButtonText = selectedLevels.length > 0
-    ? `已选 ${selectedLevels.length} 项`
-    : '院校层次';
-
-  const selectedForeign = filters.foreignSubjects ?? [];
-  const selectedBusinessOne = filters.businessOneSubjects ?? [];
-  const selectedBusinessTwo = filters.businessTwoSubjects ?? [];
-  const totalExamSubjects = selectedForeign.length + selectedBusinessOne.length + selectedBusinessTwo.length;
-  const examSubjectButtonText = totalExamSubjects > 0
-    ? `已选 ${totalExamSubjects} 项`
-    : '考试科目';
-
-  const clearLevels = () => {
-    onChange({ ...filters, levels: undefined });
-  };
-
-  const clearExamSubjects = () => {
+  const clearAllFilters = () => {
     onChange({
-      ...filters,
-      foreignSubjects: undefined,
-      businessOneSubjects: undefined,
-      businessTwoSubjects: undefined,
+      sortBy: filters.sortBy,
+      sortOrder: filters.sortOrder,
     });
   };
 
-  return (
-    <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
-      {/* Row 1: Province + Study Mode + Exam Type */}
-      <div className="flex flex-wrap items-start gap-4 mb-3">
-        {/* Province selector */}
-        <div className="relative" ref={provincePanelRef}>
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-500 whitespace-nowrap">地区：</span>
-            <motion.button
-              onClick={() => setShowProvincePanel((prev) => !prev)}
-              className={`flex items-center gap-1 px-3 py-1.5 text-sm border rounded-lg transition-colors ${
-                showProvincePanel || selectedProvinces.length > 0 || activeRegionGroup
-                  ? 'text-white bg-[#1e3a5f] border-[#1e3a5f]'
-                  : 'text-gray-700 border-gray-200 hover:border-[#1e3a5f]'
-              }`}
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.97 }}
-            >
-              <MapPin size={14} />
-              {provinceButtonText}
-              <ChevronDown
-                size={14}
-                className={`transition-transform ${showProvincePanel ? 'rotate-180' : ''}`}
-              />
-            </motion.button>
-          </div>
+  const isActive = (open: boolean, hasValue: boolean) => open || hasValue;
 
+  const FilterButton = ({
+    open,
+    hasValue,
+    onClick,
+    icon: Icon,
+    label,
+    activeLabel,
+  }: {
+    open: boolean;
+    hasValue: boolean;
+    onClick: () => void;
+    icon: React.ElementType;
+    label: string;
+    activeLabel?: string;
+  }) => (
+    <motion.button
+      onClick={onClick}
+      className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border transition-colors ${
+        isActive(open, hasValue)
+          ? 'bg-[#1e3a5f] text-white border-[#1e3a5f]'
+          : 'bg-white text-gray-700 border-gray-200 hover:border-[#1e3a5f] hover:text-[#1e3a5f]'
+      }`}
+      whileHover={{ scale: 1.02 }}
+      whileTap={{ scale: 0.97 }}
+    >
+      <Icon size={14} />
+      <span className="max-w-[120px] truncate">{activeLabel || label}</span>
+      <ChevronDown
+        size={14}
+        className={`transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
+      />
+    </motion.button>
+  );
+
+  const DropdownCard = ({
+    children,
+    className = '',
+  }: {
+    children: React.ReactNode;
+    className?: string;
+  }) => (
+    <motion.div
+      initial={{ opacity: 0, y: -6, scale: 0.98 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: -6, scale: 0.98 }}
+      transition={{ duration: 0.15 }}
+      className={`absolute top-full left-0 mt-2 bg-white rounded-xl shadow-xl border border-gray-200 z-30 ${className}`}
+    >
+      {children}
+    </motion.div>
+  );
+
+  const TagCheckbox = ({
+    checked,
+    onChange,
+    label,
+    disabled,
+  }: {
+    checked: boolean;
+    onChange: () => void;
+    label: string;
+    disabled?: boolean;
+  }) => (
+    <label
+      className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md border cursor-pointer transition-colors ${
+        checked
+          ? 'bg-blue-50 border-[#1e3a5f] text-[#1e3a5f]'
+          : 'bg-white border-gray-200 text-gray-700 hover:border-gray-400'
+      } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+    >
+      <input
+        type="checkbox"
+        className="hidden"
+        checked={checked}
+        onChange={onChange}
+        disabled={disabled}
+      />
+      {label}
+    </label>
+  );
+
+  return (
+    <div className="bg-white border border-gray-200 rounded-xl p-4 mb-4 shadow-sm">
+      {/* Filter buttons row */}
+      <div className="flex flex-wrap items-center gap-2">
+        {/* Province */}
+        <div className="relative" ref={provincePanelRef}>
+          <FilterButton
+            open={showProvincePanel}
+            hasValue={selectedProvinces.length > 0 || activeRegionGroup !== null}
+            onClick={() => setShowProvincePanel((p) => !p)}
+            icon={MapPin}
+            label="地区"
+            activeLabel={
+              activeRegionGroup ||
+              (selectedProvinces.length > 0 ? `已选 ${selectedProvinces.length}` : undefined)
+            }
+          />
           <AnimatePresence>
             {showProvincePanel && (
-              <motion.div
-                initial={{ opacity: 0, y: -8, scale: 0.95 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: -8, scale: 0.95 }}
-                transition={{ duration: 0.15 }}
-                className="absolute top-full left-0 mt-2 w-[480px] max-w-[calc(100vw-2rem)] max-h-[70vh] overflow-y-auto bg-white rounded-lg shadow-lg border border-gray-200 p-4 z-30"
-              >
+              <DropdownCard className="w-[520px] max-w-[calc(100vw-2rem)] max-h-[70vh] overflow-y-auto p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-gray-900">选择地区</h3>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={clearProvinces}
+                      className="text-xs text-gray-500 hover:text-gray-800"
+                    >
+                      清空
+                    </button>
+                    <button onClick={() => setShowProvincePanel(false)} className="text-gray-400 hover:text-gray-600">
+                      <X size={14} />
+                    </button>
+                  </div>
+                </div>
                 <div className="flex items-center gap-2 mb-3">
                   <button
                     onClick={() => selectRegionGroup('一区')}
-                    className={`px-3 py-1 text-xs rounded border transition-colors ${
+                    className={`px-3 py-1 text-xs rounded-md border transition-colors ${
                       activeRegionGroup === '一区'
                         ? 'bg-[#1e3a5f] text-white border-[#1e3a5f]'
                         : 'bg-white text-gray-700 border-gray-200 hover:border-[#1e3a5f]'
@@ -310,7 +480,7 @@ export function WorkspaceFilterPanel({
                   </button>
                   <button
                     onClick={() => selectRegionGroup('二区')}
-                    className={`px-3 py-1 text-xs rounded border transition-colors ${
+                    className={`px-3 py-1 text-xs rounded-md border transition-colors ${
                       activeRegionGroup === '二区'
                         ? 'bg-[#1e3a5f] text-white border-[#1e3a5f]'
                         : 'bg-white text-gray-700 border-gray-200 hover:border-[#1e3a5f]'
@@ -318,448 +488,292 @@ export function WorkspaceFilterPanel({
                   >
                     二区
                   </button>
-                  <button
-                    onClick={clearProvinces}
-                    className="px-3 py-1 text-xs rounded border border-gray-200 text-gray-600 hover:text-gray-900 hover:border-gray-400"
-                  >
-                    清空
-                  </button>
                 </div>
 
-                <div className="mb-2">
-                  <div className="text-xs text-gray-400 mb-1.5">一区</div>
+                <div className="mb-4">
+                  <div className="text-xs font-medium text-gray-500 mb-2">一区</div>
                   <div className="flex flex-wrap gap-2">
                     {options.provinces
                       .filter((p) => REGION_ONE_PROVINCES.includes(p))
                       .map((province) => (
-                        <label
+                        <TagCheckbox
                           key={province}
-                          className={`flex items-center gap-1 px-2 py-1 text-xs rounded border cursor-pointer transition-colors ${
-                            selectedProvinces.includes(province) || activeRegionGroup === '一区'
-                              ? 'bg-blue-50 border-[#1e3a5f] text-[#1e3a5f]'
-                              : 'border-gray-200 text-gray-700 hover:border-gray-400'
-                          }`}
-                        >
-                          <input
-                            type="checkbox"
-                            className="hidden"
-                            checked={
-                              selectedProvinces.includes(province) || activeRegionGroup === '一区'
-                            }
-                            onChange={() => toggleProvince(province)}
-                            disabled={activeRegionGroup === '一区'}
-                          />
-                          {province}
-                        </label>
+                          checked={selectedProvinces.includes(province) || activeRegionGroup === '一区'}
+                          onChange={() => toggleProvince(province)}
+                          label={province}
+                          disabled={activeRegionGroup === '一区'}
+                        />
                       ))}
                   </div>
                 </div>
 
                 <div>
-                  <div className="text-xs text-gray-400 mb-1.5">二区</div>
+                  <div className="text-xs font-medium text-gray-500 mb-2">二区</div>
                   <div className="flex flex-wrap gap-2">
                     {options.provinces
                       .filter((p) => REGION_TWO_PROVINCES.includes(p))
                       .map((province) => (
-                        <label
+                        <TagCheckbox
                           key={province}
-                          className={`flex items-center gap-1 px-2 py-1 text-xs rounded border cursor-pointer transition-colors ${
-                            selectedProvinces.includes(province) || activeRegionGroup === '二区'
-                              ? 'bg-blue-50 border-[#1e3a5f] text-[#1e3a5f]'
-                              : 'border-gray-200 text-gray-700 hover:border-gray-400'
-                          }`}
-                        >
-                          <input
-                            type="checkbox"
-                            className="hidden"
-                            checked={
-                              selectedProvinces.includes(province) || activeRegionGroup === '二区'
-                            }
-                            onChange={() => toggleProvince(province)}
-                            disabled={activeRegionGroup === '二区'}
-                          />
-                          {province}
-                        </label>
+                          checked={selectedProvinces.includes(province) || activeRegionGroup === '二区'}
+                          onChange={() => toggleProvince(province)}
+                          label={province}
+                          disabled={activeRegionGroup === '二区'}
+                        />
                       ))}
                   </div>
                 </div>
-              </motion.div>
+              </DropdownCard>
             )}
           </AnimatePresence>
         </div>
 
-        {/* Study mode */}
-        {options.study_modes.length > 0 && (
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm text-gray-500 whitespace-nowrap">学习方式：</span>
-            {options.study_modes.map((mode) => (
-              <label
-                key={mode}
-                className={`flex items-center gap-1 px-2.5 py-1 text-xs rounded border cursor-pointer transition-colors ${
-                  (filters.studyModes ?? []).includes(mode)
-                    ? 'bg-[#1e3a5f] text-white border-[#1e3a5f]'
-                    : 'bg-white text-gray-700 border-gray-200 hover:border-[#1e3a5f]'
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  className="hidden"
-                  checked={(filters.studyModes ?? []).includes(mode)}
-                  onChange={() => toggleArrayFilter('studyModes', mode)}
-                />
-                {mode}
-              </label>
-            ))}
-          </div>
-        )}
+        {/* Level */}
+        <div className="relative" ref={levelPanelRef}>
+          <FilterButton
+            open={showLevelPanel}
+            hasValue={selectedLevels.length > 0}
+            onClick={() => setShowLevelPanel((p) => !p)}
+            icon={GraduationCap}
+            label="院校层次"
+            activeLabel={selectedLevels.length > 0 ? `已选 ${selectedLevels.length}` : undefined}
+          />
+          <AnimatePresence>
+            {showLevelPanel && (
+              <DropdownCard className="w-[420px] max-w-[calc(100vw-2rem)] max-h-[70vh] overflow-y-auto p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-gray-900">院校层次</h3>
+                  <div className="flex items-center gap-2">
+                    <button onClick={clearLevels} className="text-xs text-gray-500 hover:text-gray-800">
+                      清空
+                    </button>
+                    <button onClick={() => setShowLevelPanel(false)} className="text-gray-400 hover:text-gray-600">
+                      <X size={14} />
+                    </button>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {options.level_tags.map((tag) => (
+                    <TagCheckbox
+                      key={tag}
+                      checked={selectedLevels.includes(tag)}
+                      onChange={() => toggleLevel(tag)}
+                      label={tag}
+                    />
+                  ))}
+                </div>
+              </DropdownCard>
+            )}
+          </AnimatePresence>
+        </div>
 
-        {/* Exam type */}
-        {options.exam_types.length > 0 && (
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm text-gray-500 whitespace-nowrap">考试方式：</span>
-            {options.exam_types.map((type) => (
-              <label
-                key={type}
-                className={`flex items-center gap-1 px-2.5 py-1 text-xs rounded border cursor-pointer transition-colors ${
-                  (filters.examTypes ?? []).includes(type)
-                    ? 'bg-[#1e3a5f] text-white border-[#1e3a5f]'
-                    : 'bg-white text-gray-700 border-gray-200 hover:border-[#1e3a5f]'
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  className="hidden"
-                  checked={(filters.examTypes ?? []).includes(type)}
-                  onChange={() => toggleArrayFilter('examTypes', type)}
-                />
-                {type}
-              </label>
-            ))}
-          </div>
-        )}
-      </div>
+        {/* Exam Subjects */}
+        <div className="relative" ref={examSubjectPanelRef}>
+          <FilterButton
+            open={showExamSubjectPanel}
+            hasValue={totalExamSubjects > 0}
+            onClick={() => setShowExamSubjectPanel((p) => !p)}
+            icon={BookOpen}
+            label="考试科目"
+            activeLabel={totalExamSubjects > 0 ? `已选 ${totalExamSubjects}` : undefined}
+          />
+          <AnimatePresence>
+            {showExamSubjectPanel && (
+              <DropdownCard className="w-[480px] max-w-[calc(100vw-2rem)] max-h-[70vh] overflow-y-auto p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-gray-900">考试科目</h3>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={clearExamSubjects}
+                      className="text-xs text-gray-500 hover:text-gray-800"
+                    >
+                      清空
+                    </button>
+                    <button onClick={() => setShowExamSubjectPanel(false)} className="text-gray-400 hover:text-gray-600">
+                      <X size={14} />
+                    </button>
+                  </div>
+                </div>
 
-      {/* Row 2: Features + Special plans + Level + More filters + Sort */}
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div className="flex flex-wrap items-center gap-4">
-          {/* School features */}
-          {(options.has_self_scoring || options.has_doctoral || options.has_double_first_class) && (
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-sm text-gray-500 whitespace-nowrap">院校特性：</span>
-              {options.has_self_scoring && (
-                <label
-                  className={`flex items-center gap-1 px-2.5 py-1 text-xs rounded border cursor-pointer transition-colors ${
-                    filters.selfScoring
-                      ? 'bg-[#1e3a5f] text-white border-[#1e3a5f]'
-                      : 'bg-white text-gray-700 border-gray-200 hover:border-[#1e3a5f]'
-                  }`}
-                >
-                  <input
-                    type="checkbox"
-                    className="hidden"
-                    checked={!!filters.selfScoring}
-                    onChange={() => toggleFeature('selfScoring')}
-                  />
-                  自划线院校
-                </label>
-              )}
-              {options.has_doctoral && (
-                <label
-                  className={`flex items-center gap-1 px-2.5 py-1 text-xs rounded border cursor-pointer transition-colors ${
-                    filters.doctoralProgram
-                      ? 'bg-[#1e3a5f] text-white border-[#1e3a5f]'
-                      : 'bg-white text-gray-700 border-gray-200 hover:border-[#1e3a5f]'
-                  }`}
-                >
-                  <input
-                    type="checkbox"
-                    className="hidden"
-                    checked={!!filters.doctoralProgram}
-                    onChange={() => toggleFeature('doctoralProgram')}
-                  />
-                  博士点
-                </label>
-              )}
-              {options.has_double_first_class && (
-                <label
-                  className={`flex items-center gap-1 px-2.5 py-1 text-xs rounded border cursor-pointer transition-colors ${
-                    filters.doubleFirstClass
-                      ? 'bg-[#1e3a5f] text-white border-[#1e3a5f]'
-                      : 'bg-white text-gray-700 border-gray-200 hover:border-[#1e3a5f]'
-                  }`}
-                >
-                  <input
-                    type="checkbox"
-                    className="hidden"
-                    checked={!!filters.doubleFirstClass}
-                    onChange={() => toggleFeature('doubleFirstClass')}
-                  />
-                  双一流
-                </label>
-              )}
-            </div>
-          )}
-
-          {/* Special plans */}
-          {options.special_plans.length > 0 && (
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-sm text-gray-500 whitespace-nowrap">专项计划：</span>
-              {options.special_plans.map((plan) => (
-                <label
-                  key={plan}
-                  className={`flex items-center gap-1 px-2.5 py-1 text-xs rounded border cursor-pointer transition-colors ${
-                    (filters.specialPlans ?? []).includes(plan)
-                      ? 'bg-[#1e3a5f] text-white border-[#1e3a5f]'
-                      : 'bg-white text-gray-700 border-gray-200 hover:border-[#1e3a5f]'
-                  }`}
-                >
-                  <input
-                    type="checkbox"
-                    className="hidden"
-                    checked={(filters.specialPlans ?? []).includes(plan)}
-                    onChange={() => toggleArrayFilter('specialPlans', plan)}
-                  />
-                  {plan}
-                </label>
-              ))}
-            </div>
-          )}
-
-          {/* Level */}
-          {options.level_tags.length > 0 && (
-            <div className="relative" ref={levelPanelRef}>
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-gray-500 whitespace-nowrap">院校层次：</span>
-                <motion.button
-                  onClick={() => setShowLevelPanel((prev) => !prev)}
-                  className={`flex items-center gap-1 px-3 py-1.5 text-sm border rounded-lg transition-colors ${
-                    showLevelPanel || selectedLevels.length > 0
-                      ? 'text-white bg-[#1e3a5f] border-[#1e3a5f]'
-                      : 'text-gray-700 border-gray-200 hover:border-[#1e3a5f]'
-                  }`}
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.97 }}
-                >
-                  {levelButtonText}
-                  <ChevronDown
-                    size={14}
-                    className={`transition-transform ${showLevelPanel ? 'rotate-180' : ''}`}
-                  />
-                </motion.button>
-              </div>
-
-              <AnimatePresence>
-                {showLevelPanel && (
-                  <motion.div
-                    initial={{ opacity: 0, y: -8, scale: 0.95 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={{ opacity: 0, y: -8, scale: 0.95 }}
-                    transition={{ duration: 0.15 }}
-                    className="absolute top-full left-0 mt-2 w-72 max-w-[calc(100vw-2rem)] bg-white rounded-lg shadow-lg border border-gray-200 p-3 z-30"
-                  >
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs text-gray-500">选择院校层次</span>
-                      <button
-                        onClick={clearLevels}
-                        className="px-2 py-0.5 text-xs text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded"
-                      >
-                        清空
-                      </button>
-                    </div>
+                {[
+                  { title: '外语', key: 'foreignSubjects' as const, options: options.foreign_subjects },
+                  { title: '业务课一', key: 'businessOneSubjects' as const, options: options.business_one_subjects },
+                  { title: '业务课二', key: 'businessTwoSubjects' as const, options: options.business_two_subjects },
+                ].map(({ title, key, options: opts }) => (
+                  <div key={key} className="mb-4 last:mb-0">
+                    <div className="text-xs font-medium text-gray-500 mb-2">{title}</div>
                     <div className="flex flex-wrap gap-2">
-                      {options.level_tags.map((tag) => (
-                        <label
-                          key={tag}
-                          className={`flex items-center gap-1 px-2 py-1 text-xs rounded border cursor-pointer transition-colors ${
-                            selectedLevels.includes(tag)
-                              ? 'bg-blue-50 border-[#1e3a5f] text-[#1e3a5f]'
-                              : 'border-gray-200 text-gray-700 hover:border-gray-400'
-                          }`}
-                        >
-                          <input
-                            type="checkbox"
-                            className="hidden"
-                            checked={selectedLevels.includes(tag)}
-                            onChange={() => toggleLevel(tag)}
+                      {opts.length > 0 ? (
+                        opts.map((subject) => (
+                          <TagCheckbox
+                            key={subject}
+                            checked={(filters[key] ?? []).includes(subject)}
+                            onChange={() => toggleExamSubject(key, subject)}
+                            label={subject}
                           />
-                          {tag}
-                        </label>
-                      ))}
+                        ))
+                      ) : (
+                        <span className="text-xs text-gray-400">暂无数据</span>
+                      )}
                     </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
-          )}
-
-          {/* Exam subjects */}
-          {(options.foreign_subjects.length > 0 || options.business_one_subjects.length > 0 || options.business_two_subjects.length > 0) && (
-            <div className="relative" ref={examSubjectPanelRef}>
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-gray-500 whitespace-nowrap">考试科目：</span>
-                <motion.button
-                  onClick={() => setShowExamSubjectPanel((prev) => !prev)}
-                  className={`flex items-center gap-1 px-3 py-1.5 text-sm border rounded-lg transition-colors ${
-                    showExamSubjectPanel || totalExamSubjects > 0
-                      ? 'text-white bg-[#1e3a5f] border-[#1e3a5f]'
-                      : 'text-gray-700 border-gray-200 hover:border-[#1e3a5f]'
-                  }`}
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.97 }}
-                >
-                  {examSubjectButtonText}
-                  <ChevronDown
-                    size={14}
-                    className={`transition-transform ${showExamSubjectPanel ? 'rotate-180' : ''}`}
-                  />
-                </motion.button>
-              </div>
-
-              <AnimatePresence>
-                {showExamSubjectPanel && (
-                  <motion.div
-                    initial={{ opacity: 0, y: -8, scale: 0.95 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={{ opacity: 0, y: -8, scale: 0.95 }}
-                    transition={{ duration: 0.15 }}
-                    className="absolute top-full left-0 mt-2 w-96 max-w-[calc(100vw-2rem)] max-h-[70vh] overflow-y-auto bg-white rounded-lg shadow-lg border border-gray-200 p-3 z-30"
-                  >
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs text-gray-500">选择考试科目</span>
-                      <button
-                        onClick={clearExamSubjects}
-                        className="px-2 py-0.5 text-xs text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded"
-                      >
-                        清空
-                      </button>
-                    </div>
-
-                    {options.foreign_subjects.length > 0 && (
-                      <div className="mb-3">
-                        <div className="text-xs text-gray-400 mb-1.5">外语</div>
-                        <div className="flex flex-wrap gap-2">
-                          {options.foreign_subjects.map((subject) => (
-                            <label
-                              key={subject}
-                              className={`flex items-center gap-1 px-2 py-1 text-xs rounded border cursor-pointer transition-colors ${
-                                selectedForeign.includes(subject)
-                                  ? 'bg-blue-50 border-[#1e3a5f] text-[#1e3a5f]'
-                                  : 'border-gray-200 text-gray-700 hover:border-gray-400'
-                              }`}
-                            >
-                              <input
-                                type="checkbox"
-                                className="hidden"
-                                checked={selectedForeign.includes(subject)}
-                                onChange={() => toggleExamSubject('foreignSubjects', subject)}
-                              />
-                              {subject}
-                            </label>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {options.business_one_subjects.length > 0 && (
-                      <div className="mb-3">
-                        <div className="text-xs text-gray-400 mb-1.5">业务课一</div>
-                        <div className="flex flex-wrap gap-2">
-                          {options.business_one_subjects.map((subject) => (
-                            <label
-                              key={subject}
-                              className={`flex items-center gap-1 px-2 py-1 text-xs rounded border cursor-pointer transition-colors ${
-                                selectedBusinessOne.includes(subject)
-                                  ? 'bg-blue-50 border-[#1e3a5f] text-[#1e3a5f]'
-                                  : 'border-gray-200 text-gray-700 hover:border-gray-400'
-                              }`}
-                            >
-                              <input
-                                type="checkbox"
-                                className="hidden"
-                                checked={selectedBusinessOne.includes(subject)}
-                                onChange={() => toggleExamSubject('businessOneSubjects', subject)}
-                              />
-                              {subject}
-                            </label>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {options.business_two_subjects.length > 0 && (
-                      <div>
-                        <div className="text-xs text-gray-400 mb-1.5">业务课二</div>
-                        <div className="flex flex-wrap gap-2">
-                          {options.business_two_subjects.map((subject) => (
-                            <label
-                              key={subject}
-                              className={`flex items-center gap-1 px-2 py-1 text-xs rounded border cursor-pointer transition-colors ${
-                                selectedBusinessTwo.includes(subject)
-                                  ? 'bg-blue-50 border-[#1e3a5f] text-[#1e3a5f]'
-                                  : 'border-gray-200 text-gray-700 hover:border-gray-400'
-                              }`}
-                            >
-                              <input
-                                type="checkbox"
-                                className="hidden"
-                                checked={selectedBusinessTwo.includes(subject)}
-                                onChange={() => toggleExamSubject('businessTwoSubjects', subject)}
-                              />
-                              {subject}
-                            </label>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
-          )}
-
-          {/* More filters toggle */}
-          <motion.button
-            onClick={toggleMoreFilters}
-            className={`flex items-center gap-1 px-3 py-1.5 text-sm border rounded-lg transition-colors ${
-              showMoreFilters || hasMoreFiltersApplied
-                ? 'text-white bg-[#1e3a5f] border-[#1e3a5f]'
-                : 'text-[#1e3a5f] border-[#1e3a5f] hover:bg-blue-50'
-            }`}
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.97 }}
-          >
-            <SlidersHorizontal size={14} />
-            更多筛选
-          </motion.button>
+                  </div>
+                ))}
+              </DropdownCard>
+            )}
+          </AnimatePresence>
         </div>
 
-        <div className="flex items-center gap-4">
-          {resultCount !== undefined && (
-            <span className="text-sm text-gray-500">共 {resultCount} 所</span>
-          )}
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-500">排序：</span>
-            <select
-              value={`${filters.sortBy ?? 'min_score'}-${filters.sortOrder ?? 'desc'}`}
-              onChange={(e) => handleSortChange(e.target.value)}
-              className="px-3 py-1.5 text-sm text-gray-700 border border-gray-200 rounded-lg focus:outline-none focus:border-[#1e3a5f] bg-white"
-            >
-              <option value="default-asc">默认排序（掌上考研）</option>
-              <option value="school_code-asc">按国标代码排序（研招网）</option>
-              <option value="min_score-desc">最低分从高到低</option>
-              <option value="min_score-asc">最低分从低到高</option>
-              <option value="enroll_count-desc">招生人数从多到少</option>
-              <option value="enroll_count-asc">招生人数从少到多</option>
-              <option value="name-asc">学校名称升序</option>
-              <option value="name-desc">学校名称降序</option>
-            </select>
+        {/* Study Mode */}
+        {options.study_modes.length > 0 && (
+          <div className="relative" ref={studyModePanelRef}>
+            <FilterButton
+              open={showStudyModePanel}
+              hasValue={selectedStudyModes.length > 0}
+              onClick={() => setShowStudyModePanel((p) => !p)}
+              icon={Clock}
+              label="学习方式"
+              activeLabel={
+                selectedStudyModes.length > 0 ? `已选 ${selectedStudyModes.length}` : undefined
+              }
+            />
+            <AnimatePresence>
+              {showStudyModePanel && (
+                <DropdownCard className="w-[240px] max-w-[calc(100vw-2rem)] p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="text-sm font-semibold text-gray-900">学习方式</h3>
+                    <button onClick={() => setShowStudyModePanel(false)} className="text-gray-400 hover:text-gray-600">
+                      <X size={14} />
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {options.study_modes.map((mode) => (
+                      <TagCheckbox
+                        key={mode}
+                        checked={selectedStudyModes.includes(mode)}
+                        onChange={() => toggleArrayFilter('studyModes', mode)}
+                        label={mode}
+                      />
+                    ))}
+                  </div>
+                </DropdownCard>
+              )}
+            </AnimatePresence>
           </div>
+        )}
+
+        {/* Exam Type */}
+        {options.exam_types.length > 0 && (
+          <div className="relative" ref={examTypePanelRef}>
+            <FilterButton
+              open={showExamTypePanel}
+              hasValue={selectedExamTypes.length > 0}
+              onClick={() => setShowExamTypePanel((p) => !p)}
+              icon={FileText}
+              label="考试方式"
+              activeLabel={
+                selectedExamTypes.length > 0 ? `已选 ${selectedExamTypes.length}` : undefined
+              }
+            />
+            <AnimatePresence>
+              {showExamTypePanel && (
+                <DropdownCard className="w-[240px] max-w-[calc(100vw-2rem)] p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="text-sm font-semibold text-gray-900">考试方式</h3>
+                    <button onClick={() => setShowExamTypePanel(false)} className="text-gray-400 hover:text-gray-600">
+                      <X size={14} />
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {options.exam_types.map((type) => (
+                      <TagCheckbox
+                        key={type}
+                        checked={selectedExamTypes.includes(type)}
+                        onChange={() => toggleArrayFilter('examTypes', type)}
+                        label={type}
+                      />
+                    ))}
+                  </div>
+                </DropdownCard>
+              )}
+            </AnimatePresence>
+          </div>
+        )}
+
+        {/* Special Plans */}
+        {options.special_plans.length > 0 && (
+          <div className="relative" ref={specialPlanPanelRef}>
+            <FilterButton
+              open={showSpecialPlanPanel}
+              hasValue={selectedSpecialPlans.length > 0}
+              onClick={() => setShowSpecialPlanPanel((p) => !p)}
+              icon={Award}
+              label="专项计划"
+              activeLabel={
+                selectedSpecialPlans.length > 0 ? `已选 ${selectedSpecialPlans.length}` : undefined
+              }
+            />
+            <AnimatePresence>
+              {showSpecialPlanPanel && (
+                <DropdownCard className="w-[280px] max-w-[calc(100vw-2rem)] max-h-[70vh] overflow-y-auto p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="text-sm font-semibold text-gray-900">专项计划</h3>
+                    <button onClick={() => setShowSpecialPlanPanel(false)} className="text-gray-400 hover:text-gray-600">
+                      <X size={14} />
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {options.special_plans.map((plan) => (
+                      <TagCheckbox
+                        key={plan}
+                        checked={selectedSpecialPlans.includes(plan)}
+                        onChange={() => toggleArrayFilter('specialPlans', plan)}
+                        label={plan}
+                      />
+                    ))}
+                  </div>
+                </DropdownCard>
+              )}
+            </AnimatePresence>
+          </div>
+        )}
+
+        {/* More Filters drawer trigger */}
+        <motion.button
+          onClick={toggleMoreFilters}
+          className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border transition-colors ${
+            showMoreFilters || hasMoreFiltersApplied
+              ? 'bg-[#1e3a5f] text-white border-[#1e3a5f]'
+              : 'bg-white text-gray-700 border-gray-200 hover:border-[#1e3a5f] hover:text-[#1e3a5f]'
+          }`}
+          whileHover={{ scale: 1.02 }}
+          whileTap={{ scale: 0.97 }}
+        >
+          <SlidersHorizontal size={14} />
+          更多筛选
+        </motion.button>
+
+        {/* Sort */}
+        <div className="flex items-center gap-2 ml-auto">
+          <ArrowUpDown size={14} className="text-gray-400" />
+          <select
+            value={`${filters.sortBy}-${filters.sortOrder}`}
+            onChange={(e) => handleSortChange(e.target.value)}
+            className="text-sm border border-gray-200 rounded-lg px-2 py-1.5 text-gray-700 focus:outline-none focus:border-[#1e3a5f] bg-white"
+          >
+            <option value="min_score-desc">按最低分从高到低</option>
+            <option value="min_score-asc">按最低分从低到高</option>
+            <option value="enroll_count-desc">按招生人数从多到少</option>
+            <option value="enroll_count-asc">按招生人数从少到多</option>
+            <option value="name-asc">按学校名称</option>
+            <option value="default-asc">默认排序（掌上考研）</option>
+            <option value="school_code-asc">按国标代码排序（研招网）</option>
+          </select>
         </div>
       </div>
 
-      {/* More filters inline panel */}
+      {/* Active chips */}
       <AnimatePresence>
-        {showMoreFilters && (
+        {activeChips.length > 0 && (
           <motion.div
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: 'auto', opacity: 1 }}
@@ -767,18 +781,68 @@ export function WorkspaceFilterPanel({
             transition={{ duration: 0.2 }}
             className="overflow-hidden"
           >
-            <div className="mt-3 pt-3 border-t border-gray-200">
-              <div className="flex items-center justify-between mb-2">
-                <h3 className="text-sm font-medium text-gray-900">更多筛选条件</h3>
+            <div className="flex flex-wrap items-center gap-2 mt-3 pt-3 border-t border-gray-100">
+              {activeChips.map((chip, idx) => (
+                <span
+                  key={`${chip.label}-${idx}`}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 text-xs bg-blue-50 text-[#1e3a5f] border border-blue-100 rounded-full"
+                >
+                  {chip.label}
+                  <button onClick={chip.onRemove} className="hover:text-red-500">
+                    <X size={12} />
+                  </button>
+                </span>
+              ))}
+              <button
+                onClick={clearAllFilters}
+                className="text-xs text-gray-500 hover:text-red-500 ml-1"
+              >
+                清除全部
+              </button>
+              <span className="text-xs text-gray-400 ml-auto">
+                共 {resultCount ?? 0} 条结果
+              </span>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {!activeChips.length && resultCount !== undefined && (
+        <div className="text-xs text-gray-400 mt-3 pt-3 border-t border-gray-100">
+          共 {resultCount} 条结果
+        </div>
+      )}
+
+      {/* More Filters Drawer */}
+      <AnimatePresence>
+        {showMoreFilters && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              className="fixed inset-0 bg-black/30 z-40"
+              onClick={() => setShowMoreFilters(false)}
+            />
+            <motion.div
+              initial={{ x: '100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '100%' }}
+              transition={{ duration: 0.25, ease: 'easeOut' }}
+              className="fixed top-0 right-0 h-full w-[420px] max-w-[calc(100vw-1rem)] bg-white shadow-2xl border-l border-gray-200 z-50 flex flex-col"
+            >
+              <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+                <h2 className="text-base font-semibold text-gray-900">更多筛选条件</h2>
                 <button
                   onClick={() => setShowMoreFilters(false)}
-                  className="text-xs text-gray-500 hover:text-gray-700"
+                  className="text-gray-400 hover:text-gray-600"
                 >
-                  收起
+                  <X size={18} />
                 </button>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="flex-1 overflow-y-auto p-5 space-y-3">
                 {[
                   {
                     key: 'score',
@@ -796,7 +860,7 @@ export function WorkspaceFilterPanel({
                           onChange={(e) =>
                             setMoreFiltersDraft((prev) => ({ ...prev, minScoreMin: e.target.value }))
                           }
-                          className="w-full px-2 py-1.5 text-sm border border-gray-200 rounded focus:outline-none focus:border-[#1e3a5f]"
+                          className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-[#1e3a5f]"
                         />
                         <span className="text-gray-400">-</span>
                         <input
@@ -806,7 +870,7 @@ export function WorkspaceFilterPanel({
                           onChange={(e) =>
                             setMoreFiltersDraft((prev) => ({ ...prev, minScoreMax: e.target.value }))
                           }
-                          className="w-full px-2 py-1.5 text-sm border border-gray-200 rounded focus:outline-none focus:border-[#1e3a5f]"
+                          className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-[#1e3a5f]"
                         />
                       </div>
                     ),
@@ -827,7 +891,7 @@ export function WorkspaceFilterPanel({
                           onChange={(e) =>
                             setMoreFiltersDraft((prev) => ({ ...prev, enrollCountMin: e.target.value }))
                           }
-                          className="w-full px-2 py-1.5 text-sm border border-gray-200 rounded focus:outline-none focus:border-[#1e3a5f]"
+                          className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-[#1e3a5f]"
                         />
                         <span className="text-gray-400">-</span>
                         <input
@@ -837,7 +901,7 @@ export function WorkspaceFilterPanel({
                           onChange={(e) =>
                             setMoreFiltersDraft((prev) => ({ ...prev, enrollCountMax: e.target.value }))
                           }
-                          className="w-full px-2 py-1.5 text-sm border border-gray-200 rounded focus:outline-none focus:border-[#1e3a5f]"
+                          className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-[#1e3a5f]"
                         />
                       </div>
                     ),
@@ -870,7 +934,7 @@ export function WorkspaceFilterPanel({
                               onChange={(e) =>
                                 setMoreFiltersDraft((prev) => ({ ...prev, [minKey]: e.target.value }))
                               }
-                              className="w-full px-2 py-1.5 text-sm border border-gray-200 rounded focus:outline-none focus:border-[#1e3a5f]"
+                              className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-[#1e3a5f]"
                             />
                             <span className="text-gray-400">-</span>
                             <input
@@ -880,7 +944,7 @@ export function WorkspaceFilterPanel({
                               onChange={(e) =>
                                 setMoreFiltersDraft((prev) => ({ ...prev, [maxKey]: e.target.value }))
                               }
-                              className="w-full px-2 py-1.5 text-sm border border-gray-200 rounded focus:outline-none focus:border-[#1e3a5f]"
+                              className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-[#1e3a5f]"
                             />
                           </div>
                         ))}
@@ -899,17 +963,17 @@ export function WorkspaceFilterPanel({
                         onChange={(e) =>
                           setMoreFiltersDraft((prev) => ({ ...prev, departmentName: e.target.value }))
                         }
-                        className="w-full px-2 py-1.5 text-sm border border-gray-200 rounded focus:outline-none focus:border-[#1e3a5f]"
+                        className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-[#1e3a5f]"
                       />
                     ),
                   },
                 ].map(({ key, label, summary, content }) => (
-                  <div key={key} className="border border-gray-200 rounded-lg overflow-hidden">
+                  <div key={key} className="border border-gray-200 rounded-xl overflow-hidden">
                     <button
                       onClick={() =>
                         setExpandedSections((prev) => ({ ...prev, [key]: !prev[key] }))
                       }
-                      className="w-full flex items-center justify-between px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                      className="w-full flex items-center justify-between px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
                     >
                       <span className="font-medium">{label}</span>
                       <div className="flex items-center gap-2">
@@ -935,7 +999,7 @@ export function WorkspaceFilterPanel({
                           transition={{ duration: 0.15 }}
                           className="overflow-hidden"
                         >
-                          <div className="px-3 pb-3 pt-1 border-t border-gray-100">{content}</div>
+                          <div className="px-4 pb-4 pt-1 border-t border-gray-100">{content}</div>
                         </motion.div>
                       )}
                     </AnimatePresence>
@@ -943,22 +1007,22 @@ export function WorkspaceFilterPanel({
                 ))}
               </div>
 
-              <div className="flex items-center justify-end gap-2 pt-3">
+              <div className="flex items-center justify-end gap-3 px-5 py-4 border-t border-gray-200 bg-gray-50">
                 <button
                   onClick={resetMoreFilters}
-                  className="px-3 py-1.5 text-xs text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded"
+                  className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800 hover:bg-gray-200 rounded-lg transition-colors"
                 >
                   重置
                 </button>
                 <button
                   onClick={applyMoreFilters}
-                  className="px-3 py-1.5 text-xs text-white bg-[#1e3a5f] hover:bg-[#162d4a] rounded"
+                  className="px-4 py-2 text-sm text-white bg-[#1e3a5f] hover:bg-[#162d4a] rounded-lg transition-colors"
                 >
                   应用
                 </button>
               </div>
-            </div>
-          </motion.div>
+            </motion.div>
+          </>
         )}
       </AnimatePresence>
     </div>

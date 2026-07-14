@@ -16,7 +16,7 @@ import { useAppStore } from '../stores/appStore';
 type DegreeType = 'academic' | 'professional';
 
 export function MajorSelectPage() {
-  const { setPage, addMajor, crawledMajors } = useAppStore();
+  const { setPage, addMajor, crawledMajors, setCrawlTarget } = useAppStore();
   const [degreeType, setDegreeType] = useState<DegreeType>('academic');
   const [selectedCategory, setSelectedCategory] = useState<DisciplineCategory | null>(null);
   const [selectedDiscipline, setSelectedDiscipline] = useState<FirstLevelDiscipline | null>(null);
@@ -122,6 +122,7 @@ export function MajorSelectPage() {
           dbSize: '0 MB',
         });
       }
+      setCrawlTarget({ code: selectedMajor.code, name: selectedMajor.name });
       setPage('crawling');
     }
   };

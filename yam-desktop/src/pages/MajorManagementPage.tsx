@@ -1,9 +1,7 @@
 import { motion } from 'framer-motion';
 import { RefreshCw, Trash2, Plus } from 'lucide-react';
-import { useState } from 'react';
 import { useAppStore, type CrawledMajor } from '../stores/appStore';
 import { TopNav } from '../components/TopNav';
-import { syncWorkspaceData } from '../lib/db';
 
 const MOCK_MAJORS: CrawledMajor[] = [
   { code: '085410', name: '人工智能', dataVersion: '2026', lastUpdated: '2025-05-20 昨天', schoolCount: 287, dbSize: '1.24 GB' },
@@ -20,20 +18,15 @@ function getMajorCategory(code: string): string {
 }
 
 export function MajorManagementPage() {
-  const { setPage, crawledMajors, removeMajor } = useAppStore();
-  const [updatingCode, setUpdatingCode] = useState<string | null>(null);
+  const { setPage, crawledMajors, removeMajor, setCrawlTarget } = useAppStore();
 
   const majorsToShow = crawledMajors.length > 0 ? crawledMajors : MOCK_MAJORS;
 
-  const handleUpdate = async (code: string) => {
-    setUpdatingCode(code);
-    try {
-      await syncWorkspaceData(code);
-    } catch (err) {
-      console.error(`同步专业 ${code} 失败:`, err);
-    } finally {
-      setUpdatingCode(null);
-    }
+  const handleUpdate = (code: string) => {
+    const major = majorsToShow.find((m) => m.code === code);
+    if (!major) return;
+    setCrawlTarget({ code: major.code, name: major.name });
+    setPage('crawling');
   };
 
   const handleDelete = (code: string) => {
@@ -114,11 +107,10 @@ export function MajorManagementPage() {
                 <div className="flex items-center justify-center gap-2">
                   <button
                     onClick={() => handleUpdate(major.code)}
-                    disabled={updatingCode === major.code}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-600 hover:text-[#1e3a5f] border border-gray-200 rounded-md hover:border-[#1e3a5f] transition-colors whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-600 hover:text-[#1e3a5f] border border-gray-200 rounded-md hover:border-[#1e3a5f] transition-colors whitespace-nowrap"
                   >
-                    <RefreshCw size={14} className={updatingCode === major.code ? 'animate-spin' : ''} />
-                    {updatingCode === major.code ? '同步中' : '更新'}
+                    <RefreshCw size={14} />
+                    更新
                   </button>
                   <button
                     onClick={() => handleDelete(major.code)}

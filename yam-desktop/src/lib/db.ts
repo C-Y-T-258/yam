@@ -670,6 +670,47 @@ export async function syncWorkspaceData(majorCode: string): Promise<string> {
   return 'mock sync skipped';
 }
 
+export interface CrawlProgress {
+  running: boolean;
+  major_code: string;
+  current: number;
+  total: number;
+  current_name: string;
+  done: boolean;
+  success: number;
+  failed: number;
+  skipped: number;
+  error: string | null;
+}
+
+export async function runCrawl(majorCode: string): Promise<void> {
+  if (isTauri) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('run_crawl', { majorCode });
+    return;
+  }
+  throw new Error('浏览器环境不支持直接采集');
+}
+
+export async function getCrawlProgress(): Promise<CrawlProgress> {
+  if (isTauri) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke('get_crawl_progress');
+  }
+  return {
+    running: false,
+    major_code: '',
+    current: 0,
+    total: 0,
+    current_name: '',
+    done: false,
+    success: 0,
+    failed: 0,
+    skipped: 0,
+    error: null,
+  };
+}
+
 export async function clearRecentViews(): Promise<void> {
   if (isTauri) {
     const { invoke } = await import('@tauri-apps/api/core');

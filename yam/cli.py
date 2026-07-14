@@ -76,6 +76,8 @@ def fetch(
         schools = schools[:limit]
 
     console.print(f"共 {len(schools)} 所院校待抓取")
+    total_schools = len(schools)
+    print(f"YAM_TOTAL {total_schools}", flush=True)
 
     if dry_run:
         console.print("[yellow]这是模拟运行，不写入数据库[/yellow]")
@@ -96,6 +98,7 @@ def fetch(
         for i, school in enumerate(schools):
             school_id = school["school_id"]
             name = school["name"]
+            print(f"YAM_PROGRESS {i + 1}/{total_schools} {name}", flush=True)
 
             if school_id in fetched_school_ids:
                 skipped += 1
@@ -153,6 +156,8 @@ def fetch(
     if not skip_scores:
         console.print(f"分数线成功：{score_success} 所")
         console.print(f"分数线失败：{score_failed} 所")
+
+    print(f"YAM_DONE {success} {failed} {skipped}", flush=True)
 
 
 def _get_fetched_school_ids(db: Database, major_code: str, task_type: str) -> set[str]:

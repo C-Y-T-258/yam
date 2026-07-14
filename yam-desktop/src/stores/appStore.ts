@@ -6,10 +6,10 @@ export type Page = 'welcome' | 'major-management' | 'major-select' | 'crawling' 
 export interface CrawledMajor {
   code: string;
   name: string;
-  dataVersion: string;
-  lastUpdated: string;
-  schoolCount: number;
-  dbSize: string;
+  dataVersion?: string;
+  lastUpdated?: string;
+  schoolCount?: number;
+  dbSize?: string;
 }
 
 export interface CrawlingProgress {
@@ -22,12 +22,18 @@ export interface CrawlingProgress {
   isPaused: boolean;
 }
 
+export interface CrawlTarget {
+  code: string;
+  name: string;
+}
+
 interface AppState {
   currentPage: Page;
   crawledMajors: CrawledMajor[];
   currentMajor: string | null;
   crawlingProgress: CrawlingProgress | null;
   visibleMajorCodes: string[];
+  crawlTarget: CrawlTarget | null;
 
   setPage: (page: Page) => void;
   addMajor: (major: CrawledMajor) => void;
@@ -38,6 +44,7 @@ interface AppState {
   addCrawlingLog: (message: string) => void;
   setVisibleMajorCodes: (codes: string[]) => void;
   toggleVisibleMajor: (code: string) => void;
+  setCrawlTarget: (target: CrawlTarget | null) => void;
 }
 
 function isClient(): boolean {
@@ -52,6 +59,7 @@ export const useAppStore = create<AppState>()(
       currentMajor: null,
       crawlingProgress: null,
       visibleMajorCodes: [],
+      crawlTarget: null,
 
       setPage: (page) => set({ currentPage: page }),
 
@@ -99,6 +107,8 @@ export const useAppStore = create<AppState>()(
           : [...state.visibleMajorCodes, code];
         return { visibleMajorCodes: next };
       }),
+
+      setCrawlTarget: (target) => set({ crawlTarget: target }),
     }),
     {
       name: 'yam-app-store',
