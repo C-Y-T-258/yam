@@ -164,6 +164,28 @@ class ZhangShangKaoYanCrawler(BaseCrawler):
         """掌上考研不用于获取院校列表."""
         return []
 
+    def fetch_school_rank_map(self, major_code: str) -> dict[str, int]:
+        """按专业抓取掌上考研院校排序，返回 {学校名: 排名}.
+
+        掌上考研 PC 端没有稳定的"按专业列学校"公开 API，此处尝试调用
+        候选接口；任何异常都返回空 dict，调用方应据此降级到 school_code 升序。
+        """
+        try:
+            sleep(self.delay)
+            data = self._post(
+                "/school/schoolListBySpecial",
+                {"special_code": major_code, "page": 1, "limit": 500},
+            )
+            items = data.get("data", []) if isinstance(data, dict) else []
+            rank_map: dict[str, int] = {}
+            for idx, item in enumerate(items):
+                name = item.get("school_name", "") or item.get("name", "")
+                if name:
+                    rank_map[self._normalize_name(name)] = idx
+            return rank_map
+        except Exception:
+            return {}
+
     def fetch_departments(self, school: dict[str, Any]) -> list[dict[str, Any]]:
         """掌上考研不用于获取院系所信息."""
         return []

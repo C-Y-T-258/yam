@@ -81,6 +81,10 @@ class YanZhaoCrawler(BaseCrawler):
                     "province": item.get("szss", ""),
                     "province_code": item.get("szssm", ""),
                     "level": self._infer_level(item),
+                    "self_scoring": item.get("zhx") == "1",
+                    "doctoral_program": item.get("bs") == "1",
+                    "double_first_class": item.get("syl") == "1",
+                    "is_985": item.get("b985") == "1",
                     "sign": item.get("sign", ""),
                     "sign2": item.get("sign2", ""),
                 }
@@ -88,11 +92,17 @@ class YanZhaoCrawler(BaseCrawler):
         return schools
 
     def _infer_level(self, item: dict[str, Any]) -> str:
-        """根据研招网返回的标识推断学校层次."""
+        """根据研招网返回的标识推断学校层次.
+
+        科研院所（研究院/研究所/科学院）独立标记，不归入普通本科；
+        985 自动包含 211/双一流；syl 标识双一流；其它归普通本科。
+        """
+        name = item.get("dwmc", "")
+        is_research = any(p in name for p in ("研究院", "研究所", "科学院", "研究生院"))
+        if is_research:
+            return "科研院所"
         if item.get("b985") == "1":
             return "985/211/双一流"
-        if item.get("bs") == "1":
-            return "211/双一流"
         if item.get("syl") == "1":
             return "双一流"
         return "普通本科"
@@ -133,6 +143,12 @@ class YanZhaoCrawler(BaseCrawler):
 
     def _parse_department_item(self, item: dict[str, Any]) -> dict[str, Any]:
         """将研招网 yjfxs.do 返回的条目解析为 YAM 标准格式."""
+        special_plans: list[str] = []
+        if item.get("tydxs") == "1":
+            special_plans.append("退役大学生士兵")
+        if item.get("jsggjh") == "1":
+            special_plans.append("少数民族高层次骨干计划")
+
         return {
             "department_id": item.get("yxsdm", ""),
             "name": item.get("yxsmc", ""),
@@ -143,10 +159,22 @@ class YanZhaoCrawler(BaseCrawler):
             "research_direction": item.get("yjfxmc", ""),
             "exam_subjects": self._parse_exam_subjects(item.get("kskmz", [])),
             "exam_type": item.get("ksfsmc", ""),
+            "study_mode": self._parse_study_mode(item.get("xxfs", "")),
+            "special_plans": special_plans,
             "advisor": item.get("zdjs", ""),
             "source": self.source,
             "fetched_at": now_str(),
         }
+
+    def _parse_study_mode(self, value: Any) -> str:
+        """解析学习方式编码为可读文本."""
+        if value == "1" or str(value).strip() == "1":
+            return "全日制"
+        if value == "2" or str(value).strip() == "2":
+            return "非全日制"
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        return ""
 
     def _parse_enrollment_num(self, value: Any, text: str = "") -> int | None:
         """解析招生人数.

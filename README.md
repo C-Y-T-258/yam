@@ -2,48 +2,23 @@
 
 本地优先的考研择校数据工具。
 
-## 快速开始
+## 当前下一步目标
 
-```bash
-pip install kaoyan-yam[ui]
-yam serve
-```
+S001–S012 前端流程已实现。当前全力推进**综合筛选功能**，分为 5 个阶段：
 
-打开浏览器访问 http://localhost:8080，在启动画面选择专业即可开始使用。
+1. **Phase 2：Tauri 数据同步** — 创建同步脚本，让桌面端读取 Python `yam.db` 真实数据。
+2. **Phase 3：Tauri 后端查询扩展** — 支持地区多选/一区二区、学习方式、考试方式、专项计划、院校特性、科目分数区间，并动态返回可选项。
+3. **Phase 4：前端筛选面板重构** — 研招网式交互，地区多选 + 一区/二区快捷分组，其余条件按真实数据动态渲染。
+4. **Phase 5：收藏页同步筛选** — 收藏页复用工作区筛选组件。
 
-## 功能
+Phase 1（Python 数据层扩展）已完成。
 
-- 多专业支持（085410 人工智能等）
-- 217 所院校数据（研招网 + 掌上考研双源）
-- 院校搜索、筛选（省份/层次/招生人数）
-- 院校详情：院系所、历年分数线、招生计划
-- 2-3 所院校并排对比
-- 收藏关注的院校
-- 数据异常提醒（双源交叉校验）
-- CSV 导出
-- 本地 SQLite 存储，数据不离开你的电脑
+详见 [`docs/session-handoff.md`](docs/session-handoff.md)。
 
-## CLI 命令
+## 技术栈
 
-```bash
-yam list-majors              # 列出支持的专业
-yam fetch --major 085410     # 抓取数据
-yam fetch-plans --major 085410  # 抓取招生计划
-yam stats --major 085410     # 查看数据统计
-yam audit --major 085410     # 数据审计
-yam cross-check --major 085410  # 交叉校验
-yam serve                    # 启动 UI（从启动画面选择专业）
-```
-
-## 数据来源
-
-- [研招网](https://yz.chsi.com.cn)：院校列表、院系所、招生人数、考试科目
-- [掌上考研](https://www.kaoyan.cn)：历年分数线、招生计划
+Tauri 2.x + React + TypeScript + Tailwind CSS v4 + Framer Motion，Python 后端负责研招网爬虫与 `yam.db`。
 
 ## 免责声明
 
 数据来自公开渠道，仅供学习参考，不保证完全准确。使用本工具产生的任何决策，由用户自行承担责任。
-
-## 许可证
-
-MIT

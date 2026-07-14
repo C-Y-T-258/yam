@@ -14,6 +14,9 @@ CREATE TABLE IF NOT EXISTS schools (
     name TEXT NOT NULL,
     province TEXT,
     level TEXT,
+    self_scoring INTEGER DEFAULT 0,
+    doctoral_program INTEGER DEFAULT 0,
+    double_first_class INTEGER DEFAULT 0,
     updated_at TEXT,
     PRIMARY KEY (school_id, major_code)
 );
@@ -29,6 +32,8 @@ CREATE TABLE IF NOT EXISTS departments (
     enrollment_text TEXT,
     exam_subjects TEXT,
     exam_type TEXT,
+    study_mode TEXT,
+    special_plans TEXT,
     advisor TEXT,
     source TEXT,
     updated_at TEXT,
@@ -147,6 +152,42 @@ class Database:
                 """
             )
             self.conn.commit()
+        if version < 2:
+            # v2: 新增学校特性与院系属性字段
+            def _has_column(table: str, column: str) -> bool:
+                cur = self.conn.execute(f"PRAGMA table_info({table})")
+                return any(r["name"] == column for r in cur.fetchall())
+
+            if not _has_column("schools", "self_scoring"):
+                self.conn.execute("ALTER TABLE schools ADD COLUMN self_scoring INTEGER DEFAULT 0")
+            if not _has_column("schools", "doctoral_program"):
+                self.conn.execute("ALTER TABLE schools ADD COLUMN doctoral_program INTEGER DEFAULT 0")
+            if not _has_column("schools", "double_first_class"):
+                self.conn.execute("ALTER TABLE schools ADD COLUMN double_first_class INTEGER DEFAULT 0")
+            if not _has_column("departments", "study_mode"):
+                self.conn.execute("ALTER TABLE departments ADD COLUMN study_mode TEXT")
+            if not _has_column("departments", "special_plans"):
+                self.conn.execute("ALTER TABLE departments ADD COLUMN special_plans TEXT")
+            self.conn.execute("PRAGMA user_version = 2")
+            self.conn.commit()
+        if version < 3:
+            # v3: 新增学校代码、省份代码、985/211 标识、掌上考研排名字段
+            def _has_column(table: str, column: str) -> bool:
+                cur = self.conn.execute(f"PRAGMA table_info({table})")
+                return any(r["name"] == column for r in cur.fetchall())
+
+            if not _has_column("schools", "school_code"):
+                self.conn.execute("ALTER TABLE schools ADD COLUMN school_code TEXT DEFAULT ''")
+            if not _has_column("schools", "province_code"):
+                self.conn.execute("ALTER TABLE schools ADD COLUMN province_code TEXT DEFAULT ''")
+            if not _has_column("schools", "is_985"):
+                self.conn.execute("ALTER TABLE schools ADD COLUMN is_985 INTEGER DEFAULT 0")
+            if not _has_column("schools", "is_211"):
+                self.conn.execute("ALTER TABLE schools ADD COLUMN is_211 INTEGER DEFAULT 0")
+            if not _has_column("schools", "display_order"):
+                self.conn.execute("ALTER TABLE schools ADD COLUMN display_order INTEGER DEFAULT 0")
+            self.conn.execute("PRAGMA user_version = 3")
+            self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()
@@ -161,8 +202,11 @@ class Database:
         self.conn.execute(
             """
             INSERT OR REPLACE INTO schools
-            (school_id, major_code, name, province, level, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            (school_id, major_code, name, province, level,
+             self_scoring, doctoral_program, double_first_class,
+             school_code, province_code, is_985, is_211, display_order,
+             updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 school["school_id"],
@@ -170,6 +214,14 @@ class Database:
                 school["name"],
                 school.get("province"),
                 school.get("level"),
+                int(bool(school.get("self_scoring", False))),
+                int(bool(school.get("doctoral_program", False))),
+                int(bool(school.get("double_first_class", False))),
+                school.get("school_code", "") or "",
+                school.get("province_code", "") or "",
+                int(bool(school.get("is_985", False))),
+                int(bool(school.get("is_211", False))),
+                int(school.get("display_order", 0) or 0),
                 updated_at,
             ),
         )
@@ -181,8 +233,9 @@ class Database:
             """
             INSERT OR REPLACE INTO departments
             (department_id, school_id, major_code, name, research_direction,
-             enrollment_count, enrollment_text, exam_subjects, exam_type, advisor, source, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             enrollment_count, enrollment_text, exam_subjects, exam_type,
+             study_mode, special_plans, advisor, source, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 dept.get("department_id", ""),
@@ -194,6 +247,8 @@ class Database:
                 dept.get("enrollment_text", ""),
                 json.dumps(dept.get("exam_subjects", []), ensure_ascii=False),
                 dept.get("exam_type", ""),
+                dept.get("study_mode", ""),
+                json.dumps(dept.get("special_plans", []) or [], ensure_ascii=False),
                 dept.get("advisor", ""),
                 dept.get("source", ""),
                 updated_at,
