@@ -25,7 +25,7 @@
 ## ISSUE-002：网页端 Workspace 页面在浏览器自动化工具中快照超时
 
 - **严重程度**：medium
-- **状态**：open
+- **状态**：fixed
 - **描述**：使用 Playwright/浏览器工具访问 `http://localhost:1420/#workspace` 时页面加载超时，Welcome 页正常。带 `TopNav` 的页面似乎都受影响。
 - **复现步骤**：
   1. `cd yam-desktop; npm run dev`
@@ -37,6 +37,7 @@
   - 检查 `TopNav` 组件是否有无限渲染或循环请求。
   - 检查 mock 数据加载路径是否有阻塞。
   - 考虑给浏览器环境补充更完整的 mock 数据初始化。
+- **备注**：已通过改用 CDP 调试 Tauri 桌面端（参见 `.trae/skills/tauri-desktop-cdp-debug/SKILL.md`）绕过该问题，不再依赖网页端 Playwright 快照。如需恢复网页端调试可重新打开。
 
 ---
 
@@ -237,3 +238,30 @@
     - 底部增加"点击查看 →"提示，引导用户跳转采集页。
     - 任务完成无错误后 8 秒自动隐藏（原为 3 秒，延长以便用户查看结果）。
 - **验证**：通过 CDP 验证，运行中显示"后台采集任务 未知专业 085410 0/217 所 0% ✓0 ✗0 已用时 0:09 点击查看 →"；出错时显示"采集任务出错 未知专业 085410 用户取消采集任务 0% ✓0 ✗0 更新于 01:49:17 点击查看 →"。
+
+---
+
+## ISSUE-013：Python CLI 错误信息无法传递到 Tauri 前端
+
+- **严重程度**：high
+- **状态**：fixed
+- **描述**：采集 085400（未登录研招网）等失败场景时，前端只显示通用错误"采集脚本异常退出"，而非 Python CLI 抛出的真实原因（如"需要登录研招网：研招网接口返回异常：请登录"），用户无法判断该做什么。
+- **复现步骤**：
+  1. 启动桌面端，进入专业管理 → 添加 085400（未在终端执行 `yam fetch-seeds -m 085400 --login`）。
+  2. 进入采集页启动采集。
+  3. 等待采集结束（约 5-6 秒）。
+- **期望行为**：前端 error 字段显示 Python 的 `YAM_ERROR` 内容，如"需要登录研招网：研招网接口返回异常：请登录。请先运行 yam fetch-seeds -m 085400 --login"。
+- **实际行为**：前端 error 字段为"采集脚本异常退出"或为空。
+- **根因**：
+  - **根因 1**（Rust 端）：`run_crawl_task` 使用 `BufReader::lines()` 读取 Python stdout。该方法严格要求 UTF-8，但 Python 在 Windows 上默认用系统编码（GBK/cp936）输出中文，导致 `lines()` 返回 `Err`，被 `.flatten()` 静默丢弃，所有包含中文的行（包括 `YAM_ERROR 需要登录研招网：...`）全部丢失。
+  - **根因 2**（Python 端）：Python CLI 缺少对外的错误协议，仅打印 Rich Console 红色文本，Rust 端无法稳定解析。
+- **修复位置**：
+  - `yam/cli.py`：`fetch` 命令捕获 `LoginRequiredError` / `RuntimeError` 时，除 Rich Console 输出外，额外 `print(f"YAM_ERROR {消息}", flush=True)` 输出结构化错误协议，供 Rust 端解析。
+  - `yam-desktop/src-tauri/src/commands.rs`：
+    - `run_crawl_task` 移除 `BufReader::lines()`，改用 `read()` + 手动按 `\n` 分割 + `String::from_utf8_lossy()` 容错解码，避免 GBK 字节导致整行丢弃。
+    - 子进程启动时设置 `PYTHONIOENCODING=utf-8` 和 `PYTHONUTF8=1` 环境变量，强制 Python 以 UTF-8 输出，从源头消除编码问题。
+    - 新增 `process_stdout_line()` 辅助函数，识别 `YAM_ERROR ` 前缀并写入 `p.error` 字段。
+- **验证结果**（通过 CDP 直接调用 `run_crawl('085400')`）：
+  - 采集 6 秒后 `done=true, error="需要登录研招网：研招网接口返回异常：请登录。请先运行 yam fetch-seeds -m 085400 --login"`。
+  - 中文显示正确，无乱码。
+- **备注**：`String::from_utf8_lossy` 仍保留作为防御性容错（防止其他非 UTF-8 字节导致崩溃），但 `PYTHONIOENCODING=utf-8` 已经从源头保证了 Python 输出可被 Rust 正确解码。

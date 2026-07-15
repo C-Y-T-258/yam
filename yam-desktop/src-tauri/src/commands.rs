@@ -290,6 +290,9 @@ fn run_crawl_task(state: CrawlState, major_code: String) -> Result<(), String> {
         .current_dir(&repo_root)
         .env("PYTHONPATH", &repo_root)
         .env("PYTHONUNBUFFERED", "1")
+        // 强制 Python 使用 UTF-8 输出，避免 Windows 默认 GBK 导致 Rust 端 String::from_utf8_lossy 解码出乱码
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONUTF8", "1")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -304,76 +307,66 @@ fn run_crawl_task(state: CrawlState, major_code: String) -> Result<(), String> {
     let stdout = child.stdout.take().ok_or("无法获取 stdout")?;
     let stderr = child.stderr.take().ok_or("无法获取 stderr")?;
 
-    // 独立读取 stderr，防止缓冲区满导致子进程阻塞
+    // 在单独线程中读取整个 stderr（防止缓冲区满阻塞子进程）
     let stderr_reader = std::thread::spawn(move || {
-        use std::io::{BufRead, BufReader};
-        let reader = BufReader::new(stderr);
-        reader.lines().flatten().collect::<Vec<_>>().join("\n")
+        use std::io::Read;
+        let mut buf = Vec::new();
+        let mut reader = stderr;
+        reader.read_to_end(&mut buf).ok();
+        String::from_utf8_lossy(&buf).to_string()
     });
 
-    use std::io::{BufRead, BufReader};
-    let reader = BufReader::new(stdout);
+    // 主线程逐行读取 stdout（用 read_until 避免 lines() 的 UTF-8 严格解码问题）
+    // Python 在 Windows 上可能输出 GBK 编码的中文，lines() 会因 UTF-8 解码失败丢弃整行
+    use std::io::Read;
+    let mut stdout_reader = stdout;
+    let mut line_buf: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 1024];
     let mut last_progress_time = std::time::Instant::now();
     let timeout_secs = 90u64;
 
-    for line in reader.lines().flatten() {
+    loop {
         // 检查是否已被取消
         {
             let p = state.lock().unwrap();
             if !p.running && p.done {
-                // 用户已取消，尝试 kill 子进程
                 let _ = child.kill();
                 break;
             }
         }
 
-        if line.starts_with("YAM_TOTAL ") {
-            if let Ok(total) = line[10..].trim().parse::<i32>() {
-                let mut p = state.lock().unwrap();
-                p.total = total;
-                last_progress_time = std::time::Instant::now();
+        // 非阻塞读取：如果有数据就处理，没有就检查超时和子进程状态
+        match stdout_reader.read(&mut chunk) {
+            Ok(0) => {
+                // EOF，处理最后一行（如果有）
+                if !line_buf.is_empty() {
+                    let line = String::from_utf8_lossy(&line_buf).to_string();
+                    process_stdout_line(&line, &state, &mut last_progress_time);
+                    line_buf.clear();
+                }
+                break;
             }
-        } else if line.starts_with("YAM_PROGRESS ") {
-            let rest = &line[13..];
-            let space_idx = rest.find(' ').unwrap_or(rest.len());
-            let progress_part = &rest[..space_idx];
-            let name = rest[space_idx..].trim().to_string();
-            let nums: Vec<&str> = progress_part.split('/').collect();
-            if nums.len() == 2 {
-                if let (Ok(current), Ok(total)) = (nums[0].parse::<i32>(), nums[1].parse::<i32>()) {
-                    let mut p = state.lock().unwrap();
-                    p.current = current;
-                    p.total = total;
-                    p.current_name = name;
-                    last_progress_time = std::time::Instant::now();
+            Ok(n) => {
+                line_buf.extend_from_slice(&chunk[..n]);
+                // 按换行符分割处理完整行
+                while let Some(pos) = line_buf.iter().position(|&b| b == b'\n') {
+                    let mut single_line: Vec<u8> = line_buf.drain(..=pos).collect();
+                    // 去掉行尾的 \r\n
+                    while single_line.last() == Some(&b'\n') || single_line.last() == Some(&b'\r') {
+                        single_line.pop();
+                    }
+                    if !single_line.is_empty() {
+                        let line = String::from_utf8_lossy(&single_line).to_string();
+                        process_stdout_line(&line, &state, &mut last_progress_time);
+                    }
                 }
             }
-        } else if line.starts_with("YAM_DONE ") {
-            let parts: Vec<&str> = line[9..].split_whitespace().collect();
-            if parts.len() == 3 {
-                if let (Ok(success), Ok(failed), Ok(skipped)) = (
-                    parts[0].parse::<i32>(),
-                    parts[1].parse::<i32>(),
-                    parts[2].parse::<i32>(),
-                ) {
-                    let mut p = state.lock().unwrap();
-                    p.success = success;
-                    p.failed = failed;
-                    p.skipped = skipped;
-                    last_progress_time = std::time::Instant::now();
-                }
-            }
-        } else if !line.is_empty() {
-            // 实时显示 Python 输出到 current_name 字段（附加到日志）
-            // 这样用户在采集页能看到子进程输出
-            let mut p = state.lock().unwrap();
-            // 把非 YAM_* 的行追加到 current_name 后面作为简单日志
-            if p.current_name.is_empty() {
-                p.current_name = line.chars().take(80).collect();
+            Err(_e) => {
+                break;
             }
         }
 
-        // 超时检测：超过 90 秒没有任何进度更新，认为卡住
+        // 超时检测
         if last_progress_time.elapsed().as_secs() > timeout_secs {
             let mut p = state.lock().unwrap();
             p.error = Some(format!(
@@ -385,22 +378,16 @@ fn run_crawl_task(state: CrawlState, major_code: String) -> Result<(), String> {
         }
     }
 
-    let status = child
-        .wait()
-        .map_err(|e| format!("等待子进程失败: {}", e))?;
+    let status = child.wait().map_err(|e| format!("等待子进程失败: {}", e))?;
     let stderr_output = stderr_reader.join().unwrap_or_default();
     {
         let mut p = state.lock().unwrap();
         // 清除 child_pid，子进程已退出
         p.child_pid = None;
         if !status.success() {
-            // 如果用户主动取消（error 已被设置为"用户取消采集任务"），保留该信息
-            let already_cancelled = p
-                .error
-                .as_deref()
-                .map(|e| e.contains("用户取消"))
-                .unwrap_or(false);
-            if !already_cancelled {
+            // 如果已有 error（来自 YAM_ERROR 或用户取消），保留它
+            let already_has_error = p.error.is_some();
+            if !already_has_error {
                 let msg = if stderr_output.is_empty() {
                     "采集脚本异常退出".to_string()
                 } else {
@@ -411,6 +398,58 @@ fn run_crawl_task(state: CrawlState, major_code: String) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// 处理 stdout 的一行，更新 state 和 last_progress_time
+fn process_stdout_line(line: &str, state: &CrawlState, last_progress_time: &mut std::time::Instant) {
+    if line.starts_with("YAM_TOTAL ") {
+        if let Ok(total) = line[10..].trim().parse::<i32>() {
+            let mut p = state.lock().unwrap();
+            p.total = total;
+            *last_progress_time = std::time::Instant::now();
+        }
+    } else if line.starts_with("YAM_PROGRESS ") {
+        let rest = &line[13..];
+        let space_idx = rest.find(' ').unwrap_or(rest.len());
+        let progress_part = &rest[..space_idx];
+        let name = rest[space_idx..].trim().to_string();
+        let nums: Vec<&str> = progress_part.split('/').collect();
+        if nums.len() == 2 {
+            if let (Ok(current), Ok(total)) = (nums[0].parse::<i32>(), nums[1].parse::<i32>()) {
+                let mut p = state.lock().unwrap();
+                p.current = current;
+                p.total = total;
+                p.current_name = name;
+                *last_progress_time = std::time::Instant::now();
+            }
+        }
+    } else if line.starts_with("YAM_DONE ") {
+        let parts: Vec<&str> = line[9..].split_whitespace().collect();
+        if parts.len() == 3 {
+            if let (Ok(success), Ok(failed), Ok(skipped)) = (
+                parts[0].parse::<i32>(),
+                parts[1].parse::<i32>(),
+                parts[2].parse::<i32>(),
+            ) {
+                let mut p = state.lock().unwrap();
+                p.success = success;
+                p.failed = failed;
+                p.skipped = skipped;
+                *last_progress_time = std::time::Instant::now();
+            }
+        }
+    } else if line.starts_with("YAM_ERROR ") {
+        // Python CLI 输出的结构化错误信息，直接设置到 error 字段
+        let err_msg = line[10..].trim().to_string();
+        let mut p = state.lock().unwrap();
+        p.error = Some(err_msg);
+    } else if !line.is_empty() {
+        // 实时显示 Python 输出到 current_name 字段
+        let mut p = state.lock().unwrap();
+        if p.current_name.is_empty() {
+            p.current_name = line.chars().take(80).collect();
+        }
+    }
 }
 
 #[tauri::command]

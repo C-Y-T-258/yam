@@ -245,6 +245,32 @@
 - [x] 更新 `docs/known-issues.md`：补充 ISSUE-004 修复说明。
 - [x] 验证：`npm run build` 通过；`cargo check` 通过；Python 语法检查通过；CLI 测试 085400 立即提示登录；CLI 重新抓取 085410 成功 217 所并同步到 Tauri DB。
 
+## Python 错误信息无法传递前端修复（2026-07-16）
+
+- **背景**：ISSUE-012 修复后通过 CDP 测试 085400 采集流程时，发现前端 `error` 字段始终为"采集脚本异常退出"，而非 Python CLI 抛出的"需要登录研招网：研招网接口返回异常：请登录"。用户无法判断失败原因。
+- **AI 自测结果**（通过 CDP `run_crawl('085400')`）：
+  1. 采集 5-6 秒后 Python 抛 `LoginRequiredError`，但 Rust 端 `error` 字段为 "采集脚本异常退出"。
+  2. 直接用 `python -m yam.cli fetch --major 085400 --force` 复测，stdout 中明确包含 `YAM_ERROR 需要登录研招网：研招网接口返回异常：请登录`。
+  3. Rust 端用 `.output()` 读取到 779 字节 stdout，但 `.spawn()` + `BufReader::lines()` 只读到 0 行。
+- **根因诊断**：
+  - **根因 1**：Rust 的 `BufReader::lines()` 严格要求 UTF-8。Python 在 Windows 上默认用系统编码（GBK/cp936）输出中文，导致 `lines()` 返回 `Err`，被 `.flatten()` 静默丢弃所有包含中文的行。
+  - **根因 2**：Python CLI 缺少对外的错误协议，只有 Rich Console 输出，Rust 端无法稳定解析。
+- **修复内容**：
+  - [x] `yam/cli.py`：`fetch` 命令捕获 `LoginRequiredError` / `RuntimeError` 时额外 `print(f"YAM_ERROR {消息}", flush=True)` 输出结构化错误协议。
+  - [x] `yam-desktop/src-tauri/src/commands.rs`：
+    - `run_crawl_task` 移除 `BufReader::lines()`，改用 `read()` + 手动按 `\n` 字节分割 + `String::from_utf8_lossy()` 容错解码。
+    - 子进程启动时设置 `PYTHONIOENCODING=utf-8` 和 `PYTHONUTF8=1` 环境变量，强制 Python 以 UTF-8 输出。
+    - 新增 `process_stdout_line()` 辅助函数，识别 `YAM_ERROR ` 前缀并写入 `p.error` 字段。
+- **验证结果**（通过 CDP 直接调用 `run_crawl('085400')` 轮询 6 秒）：
+  - `done=true, error="需要登录研招网：研招网接口返回异常：请登录。请先运行 yam fetch-seeds -m 085400 --login"`。
+  - 中文显示正确，无乱码。
+  - `current_name` 也正确显示 "警告：专业 085400 当前未启用"。
+- **编译验证**：`cargo check` 通过。
+- **记录**：ISSUE-013 已添加到 `docs/known-issues.md`。
+- **后续待办**：
+  - 由用户进行桌面端手动测试（启动 085400 采集观察错误提示）。
+  - 通过问答框验证任务完成。
+
 ### 桌面端采集状态与添加时机修复（2026-07-15 晚）
 
 - [x] 定位问题：`MajorSelectPage.tsx` 在选择专业时立即 `addMajor`，导致未采集成功就出现在专业管理页。

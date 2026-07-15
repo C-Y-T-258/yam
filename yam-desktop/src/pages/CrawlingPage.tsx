@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Building2, Calendar, X, Cloud, Loader2 } from 'lucide-react';
+import { Building2, Calendar, X, Cloud, Loader2, AlertCircle } from 'lucide-react';
 import { useAppStore } from '../stores/appStore';
 import { TopNav } from '../components/TopNav';
 import { runCrawl, getCrawlProgress, syncWorkspaceData, fetchAvailableMajors, cancelCrawl, type CrawlProgress } from '../lib/db';
@@ -287,6 +287,31 @@ export function CrawlingPage() {
 
       {/* Content */}
       <div className="max-w-4xl mx-auto px-6 py-8">
+        {/* Error Banner */}
+        {error && (
+          <div className={`mb-6 rounded-lg px-4 py-3 border ${error.includes('登录') || error.includes('login') ? 'bg-amber-50 border-amber-200' : 'bg-red-50 border-red-200'}`}>
+            <div className="flex items-start gap-2">
+              {error.includes('登录') ? <AlertCircle size={18} className="text-amber-500 flex-shrink-0 mt-0.5" /> : <X size={18} className="text-red-500 flex-shrink-0 mt-0.5" />}
+              <div className="flex-1">
+                <div className={`text-sm font-medium ${error.includes('登录') ? 'text-amber-700' : 'text-red-700'}`}>
+                  采集失败
+                </div>
+                <div className={`text-sm mt-1 ${error.includes('登录') ? 'text-amber-600' : 'text-red-600'}`}>
+                  {error}
+                </div>
+                {error.includes('登录') && (
+                  <div className="mt-2 text-xs text-amber-600 bg-amber-100 rounded px-2 py-1">
+                    提示：请在终端运行以下命令完成登录后再采集：
+                    <code className="block mt-1 font-mono bg-white px-2 py-0.5 rounded text-amber-800">
+                      yam fetch-seeds -m {crawlTarget?.code} --login
+                    </code>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Current Major */}
         <h1 className="text-xl text-gray-700 mb-6">
           当前专业：<span className="text-[#1e3a5f] font-medium">{crawlingProgress?.major || crawlTarget.name}</span>

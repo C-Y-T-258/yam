@@ -54,6 +54,7 @@ def fetch(
     dry_run: bool = typer.Option(False, "--dry-run", help="仅模拟，不写入数据库"),
     limit: int = typer.Option(0, "--limit", "-l", help="限制抓取学校数量，0 表示全部"),
     skip_scores: bool = typer.Option(False, "--skip-scores", help="跳过分数线抓取"),
+    force: bool = typer.Option(False, "--force", help="强制重新抓取，忽略已有的 fetch_log 记录"),
 ) -> None:
     """抓取指定专业的数据."""
     major_info = config.get_major(major)
@@ -69,9 +70,29 @@ def fetch(
     console.print(f"[bold]开始抓取 {major} {major_info['name']} 数据...[/bold]")
     console.print(f"目标年份：{target_years}")
 
+    if force:
+        with Database() as db:
+            db.conn.execute(
+                "DELETE FROM fetch_log WHERE major_code = ?", (major,)
+            )
+            db.conn.commit()
+        console.print("[yellow]已强制清空历史抓取记录，将重新抓取所有院校[/yellow]")
+
     crawler = YanZhaoCrawler(major, major_info["name"])
     score_crawler = ZhangShangKaoYanCrawler(major, major_info["name"])
-    schools = crawler.fetch_schools()
+    try:
+        schools = crawler.fetch_schools()
+    except LoginRequiredError as e:
+        console.print(
+            f"[red]错误：{e}\n"
+            f"请先在终端运行：yam fetch-seeds -m {major} --login 完成研招网登录后重试。[/red]"
+        )
+        print(f"YAM_ERROR 需要登录研招网：{e}。请先运行 yam fetch-seeds -m {major} --login", flush=True)
+        raise typer.Exit(1) from e
+    except RuntimeError as e:
+        console.print(f"[red]错误：{e}[/red]")
+        print(f"YAM_ERROR {e}", flush=True)
+        raise typer.Exit(1) from e
     if limit > 0:
         schools = schools[:limit]
 
