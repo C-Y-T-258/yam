@@ -34,6 +34,7 @@ interface AppState {
   crawlingProgress: CrawlingProgress | null;
   visibleMajorCodes: string[];
   crawlTarget: CrawlTarget | null;
+  enableProfessionalThreeLevelMenu: boolean;
 
   setPage: (page: Page) => void;
   addMajor: (major: CrawledMajor) => void;
@@ -45,6 +46,7 @@ interface AppState {
   setVisibleMajorCodes: (codes: string[]) => void;
   toggleVisibleMajor: (code: string) => void;
   setCrawlTarget: (target: CrawlTarget | null) => void;
+  setEnableProfessionalThreeLevelMenu: (enabled: boolean) => void;
 }
 
 function isClient(): boolean {
@@ -60,6 +62,7 @@ export const useAppStore = create<AppState>()(
       crawlingProgress: null,
       visibleMajorCodes: [],
       crawlTarget: null,
+      enableProfessionalThreeLevelMenu: false,
 
       setPage: (page) => set({ currentPage: page }),
 
@@ -109,10 +112,14 @@ export const useAppStore = create<AppState>()(
       }),
 
       setCrawlTarget: (target) => set({ crawlTarget: target }),
+      setEnableProfessionalThreeLevelMenu: (enabled) => set({ enableProfessionalThreeLevelMenu: enabled }),
     }),
     {
       name: 'yam-app-store',
-      partialize: (state) => ({ visibleMajorCodes: state.visibleMajorCodes }),
+      partialize: (state) => ({
+        visibleMajorCodes: state.visibleMajorCodes,
+        enableProfessionalThreeLevelMenu: state.enableProfessionalThreeLevelMenu,
+      }),
       storage: isClient()
         ? {
             getItem: (name) => {

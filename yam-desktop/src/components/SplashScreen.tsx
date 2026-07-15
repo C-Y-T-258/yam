@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Check, ChevronRight, RefreshCw, Database } from 'lucide-react';
+import { useAppStore } from '../stores/appStore';
 import {
   ACADEMIC_CATEGORIES,
   PROFESSIONAL_CATEGORIES,
@@ -27,6 +28,7 @@ interface SplashScreenProps {
 }
 
 export function SplashScreen({ onSelect, onStartCrawl, crawledMajors = [] }: SplashScreenProps) {
+  const { enableProfessionalThreeLevelMenu, setEnableProfessionalThreeLevelMenu } = useAppStore();
   const [degreeType, setDegreeType] = useState<DegreeType>('academic');
   const [selectedCategory, setSelectedCategory] = useState<DisciplineCategory | null>(null);
   const [selectedDiscipline, setSelectedDiscipline] = useState<FirstLevelDiscipline | null>(null);
@@ -34,6 +36,7 @@ export function SplashScreen({ onSelect, onStartCrawl, crawledMajors = [] }: Spl
   const [selectedMajors, setSelectedMajors] = useState<Set<string>>(new Set());
 
   const categories = degreeType === 'academic' ? ACADEMIC_CATEGORIES : PROFESSIONAL_CATEGORIES;
+  const isProfessionalFlat = degreeType === 'professional' && !enableProfessionalThreeLevelMenu;
 
   const hasData = crawledMajors.length > 0;
 
@@ -215,7 +218,7 @@ export function SplashScreen({ onSelect, onStartCrawl, crawledMajors = [] }: Spl
         <p className="text-center text-gray-500 mb-6">本地优先的考研择校数据工具</p>
 
         {/* Degree Type Selector */}
-        <div className="flex justify-center mb-4">
+        <div className="flex items-center justify-center gap-4 mb-4">
           <div className="inline-flex rounded-lg bg-gray-100 p-1">
             <button
               onClick={() => {
@@ -248,6 +251,17 @@ export function SplashScreen({ onSelect, onStartCrawl, crawledMajors = [] }: Spl
               专业学位
             </button>
           </div>
+          {degreeType === 'professional' && (
+            <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={enableProfessionalThreeLevelMenu}
+                onChange={(e) => setEnableProfessionalThreeLevelMenu(e.target.checked)}
+                className="rounded border-gray-300 text-primary focus:ring-primary"
+              />
+              启用三级菜单
+            </label>
+          )}
         </div>
 
         {/* Search */}
@@ -311,8 +325,65 @@ export function SplashScreen({ onSelect, onStartCrawl, crawledMajors = [] }: Spl
               <p className="text-center text-gray-500 py-8">未找到匹配的专业</p>
             )}
           </div>
+        ) : isProfessionalFlat ? (
+          /* Flat 2-column cascading for professional degree (default off) */
+          <div className="grid grid-cols-2 gap-4">
+            {/* Column 1: 门类 */}
+            <div className="border rounded-lg p-3 h-64 overflow-auto">
+              <h3 className="text-sm font-medium text-gray-500 mb-2">学科门类</h3>
+              {categories.map((cat) => (
+                <motion.button
+                  key={cat.code}
+                  whileHover={{ x: 4 }}
+                  onClick={() => {
+                    setSelectedCategory(cat);
+                    setSelectedDiscipline(null);
+                  }}
+                  className={`w-full text-left px-3 py-2 rounded text-sm mb-1 transition-colors ${
+                    selectedCategory?.code === cat.code
+                      ? 'bg-primary text-white'
+                      : 'hover:bg-gray-100'
+                  }`}
+                >
+                  <span className="text-xs opacity-60 mr-1">{cat.code}</span>
+                  {cat.name}
+                </motion.button>
+              ))}
+            </div>
+
+            {/* Column 2: 专业 */}
+            <div className="border rounded-lg p-3 h-64 overflow-auto">
+              <h3 className="text-sm font-medium text-gray-500 mb-2">专业</h3>
+              <AnimatePresence mode="wait">
+                {selectedCategory ? (
+                  selectedCategory.disciplines.flatMap((disc) => disc.majors).length > 0 ? (
+                    selectedCategory.disciplines
+                      .flatMap((disc) => disc.majors)
+                      .map((m) => (
+                        <motion.button
+                          key={m.code}
+                          initial={{ opacity: 0, x: -10 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          exit={{ opacity: 0, x: 10 }}
+                          whileHover={{ x: 4 }}
+                          onClick={() => onStartCrawl?.(m.code)}
+                          className="w-full text-left px-3 py-2 rounded text-sm mb-1 hover:bg-primary/10 transition-colors"
+                        >
+                          <span className="text-gray-500 mr-2 font-mono">{m.code}</span>
+                          {m.name}
+                        </motion.button>
+                      ))
+                  ) : (
+                    <p className="text-center text-gray-400 py-8 text-sm">该门类下暂无专业</p>
+                  )
+                ) : (
+                  <p className="text-center text-gray-400 py-8 text-sm">请选择门类</p>
+                )}
+              </AnimatePresence>
+            </div>
+          </div>
         ) : (
-          /* 3-column cascading for both degree types */
+          /* 3-column cascading for academic or professional (when enabled) */
           <div className="grid grid-cols-3 gap-4">
             {/* Column 1: 门类 */}
             <div className="border rounded-lg p-3 h-64 overflow-auto">
