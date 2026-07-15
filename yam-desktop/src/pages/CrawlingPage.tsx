@@ -3,7 +3,7 @@ import { motion } from 'framer-motion';
 import { Building2, Calendar, X, Cloud, Loader2 } from 'lucide-react';
 import { useAppStore } from '../stores/appStore';
 import { TopNav } from '../components/TopNav';
-import { runCrawl, getCrawlProgress, syncWorkspaceData, type CrawlProgress } from '../lib/db';
+import { runCrawl, getCrawlProgress, syncWorkspaceData, fetchAvailableMajors, cancelCrawl, type CrawlProgress } from '../lib/db';
 
 function getNowTime(): string {
   const now = new Date();
@@ -19,6 +19,9 @@ export function CrawlingPage() {
     setPage,
     crawlTarget,
     setCrawlTarget,
+    updateMajor,
+    addMajor,
+    crawledMajors,
   } = useAppStore();
   const logContainerRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
@@ -44,11 +47,60 @@ export function CrawlingPage() {
     });
     lastSchoolRef.current = '';
 
-    runCrawl(crawlTarget.code).catch((err) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      setError(msg);
-      addCrawlingLog(`启动采集失败：${msg}`);
-    });
+    // 先检查是否已有进行中的采集任务，避免重复启动
+    getCrawlProgress()
+      .then((p) => {
+        if (p.running) {
+          if (p.major_code === crawlTarget.code) {
+            addCrawlingLog('检测到已有进行中的同专业采集任务，继续监听进度...');
+          } else {
+            const msg = `已有其他采集任务在运行（${p.major_code}）`;
+            setError(msg);
+            addCrawlingLog(msg);
+          }
+        } else if (p.done) {
+          // 后端采集已结束（用户从"后台运行"回来，或残留状态）
+          // 不自动重启采集，避免覆盖已完成的结果
+          if (p.major_code === crawlTarget.code) {
+            addCrawlingLog(`检测到上次采集已完成：成功 ${p.success} 所，失败 ${p.failed} 所，跳过 ${p.skipped} 所`);
+            if (p.error) {
+              setError(p.error);
+              addCrawlingLog(`上次采集错误：${p.error}`);
+            } else if (p.success > 0) {
+              // 采集成功但尚未同步（用户从后台回来），自动同步并跳转
+              addCrawlingLog('正在同步数据到工作区...');
+              handleSync();
+            } else {
+              // 异常状态（success=0 且无 error），提示用户重新采集
+              setError('上次采集未取得数据，请取消后重新选择专业');
+            }
+          } else {
+            // 不同专业，启动新采集
+            addCrawlingLog(`启动新采集任务：${crawlTarget.code}`);
+            runCrawl(crawlTarget.code).catch((err) => {
+              const msg = err instanceof Error ? err.message : String(err);
+              setError(msg);
+              addCrawlingLog(`启动采集失败：${msg}`);
+            });
+          }
+        } else {
+          // 初始状态（done=false, running=false），启动新采集
+          addCrawlingLog(`启动采集任务：${crawlTarget.code}`);
+          runCrawl(crawlTarget.code).catch((err) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            setError(msg);
+            addCrawlingLog(`启动采集失败：${msg}`);
+          });
+        }
+      })
+      .catch((err) => {
+        addCrawlingLog(`检查采集状态失败：${err instanceof Error ? err.message : String(err)}`);
+        runCrawl(crawlTarget.code).catch((err) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          setError(msg);
+          addCrawlingLog(`启动采集失败：${msg}`);
+        });
+      });
 
     return () => {
       if (intervalRef.current) {
@@ -67,8 +119,21 @@ export function CrawlingPage() {
         const p: CrawlProgress = await getCrawlProgress();
         const percent = p.total > 0 ? Math.round((p.current / p.total) * 100) : 0;
 
+        // 根据后端状态显示更详细的进度信息
+        let displaySchool = '准备中...';
+        if (p.done) {
+          displaySchool = p.error ? '采集已结束' : '采集完成';
+        } else if (p.total > 0) {
+          displaySchool = p.current_name || `进度 ${p.current}/${p.total}`;
+        } else if (p.current_name) {
+          // total=0 但有 current_name，说明 Python 正在输出（如获取院校列表）
+          displaySchool = p.current_name;
+        } else if (p.running) {
+          displaySchool = '正在获取院校列表...';
+        }
+
         updateCrawlingProgress({
-          school: p.current_name || '准备中...',
+          school: displaySchool,
           percent,
         });
 
@@ -116,6 +181,31 @@ export function CrawlingPage() {
     addCrawlingLog('正在同步数据到工作区...');
     try {
       await syncWorkspaceData(crawlTarget.code);
+      // 同步成功后才把专业加入管理列表，避免未采集成功就被添加
+      const exists = crawledMajors.some((m) => m.code === crawlTarget.code);
+      if (!exists) {
+        addMajor({
+          code: crawlTarget.code,
+          name: crawlTarget.name,
+          dataVersion: '2026',
+          lastUpdated: '刚刚',
+          schoolCount: 0,
+          dbSize: '-',
+        });
+      }
+      try {
+        const available = await fetchAvailableMajors();
+        const info = available.find((m) => m.major_code === crawlTarget.code);
+        if (info) {
+          updateMajor(crawlTarget.code, {
+            schoolCount: info.school_count,
+            lastUpdated: '刚刚',
+          });
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        addCrawlingLog(`更新专业统计失败：${msg}`);
+      }
       addCrawlingLog('数据同步完成，即将进入数据就绪页面');
       setTimeout(() => {
         setCrawlingProgress(null);
@@ -129,10 +219,19 @@ export function CrawlingPage() {
     }
   };
 
-  const handleCancel = () => {
+  const handleCancel = async () => {
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
+    }
+    addCrawlingLog('正在取消采集任务...');
+    try {
+      // 调用 Rust 端的 cancel_crawl，kill Python 子进程并重置 running 状态
+      await cancelCrawl();
+      addCrawlingLog('已取消采集任务');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      addCrawlingLog(`取消失败：${msg}（前端状态仍会清除）`);
     }
     setCrawlingProgress(null);
     setCrawlTarget(null);
@@ -140,6 +239,12 @@ export function CrawlingPage() {
   };
 
   const handleBackground = () => {
+    // 后台运行：不取消采集任务，仅返回工作区页面
+    // 采集任务在 Rust 端继续执行，用户回到本页时仍可看到进度
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
     setPage('data-ready');
   };
 

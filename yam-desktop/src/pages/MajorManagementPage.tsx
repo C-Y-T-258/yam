@@ -1,17 +1,8 @@
 import { motion } from 'framer-motion';
-import { RefreshCw, Trash2, Plus } from 'lucide-react';
-import { useAppStore, type CrawledMajor } from '../stores/appStore';
+import { RefreshCw, Trash2, Plus, FolderOpen } from 'lucide-react';
+import { useAppStore } from '../stores/appStore';
 import { TopNav } from '../components/TopNav';
-
-const MOCK_MAJORS: CrawledMajor[] = [
-  { code: '085410', name: '人工智能', dataVersion: '2026', lastUpdated: '2025-05-20 昨天', schoolCount: 287, dbSize: '1.24 GB' },
-  { code: '081200', name: '计算机科学与技术', dataVersion: '2026', lastUpdated: '2025-05-19 2天前', schoolCount: 312, dbSize: '1.36 GB' },
-  { code: '085405', name: '软件工程', dataVersion: '2026', lastUpdated: '2025-05-18 3天前', schoolCount: 265, dbSize: '1.08 GB' },
-  { code: '085404', name: '数据科学与大数据技术', dataVersion: '2026', lastUpdated: '2025-05-16 5天前', schoolCount: 190, dbSize: '862 MB' },
-  { code: '085401', name: '电子信息工程', dataVersion: '2026', lastUpdated: '2025-05-15 6天前', schoolCount: 238, dbSize: '1.02 GB' },
-  { code: '085402', name: '通信工程', dataVersion: '2026', lastUpdated: '2025-05-14 7天前', schoolCount: 215, dbSize: '936 MB' },
-  { code: '081104', name: '控制科学与工程', dataVersion: '2026', lastUpdated: '2025-05-12 9天前', schoolCount: 184, dbSize: '768 MB' },
-];
+import { resetCrawl } from '../lib/db';
 
 function getMajorCategory(code: string): string {
   return code.startsWith('085') ? '专' : '本';
@@ -20,11 +11,15 @@ function getMajorCategory(code: string): string {
 export function MajorManagementPage() {
   const { setPage, crawledMajors, removeMajor, setCrawlTarget } = useAppStore();
 
-  const majorsToShow = crawledMajors.length > 0 ? crawledMajors : MOCK_MAJORS;
-
-  const handleUpdate = (code: string) => {
-    const major = majorsToShow.find((m) => m.code === code);
+  const handleUpdate = async (code: string) => {
+    const major = crawledMajors.find((m) => m.code === code);
     if (!major) return;
+    // 重置后端采集状态，避免 CrawlingPage 误判"后台运行回来"导致不启动新采集
+    try {
+      await resetCrawl();
+    } catch (e) {
+      console.warn('reset crawl failed:', e);
+    }
     setCrawlTarget({ code: major.code, name: major.name });
     setPage('crawling');
   };
@@ -59,7 +54,14 @@ export function MajorManagementPage() {
           </div>
 
           {/* Table Body */}
-          {majorsToShow.map((major, index) => {
+          {crawledMajors.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 px-6 text-center">
+              <FolderOpen size={40} className="text-gray-300 mb-3" />
+              <p className="text-gray-500 mb-1">暂无专业数据</p>
+              <p className="text-sm text-gray-400">点击下方"添加专业"开始采集</p>
+            </div>
+          ) : (
+            crawledMajors.map((major, index) => {
             const category = getMajorCategory(major.code);
             return (
               <motion.div
@@ -122,7 +124,8 @@ export function MajorManagementPage() {
                 </div>
               </motion.div>
             );
-          })}
+          })
+          )}
         </div>
 
         {/* Add Major Button */}

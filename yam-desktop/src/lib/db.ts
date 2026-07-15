@@ -711,6 +711,24 @@ export async function getCrawlProgress(): Promise<CrawlProgress> {
   };
 }
 
+export async function cancelCrawl(): Promise<void> {
+  if (isTauri) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('cancel_crawl');
+    return;
+  }
+  // 浏览器环境无需操作
+}
+
+export async function resetCrawl(): Promise<void> {
+  if (isTauri) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('reset_crawl');
+    return;
+  }
+  // 浏览器环境无需操作
+}
+
 export async function clearRecentViews(): Promise<void> {
   if (isTauri) {
     const { invoke } = await import('@tauri-apps/api/core');

@@ -24,6 +24,23 @@ fn main() {
             db::seed_data(&conn).expect("Failed to seed database");
             app.manage(DbConn(Mutex::new(conn)));
             app.manage(commands::CrawlState::default());
+
+            // 创建主窗口；debug 模式启用 WebView2 远程调试，便于自动化测试
+            let mut builder = tauri::WebviewWindowBuilder::new(
+                app,
+                "main",
+                tauri::WebviewUrl::App("index.html".into()),
+            )
+            .title("研喵 YAM")
+            .inner_size(1200.0, 800.0)
+            .center();
+
+            #[cfg(debug_assertions)]
+            {
+                builder = builder.additional_browser_args("--remote-debugging-port=9222");
+            }
+
+            builder.build()?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -40,6 +57,8 @@ fn main() {
             commands::sync_workspace_data,
             commands::run_crawl,
             commands::get_crawl_progress,
+            commands::cancel_crawl,
+            commands::reset_crawl,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,7 +1,7 @@
 # 进度跟踪 - 2026-07-13
 
 > 本文件用于上下文压缩后恢复进度。每完成一步立即更新。
-> 当前任务：实现上个会话被回退的需求（地区研招网排序、院校层次标记、科研院所识别、掌上考研/研招网两种排序、学习方式与专项计划筛选、管理显示专业、刷新数据整合同步）。
+> 当前任务：修复选择专业后采集数据为空的问题。
 
 ## 三个里程碑
 
@@ -118,6 +118,120 @@
 | `d:\yam\yam-desktop\src\components\WorkspaceFilterPanel.tsx` | B | 院校层次/考试科目展开式选择框、排序选项 |
 | `d:\yam\yam-desktop\src\pages\WorkspacePage.tsx` | B | 合并刷新按钮、自动同步 |
 | `d:\yam\yam-desktop\src\pages\Modals.tsx` | C | `ManageMajorsModal` 真实数据 + 刷新/删除按钮 |
+
+## 选择专业采集数据为空问题修复
+
+- [x] 定位原因：`YanZhaoCrawler.fetch_schools()` 依赖本地种子文件，缺失时直接返回空列表。
+- [x] 修复 `yam/crawler/yanzhao.py`：种子缺失时尝试自动调用 `DynamicYanZhaoCrawler` 抓取；失败时输出明确日志。
+- [x] 修复 `yam-desktop/src/stores/appStore.ts`：新增专业自动加入 `visibleMajorCodes`；新增 `updateMajor` action。
+- [x] 修复 `yam-desktop/src/pages/CrawlingPage.tsx`：同步完成后拉取 `fetchAvailableMajors` 并更新 `schoolCount`/`lastUpdated`。
+- [x] 修复 `MajorSelectPage.tsx` / `SplashScreen.tsx`：专业学位类别无研究方向时不再错误传递类别代码。
+- [x] 更新 `docs/known-issues.md`：记录 ISSUE-004。
+
+## 采集任务取消按钮死锁修复（2026-07-16）
+
+- **背景**：通过 CDP 直接调用 Tauri 命令验证采集流程时，发现"取消"按钮只清前端状态、不停止 Rust 端 Python 子进程，导致死锁。
+- **AI 自测结果**：
+  1. `run_crawl('085410')` → `running=true`，`total=217`，Python 子进程启动。
+  2. 等待 90 秒，`current=0` 不变（Python 卡在网络请求），无超时反馈。
+  3. 直接 kill Python 进程后，Rust 端 `running=true` 永久保持。
+  4. 再次调用 `run_crawl` → 被拒绝"已有采集任务在运行"。
+- **修复内容**：
+  - [x] `yam-desktop/src-tauri/src/commands.rs`：
+    - 新增 `cancel_crawl` 命令，调用 `taskkill /F /T` kill 子进程并重置 `running=false`/`done=true`。
+    - `CrawlProgress` 新增 `child_pid: Option<u32>` 字段（`#[serde(skip)]`）。
+    - `run_crawl_task` 启动后保存 `child_pid`，结束时清除。
+    - 添加 90 秒超时检测：`last_progress_time.elapsed() > 90s` 时 kill 子进程并设置 error。
+    - 设置 `PYTHONUNBUFFERED=1` 环境变量让 stdout 实时刷新。
+    - 取消时保留 "用户取消采集任务" 错误信息，不被 "采集脚本异常退出" 覆盖。
+    - 在 `for line in reader.lines()` 循环开头检查 `!p.running && p.done` 实现 cancel 响应。
+  - [x] `yam-desktop/src-tauri/src/main.rs`：注册 `cancel_crawl` 命令。
+  - [x] `yam-desktop/src/lib/db.ts`：新增 `cancelCrawl()` 函数。
+  - [x] `yam-desktop/src/pages/CrawlingPage.tsx`：
+    - `handleCancel` 改为 async，调用 `cancelCrawl()` 并显示日志。
+    - `handleBackground` 改为"返回工作区"语义：不取消采集，仅清除前端 interval，保留 Rust 端任务继续运行。
+- **验证结果**（通过 CDP 直接调用 Tauri 命令）：
+  1. 启动采集 → `running=true`，Python 子进程 PID 出现。
+  2. 调用 `cancel_crawl` → `running=false`，`done=true`，`error="用户取消采集任务"`，Python 子进程被 kill。
+  3. 再次 `run_crawl` → 成功启动，不再死锁。
+  4. 重复操作 2 次均成功。
+- **编译验证**：`cargo check` 通过，`npm run build` 通过。
+- **记录**：ISSUE-006 已添加到 `docs/known-issues.md`。
+- **后续待办**：
+  - 由用户进行桌面端手动测试（点击"取消"按钮的真实 UI 行为）。
+  - 通过问答框验证任务完成。
+  - 可选优化：超时阈值 90 秒可让用户在设置中配置。
+- [x] 验证：`npm run build` 通过；`cargo check` 通过；Python 语法检查通过。
+
+## 后台运行返回采集页错误重启修复（2026-07-16）
+
+- **背景**：ISSUE-006 修复后通过 CDP 真实点击 UI 测试时，发现 `CrawlingPage` 的 `useEffect` 在 `getCrawlProgress()` 返回 `running=false` 时直接调用 `runCrawl`，忽略 `done` 标志。用户点击"后台运行"后再次回到采集页，会错误重启采集，覆盖已完成的结果。
+- **AI 自测结果**（通过 CDP 真实点击 UI）：
+  1. 选择 085400 → 进入采集页，`running=true`，采集启动。
+  2. 点击"后台运行" → 跳到数据就绪页，`crawlTarget` 保留。
+  3. 通过 `cancel_crawl` 模拟采集完成，后端 `done=true, error="用户取消采集任务"`。
+  4. 从 TopNav 点击"数据采集"回到采集页 → 修复前会重启采集，修复后**未重启**，后端仍为 `done=true`。
+- **修复内容**：
+  - [x] `yam-desktop/src-tauri/src/commands.rs`：新增 `reset_crawl` 命令，清空 `CrawlProgress` 到默认状态。
+  - [x] `yam-desktop/src-tauri/src/main.rs`：注册 `reset_crawl` 命令。
+  - [x] `yam-desktop/src/lib/db.ts`：新增 `resetCrawl()` 前端函数。
+  - [x] `yam-desktop/src/pages/MajorSelectPage.tsx`：`handleConfirm` 改为 async，调用 `resetCrawl()` 后再设置 `crawlTarget`。
+  - [x] `yam-desktop/src/pages/MajorManagementPage.tsx`：`handleUpdate` 同样调用 `resetCrawl()` 后再跳转采集页。
+  - [x] `yam-desktop/src/pages/CrawlingPage.tsx`：`useEffect` 中区分 `running`/`done`/`major_code` 三种状态，避免错误重启采集。
+- **验证结果**：通过 CDP 真实点击 UI 验证修复行为符合预期（详见 ISSUE-007）。
+- **编译验证**：`cargo check` 通过；`npm run build` 通过。
+- **记录**：ISSUE-007 已添加到 `docs/known-issues.md`。
+- **后续待办**：
+  - 由用户进行桌面端手动测试（点击"后台运行"后返回采集页的真实 UI 行为）。
+  - 通过问答框验证任务完成。
+
+## 采集进度可视化与空数据修复（2026-07-16）
+
+- **背景**：用户反馈三类问题：(1) 数据采集进度看不到；(2) 离开采集页面后无法看到后台任务进度；(3) 专业删光后显示默认模板数据。
+- **修复内容**：
+  - [x] **ISSUE-008 专业删光后显示默认模板数据**：
+    - `yam-desktop/src/pages/MajorManagementPage.tsx`：删除 `MOCK_MAJORS` 常量，改为 `crawledMajors.length === 0` 时显示空状态 UI（FolderOpen 图标 + 提示文字）。
+    - `yam-desktop/src/pages/DataReadyPage.tsx`：删除 `MOCK_READY_MAJORS` 常量，同样显示空状态 UI，并禁用"进入工作区"按钮。
+  - [x] **ISSUE-009 离开采集页面后无法看到后台采集任务进度**：
+    - 新增 `yam-desktop/src/components/BackgroundTaskPanel.tsx`：全局浮动面板（`fixed bottom-4 left-4`），每 1.5s 轮询 `getCrawlProgress()`，显示专业名、进度条、当前/总数、百分比。
+    - 点击面板跳转采集页；X 按钮可隐藏；任务完成后 3s 自动隐藏。
+    - 仅在 `running=true` 或 `done=true && error` 时显示，避免重复打扰。
+    - `yam-desktop/src/App.tsx`：挂载 `BackgroundTaskPanel`，所有页面均可见。
+  - [x] **ISSUE-010 采集进度显示不直观**：
+    - `yam-desktop/src/pages/CrawlingPage.tsx`：改进进度轮询中的状态显示逻辑。
+    - `done` 状态显示"采集已结束"或"采集完成"；`total > 0` 显示 `current_name` 或 `进度 x/y`；`running` 但 `total=0` 显示"正在获取院校列表..."。
+- **验证结果**：
+  - 通过 CDP 真实点击 UI 验证 BackgroundTaskPanel 在采集页和工作区页均显示"后台采集任务 人工智能 0/217 所 0%"。
+  - MajorManagementPage 删光所有专业后显示"暂无专业数据"空状态 UI。
+  - CrawlingPage 进度卡片在 total=0 时显示"正在获取院校列表..."而非"准备中..."。
+- **编译验证**：`cargo check` 通过；`npm run build` 通过。
+- **记录**：ISSUE-008/009/010 已添加到 `docs/known-issues.md`。
+- **后续待办**：
+  - 由用户进行桌面端手动测试（启动采集 → 离开页面观察左下角面板 → 删除所有专业验证空状态）。
+  - 通过问答框验证任务完成。
+
+### 补充修复（2026-07-15）
+
+- [x] 定位问题：动态抓取失败时 `yanzhao.py` 直接返回空列表，前端仍显示空数据。
+- [x] 修复 `yam/crawler/yanzhao.py`：种子缺失且动态抓取失败时抛出 `LoginRequiredError`/`RuntimeError`。
+- [x] 修复 `yam/crawler/dynamic.py`：无登录 cookie 时立即失败，避免长时间拉起浏览器。
+- [x] 修复 `yam/cli.py`：新增 `--force` 标志；捕获种子获取异常并输出清晰错误提示。
+- [x] 修复 `yam-desktop/src-tauri/src/commands.rs`：桌面端采集传入 `--force`，避免旧 `fetch_log` 全跳过。
+- [x] 更新 `docs/known-issues.md`：补充 ISSUE-004 修复说明。
+- [x] 验证：`npm run build` 通过；`cargo check` 通过；Python 语法检查通过；CLI 测试 085400 立即提示登录；CLI 重新抓取 085410 成功 217 所并同步到 Tauri DB。
+
+### 桌面端采集状态与添加时机修复（2026-07-15 晚）
+
+- [x] 定位问题：`MajorSelectPage.tsx` 在选择专业时立即 `addMajor`，导致未采集成功就出现在专业管理页。
+- [x] 修复 `MajorSelectPage.tsx`：移除 `handleConfirm` 中的 `addMajor` 调用，仅设置 `crawlTarget`。
+- [x] 修复 `CrawlingPage.tsx`：同步成功后（`syncWorkspaceData` 成功）再调用 `addMajor`，并更新 `schoolCount`/`lastUpdated`。
+- [x] 验证：
+  - `npm run build` 通过；`cargo check` 通过。
+  - 浏览器模式自测：专业学位旧交互（左侧平铺 + 右侧研究方向滑入/滑出）正常；“全部”选项三级页面（门类 → 学科类别 → 专业）正常；采集失败不会提前添加专业。
+  - CLI 完整采集 085410：217 所成功、0 失败、0 跳过；同步到 Tauri DB 后 `workspace_schools` 表确认 217 条记录。
+  - 桌面端应用已重新启动，启动时会从 Tauri DB 自动加载已同步专业。
+
+---
 
 ## 关键设计决策
 

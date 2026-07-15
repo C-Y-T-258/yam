@@ -1,14 +1,6 @@
 import { motion } from 'framer-motion';
-import { ArrowRight, Plus, ChevronRight } from 'lucide-react';
+import { ArrowRight, Plus, ChevronRight, FolderOpen } from 'lucide-react';
 import { useAppStore, type CrawledMajor } from '../stores/appStore';
-
-const MOCK_READY_MAJORS: CrawledMajor[] = [
-  { code: '085410', name: '人工智能', dataVersion: '2026', lastUpdated: '昨天更新', schoolCount: 287, dbSize: '1.24 GB' },
-  { code: '085404', name: '软件工程', dataVersion: '2026', lastUpdated: '昨天更新', schoolCount: 312, dbSize: '1.08 GB' },
-  { code: '085401', name: '电子信息', dataVersion: '2026', lastUpdated: '2天前更新', schoolCount: 265, dbSize: '1.02 GB' },
-  { code: '081104', name: '控制工程', dataVersion: '2026', lastUpdated: '3天前更新', schoolCount: 184, dbSize: '768 MB' },
-  { code: '085402', name: '通信工程', dataVersion: '2026', lastUpdated: '3天前更新', schoolCount: 215, dbSize: '936 MB' },
-];
 
 const MAJOR_ICONS: Record<string, string> = {
   '085410': '🧠',
@@ -21,13 +13,11 @@ const MAJOR_ICONS: Record<string, string> = {
 export function DataReadyPage() {
   const { setPage, crawledMajors, setCurrentMajor } = useAppStore();
 
-  const majorsToShow = crawledMajors.length > 0 ? crawledMajors : MOCK_READY_MAJORS;
-
   const handleEnterWorkspace = (code?: string) => {
     if (code) {
       setCurrentMajor(code);
-    } else if (majorsToShow.length > 0) {
-      setCurrentMajor(majorsToShow[0].code);
+    } else if (crawledMajors.length > 0) {
+      setCurrentMajor(crawledMajors[0].code);
     }
     setPage('workspace');
   };
@@ -75,7 +65,14 @@ export function DataReadyPage() {
             </div>
 
             {/* Table Body */}
-            {majorsToShow.map((major, index) => (
+            {crawledMajors.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-16 px-6 text-center">
+                <FolderOpen size={40} className="text-gray-300 mb-3" />
+                <p className="text-gray-500 mb-1">暂无专业数据</p>
+                <p className="text-sm text-gray-400">请先添加专业并采集数据</p>
+              </div>
+            ) : (
+              crawledMajors.map((major, index) => (
               <motion.div
                 key={major.code}
                 initial={{ opacity: 0, y: 10 }}
@@ -106,7 +103,8 @@ export function DataReadyPage() {
                   <ChevronRight size={18} className="text-gray-400" />
                 </div>
               </motion.div>
-            ))}
+              ))
+            )}
           </div>
 
           {/* Action Buttons */}
@@ -115,7 +113,8 @@ export function DataReadyPage() {
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
               onClick={() => handleEnterWorkspace()}
-              className="flex items-center gap-2 px-6 py-3 bg-[#1e3a5f] text-white rounded-lg font-medium hover:bg-[#162d4a] transition-colors"
+              disabled={crawledMajors.length === 0}
+              className="flex items-center gap-2 px-6 py-3 bg-[#1e3a5f] text-white rounded-lg font-medium hover:bg-[#162d4a] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <ArrowRight size={18} />
               进入工作区

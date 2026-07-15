@@ -15,6 +15,7 @@ import { DataReadyPage } from './pages/DataReadyPage';
 import { WorkspacePage } from './pages/WorkspacePage';
 import { FavoritesPage, RecentPage } from './pages/Modals';
 import { ManageMajorsModal, CompareModal } from './pages/Modals';
+import { BackgroundTaskPanel } from './components/BackgroundTaskPanel';
 
 function findMajorName(code: string): string {
   // 1. 学术学位：精确匹配 4 位一级学科或 6 位专业代码
@@ -142,6 +143,9 @@ export default function App() {
         onClose={() => setIsCompareOpen(false)}
         schools={MOCK_COMPARE_SCHOOLS}
       />
+
+      {/* 全局后台任务面板：固定在左下角，显示采集任务进度 */}
+      <BackgroundTaskPanel />
     </div>
   );
 }

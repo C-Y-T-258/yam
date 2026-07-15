@@ -215,9 +215,203 @@ pub struct CrawlProgress {
     pub failed: i32,
     pub skipped: i32,
     pub error: Option<String>,
+    /// 子进程 PID，用于取消时 kill
+    #[serde(skip)]
+    pub child_pid: Option<u32>,
 }
 
 pub type CrawlState = Arc<Mutex<CrawlProgress>>;
+
+/// 取消采集任务：直接重置 progress 状态，并尝试 kill 子进程
+#[tauri::command]
+pub fn cancel_crawl(state: State<'_, CrawlState>) -> Result<(), String> {
+    let mut p = state.lock().unwrap();
+    // 尝试 kill 子进程
+    if let Some(pid) = p.child_pid.take() {
+        kill_process_tree(pid);
+    }
+    // 标记为已取消并清空运行状态
+    p.running = false;
+    p.done = true;
+    if p.error.is_none() {
+        p.error = Some("用户取消采集任务".to_string());
+    }
+    Ok(())
+}
+
+/// 重置采集状态：用于选择新专业时清空上一次采集结果，避免 CrawlingPage 误判为"后台运行回来"
+#[tauri::command]
+pub fn reset_crawl(state: State<'_, CrawlState>) -> Result<(), String> {
+    let mut p = state.lock().unwrap();
+    // 若仍有运行中的子进程，先 kill
+    if let Some(pid) = p.child_pid.take() {
+        kill_process_tree(pid);
+    }
+    *p = CrawlProgress::default();
+    Ok(())
+}
+
+/// 跨平台 kill 进程及其子进程
+fn kill_process_tree(pid: u32) {
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
+fn run_crawl_task(state: CrawlState, major_code: String) -> Result<(), String> {
+    let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.to_path_buf())
+        .ok_or("无法确定仓库根目录")?;
+
+    let python = if cfg!(windows) { "python" } else { "python3" };
+
+    let mut child = std::process::Command::new(python)
+        .arg("-m")
+        .arg("yam.cli")
+        .arg("fetch")
+        .arg("--major")
+        .arg(&major_code)
+        .arg("--force")
+        .current_dir(&repo_root)
+        .env("PYTHONPATH", &repo_root)
+        .env("PYTHONUNBUFFERED", "1")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("启动采集脚本失败: {}", e))?;
+
+    // 保存子进程 PID，供 cancel_crawl 调用 kill
+    {
+        let mut p = state.lock().unwrap();
+        p.child_pid = Some(child.id());
+    }
+
+    let stdout = child.stdout.take().ok_or("无法获取 stdout")?;
+    let stderr = child.stderr.take().ok_or("无法获取 stderr")?;
+
+    // 独立读取 stderr，防止缓冲区满导致子进程阻塞
+    let stderr_reader = std::thread::spawn(move || {
+        use std::io::{BufRead, BufReader};
+        let reader = BufReader::new(stderr);
+        reader.lines().flatten().collect::<Vec<_>>().join("\n")
+    });
+
+    use std::io::{BufRead, BufReader};
+    let reader = BufReader::new(stdout);
+    let mut last_progress_time = std::time::Instant::now();
+    let timeout_secs = 90u64;
+
+    for line in reader.lines().flatten() {
+        // 检查是否已被取消
+        {
+            let p = state.lock().unwrap();
+            if !p.running && p.done {
+                // 用户已取消，尝试 kill 子进程
+                let _ = child.kill();
+                break;
+            }
+        }
+
+        if line.starts_with("YAM_TOTAL ") {
+            if let Ok(total) = line[10..].trim().parse::<i32>() {
+                let mut p = state.lock().unwrap();
+                p.total = total;
+                last_progress_time = std::time::Instant::now();
+            }
+        } else if line.starts_with("YAM_PROGRESS ") {
+            let rest = &line[13..];
+            let space_idx = rest.find(' ').unwrap_or(rest.len());
+            let progress_part = &rest[..space_idx];
+            let name = rest[space_idx..].trim().to_string();
+            let nums: Vec<&str> = progress_part.split('/').collect();
+            if nums.len() == 2 {
+                if let (Ok(current), Ok(total)) = (nums[0].parse::<i32>(), nums[1].parse::<i32>()) {
+                    let mut p = state.lock().unwrap();
+                    p.current = current;
+                    p.total = total;
+                    p.current_name = name;
+                    last_progress_time = std::time::Instant::now();
+                }
+            }
+        } else if line.starts_with("YAM_DONE ") {
+            let parts: Vec<&str> = line[9..].split_whitespace().collect();
+            if parts.len() == 3 {
+                if let (Ok(success), Ok(failed), Ok(skipped)) = (
+                    parts[0].parse::<i32>(),
+                    parts[1].parse::<i32>(),
+                    parts[2].parse::<i32>(),
+                ) {
+                    let mut p = state.lock().unwrap();
+                    p.success = success;
+                    p.failed = failed;
+                    p.skipped = skipped;
+                    last_progress_time = std::time::Instant::now();
+                }
+            }
+        } else if !line.is_empty() {
+            // 实时显示 Python 输出到 current_name 字段（附加到日志）
+            // 这样用户在采集页能看到子进程输出
+            let mut p = state.lock().unwrap();
+            // 把非 YAM_* 的行追加到 current_name 后面作为简单日志
+            if p.current_name.is_empty() {
+                p.current_name = line.chars().take(80).collect();
+            }
+        }
+
+        // 超时检测：超过 90 秒没有任何进度更新，认为卡住
+        if last_progress_time.elapsed().as_secs() > timeout_secs {
+            let mut p = state.lock().unwrap();
+            p.error = Some(format!(
+                "采集超时（{} 秒无进度更新），已自动终止",
+                timeout_secs
+            ));
+            let _ = child.kill();
+            break;
+        }
+    }
+
+    let status = child
+        .wait()
+        .map_err(|e| format!("等待子进程失败: {}", e))?;
+    let stderr_output = stderr_reader.join().unwrap_or_default();
+    {
+        let mut p = state.lock().unwrap();
+        // 清除 child_pid，子进程已退出
+        p.child_pid = None;
+        if !status.success() {
+            // 如果用户主动取消（error 已被设置为"用户取消采集任务"），保留该信息
+            let already_cancelled = p
+                .error
+                .as_deref()
+                .map(|e| e.contains("用户取消"))
+                .unwrap_or(false);
+            if !already_cancelled {
+                let msg = if stderr_output.is_empty() {
+                    "采集脚本异常退出".to_string()
+                } else {
+                    format!("采集脚本异常退出: {}", stderr_output)
+                };
+                p.error = Some(msg);
+            }
+        }
+    }
+    Ok(())
+}
 
 #[tauri::command]
 pub fn run_crawl(state: State<'_, CrawlState>, major_code: String) -> Result<(), String> {
@@ -237,78 +431,18 @@ pub fn run_crawl(state: State<'_, CrawlState>, major_code: String) -> Result<(),
             failed: 0,
             skipped: 0,
             error: None,
+            child_pid: None,
         };
     }
 
     let state_clone = state.inner().clone();
     std::thread::spawn(move || {
-        let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(|p| p.parent())
-            .map(|p| p.to_path_buf())
-            .expect("无法确定仓库根目录");
-
-        let python = if cfg!(windows) { "python" } else { "python3" };
-
-        let mut child = std::process::Command::new(python)
-            .arg("-m")
-            .arg("yam.cli")
-            .arg("fetch")
-            .arg("--major")
-            .arg(&major_code)
-            .current_dir(&repo_root)
-            .env("PYTHONPATH", &repo_root)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .expect("启动采集脚本失败");
-
-        let stdout = child.stdout.take().expect("无法获取 stdout");
-        use std::io::{BufRead, BufReader};
-        let reader = BufReader::new(stdout);
-        for line in reader.lines().flatten() {
-            if line.starts_with("YAM_TOTAL ") {
-                if let Ok(total) = line[10..].trim().parse::<i32>() {
-                    let mut p = state_clone.lock().unwrap();
-                    p.total = total;
-                }
-            } else if line.starts_with("YAM_PROGRESS ") {
-                let rest = &line[13..];
-                let space_idx = rest.find(' ').unwrap_or(rest.len());
-                let progress_part = &rest[..space_idx];
-                let name = rest[space_idx..].trim().to_string();
-                let nums: Vec<&str> = progress_part.split('/').collect();
-                if nums.len() == 2 {
-                    if let (Ok(current), Ok(total)) = (nums[0].parse::<i32>(), nums[1].parse::<i32>()) {
-                        let mut p = state_clone.lock().unwrap();
-                        p.current = current;
-                        p.total = total;
-                        p.current_name = name;
-                    }
-                }
-            } else if line.starts_with("YAM_DONE ") {
-                let parts: Vec<&str> = line[9..].split_whitespace().collect();
-                if parts.len() == 3 {
-                    if let (Ok(success), Ok(failed), Ok(skipped)) = (
-                        parts[0].parse::<i32>(),
-                        parts[1].parse::<i32>(),
-                        parts[2].parse::<i32>(),
-                    ) {
-                        let mut p = state_clone.lock().unwrap();
-                        p.success = success;
-                        p.failed = failed;
-                        p.skipped = skipped;
-                    }
-                }
-            }
-        }
-
-        let status = child.wait().expect("等待子进程失败");
+        let result = run_crawl_task(state_clone.clone(), major_code);
         let mut p = state_clone.lock().unwrap();
         p.running = false;
         p.done = true;
-        if !status.success() {
-            p.error = Some("采集脚本异常退出".to_string());
+        if let Err(e) = result {
+            p.error = Some(e);
         }
     });
 
