@@ -265,3 +265,38 @@
   - 采集 6 秒后 `done=true, error="需要登录研招网：研招网接口返回异常：请登录。请先运行 yam fetch-seeds -m 085400 --login"`。
   - 中文显示正确，无乱码。
 - **备注**：`String::from_utf8_lossy` 仍保留作为防御性容错（防止其他非 UTF-8 字节导致崩溃），但 `PYTHONIOENCODING=utf-8` 已经从源头保证了 Python 输出可被 Rust 正确解码。
+
+---
+
+## ISSUE-014：工作区院校层级 985/211 标签缺失且全用双一流展示
+
+- **严重程度**：high
+- **状态**：fixed
+- **描述**：工作区表格 Level 列只显示"双一流"或"普通本科"，所有双一流学校均未显示 985/211 标签，且存在漏标。用户反馈"目前的工作区展示完全不涉及985211，全用双一流来展示，而且还有漏标，没有价值"。
+- **复现步骤**：
+  1. 启动桌面端，进入工作区，选择已采集的专业（如 085410）。
+  2. 查看学校列表的 Level 列。
+- **期望行为**：985、211、双一流分别以独立彩色标签显示（985 红色、211 蓝色、双一流 绿色），标签准确不漏标。
+- **实际行为**：所有双一流学校均显示为"双一流"文本，985/211 标签完全缺失。
+- **根因**：
+  - **根因 1**：研招网 API 的 `b985` 字段对所有学校都返回 '0'（不可靠），且无 `b211` 字段。`yanzhao.py` 的 `_infer_level` 原本依赖 `b985` 判断 985，导致 985 标签永远不出现。
+  - **根因 2**：`sync_to_tauri.py` 的 `_enrich_school_fields` 原本从 level 文本反推 is_985/is_211 字段（逻辑反了），而 level 文本本身来自不可靠的 b985。
+  - **根因 3**：`sync_to_tauri.py` 的 `apply_zhangshangkaoyan_rank` 原本调用已失效的 `schoolListBySpecial` 接口（返回 404），异常被 catch 后返回空 dict，标签未覆写。
+  - **根因 4**：`sync_to_tauri.py` 的调用顺序错误：先 `_enrich_school_fields` 生成 level 文本，再 `apply_zhangshangkaoyan_rank` 覆写字段，导致 level 文本在字段覆写前生成。
+- **修复位置**：
+  - `yam/crawler/yanzhao.py`：`_infer_level` 移除对 `b985` 字段的依赖，985/211 准确判断交给 sync 阶段的掌上考研 API 覆写。
+  - `yam/crawler/zhangshangkaoyan.py`：新增 `fetch_school_tags_map(school_names)` 方法，按学校名批量查询 `/school/schoolList` 接口（返回完整 is_985/is_211/is_zihuaxian/syl 字段），结果缓存到 `~/.yam/cache/zhangshangkaoyan_tags.json`。
+  - `yam/scripts/sync_to_tauri.py`：
+    - `apply_zhangshangkaoyan_rank` 重写：只对双一流学校查询 985/211 标签（985/211 必然是双一流子集），用掌上考研标签覆写 is_985/is_211/double_first_class；display_order 改用 school_code 升序。
+    - `_enrich_school_fields` 重写：从 is_985/is_211/double_first_class 字段值生成 level 文本（而非反过来）。
+    - 调用顺序调换：先 `apply_zhangshangkaoyan_rank` 覆写字段，再 `_enrich_school_fields` 生成 level 文本。
+  - `yam-desktop/src/pages/WorkspacePage.tsx`：表格 Level 列和展开详情面板改为彩色标签显示（985 红色、211 蓝色、双一流 绿色）。
+- **验证结果**（同步 085410 后验证 DB 数据）：
+  - 17 所 985（北航、南大、东南大学等）level="985 / 211 / 双一流" ✓
+  - 38 所 211（非985）（北京交通大学、苏州大学等）level="211 / 双一流" ✓
+  - 7 所双一流（非211）（山西大学、河南大学等）level="双一流" ✓
+  - 155 所普通本科 level="普通本科" ✓
+  - 标签无漏标，前端彩色标签正常显示。
+- **建议修复方向**：
+  - 短期：已修复，标签缓存命中后刷新速度显著提升。
+  - 长期：考虑在 Python 后端 schools 表写入时直接保存掌上考研标签，避免同步阶段额外 API 调用。

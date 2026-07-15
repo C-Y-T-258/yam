@@ -186,6 +186,104 @@ class ZhangShangKaoYanCrawler(BaseCrawler):
         except Exception:
             return {}
 
+    def fetch_school_tags_map(self, school_names: list[str]) -> dict[str, dict[str, Any]]:
+        """按学校名批量查询掌上考研标签，返回 {归一化学校名: 标签字典}.
+
+        研招网 API 的 b985 字段对所有学校都返回 0（不可靠），且无 b211 字段。
+        掌上考研 /school/schoolList 接口（按名字查）返回完整的
+        is_985/is_211/is_zihuaxian/syl 字段，以此作为 985/211 标识的权威数据源。
+
+        为减少 API 调用，结果会缓存到 ~/.yam/cache/zhangshangkaoyan_tags.json，
+        后续查询直接从缓存读取。只对缓存未命中的学校发起网络请求。
+
+        返回的标签字典包含：
+        - is_985: 1=是 985，0=否
+        - is_211: 1=是 211，0=否
+        - is_zihuaxian: 1=自划线，0=否
+        - syl: 1=双一流，0=否
+        """
+        tags_cache_file = self.cache_dir / "zhangshangkaoyan_tags.json"
+        cache: dict[str, dict[str, Any]] = {}
+        if tags_cache_file.exists():
+            try:
+                with open(tags_cache_file, "r", encoding="utf-8") as f:
+                    cache = json.load(f)
+            except Exception:
+                cache = {}
+
+        result: dict[str, dict[str, Any]] = {}
+        missing: list[str] = []
+
+        for name in school_names:
+            normalized = self._normalize_name(name)
+            if normalized in cache:
+                result[normalized] = cache[normalized]
+            else:
+                missing.append(name)
+
+        if not missing:
+            return result
+
+        # 对缓存未命中的学校逐个查询 /school/schoolList 接口
+        for name in missing:
+            normalized = self._normalize_name(name)
+            if normalized in cache:
+                result[normalized] = cache[normalized]
+                continue
+            try:
+                sleep(self.delay)
+                data = self._post(
+                    "/school/schoolList",
+                    {"school_name": name, "page": 1, "limit": 10},
+                )
+                items = data.get("data", []) if isinstance(data, dict) else []
+                tags = None
+                if items:
+                    # 优先精确匹配
+                    for item in items:
+                        item_name = item.get("school_name", "")
+                        if item_name == name or self._normalize_name(item_name) == normalized:
+                            tags = item
+                            break
+                    if tags is None and len(items) == 1:
+                        tags = items[0]
+                    if tags is None:
+                        # 模糊匹配
+                        for item in items:
+                            item_name = item.get("school_name", "")
+                            if normalized in self._normalize_name(item_name):
+                                tags = item
+                                break
+                if tags is not None:
+                    tag_data = {
+                        "is_985": 1 if tags.get("is_985") == 1 else 0,
+                        "is_211": 1 if tags.get("is_211") == 1 else 0,
+                        "is_zihuaxian": 1 if tags.get("is_zihuaxian") == 1 else 0,
+                        "syl": 1 if tags.get("syl") == 1 else 0,
+                    }
+                else:
+                    # 查询不到则标记为空标签，避免重复查询
+                    tag_data = {
+                        "is_985": 0,
+                        "is_211": 0,
+                        "is_zihuaxian": 0,
+                        "syl": 0,
+                    }
+                cache[normalized] = tag_data
+                result[normalized] = tag_data
+            except Exception:
+                # 网络错误不缓存，下次重试
+                continue
+
+        # 保存缓存
+        try:
+            with open(tags_cache_file, "w", encoding="utf-8") as f:
+                json.dump(cache, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+        return result
+
     def fetch_departments(self, school: dict[str, Any]) -> list[dict[str, Any]]:
         """掌上考研不用于获取院系所信息."""
         return []

@@ -546,8 +546,23 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                 {/* School Name */}
                 <div className="font-medium text-gray-900">{item.name}</div>
 
-                {/* Level */}
-                <div className="w-40 text-center text-gray-600">{item.level}</div>
+                {/* Level - 用标签显示 985/211/双一流 */}
+                <div className="w-40 text-center">
+                  <div className="flex flex-wrap justify-center gap-1">
+                    {item.is_985 && (
+                      <span className="inline-block px-1.5 py-0.5 text-[10px] font-medium rounded bg-red-50 text-red-700 border border-red-200">985</span>
+                    )}
+                    {item.is_211 && (
+                      <span className="inline-block px-1.5 py-0.5 text-[10px] font-medium rounded bg-blue-50 text-blue-700 border border-blue-200">211</span>
+                    )}
+                    {item.double_first_class && (
+                      <span className="inline-block px-1.5 py-0.5 text-[10px] font-medium rounded bg-green-50 text-green-700 border border-green-200">双一流</span>
+                    )}
+                    {!item.is_985 && !item.is_211 && !item.double_first_class && (
+                      <span className="text-xs text-gray-500">{item.level}</span>
+                    )}
+                  </div>
+                </div>
 
                 {/* Region */}
                 <div className="w-20 text-center text-gray-600">{item.province}</div>
@@ -601,7 +616,12 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                           </div>
                           <div className="flex items-center gap-3 text-gray-600 text-sm">
                             <Award size={16} className="text-gray-400" />
-                            <span>{item.level}</span>
+                            <div className="flex flex-wrap gap-1">
+                              {item.is_985 && <span className="px-1.5 py-0.5 text-[10px] font-medium rounded bg-red-50 text-red-700 border border-red-200">985</span>}
+                              {item.is_211 && <span className="px-1.5 py-0.5 text-[10px] font-medium rounded bg-blue-50 text-blue-700 border border-blue-200">211</span>}
+                              {item.double_first_class && <span className="px-1.5 py-0.5 text-[10px] font-medium rounded bg-green-50 text-green-700 border border-green-200">双一流</span>}
+                              {!item.is_985 && !item.is_211 && !item.double_first_class && <span>{item.level}</span>}
+                            </div>
                           </div>
                           <div className="flex items-center gap-3 text-gray-600 text-sm">
                             <BookOpen size={16} className="text-gray-400" />

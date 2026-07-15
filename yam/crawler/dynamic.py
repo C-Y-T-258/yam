@@ -206,8 +206,28 @@ class DynamicYanZhaoCrawler:
             config.project_dir / "data" / "seeds" / f"yan_zhao_{major_code}_all_regions.json"
         )
 
+    @staticmethod
+    def _has_login_cookie() -> bool:
+        """检查本地是否保存了有效的研招网登录 cookie."""
+        cookie_file = config.data_dir.parent / "cookies" / f"{COOKIE_DOMAIN}.json"
+        if not cookie_file.exists():
+            return False
+        try:
+            with open(cookie_file, "r", encoding="utf-8") as f:
+                cookies = json.load(f)
+            return any(
+                "SESSION" in c.get("name", "") and c.get("value")
+                for c in cookies
+            )
+        except Exception:
+            return False
+
     async def fetch_and_save(self, headless: bool = True) -> int:
         """抓取完整学校列表并保存为种子文件."""
+        if not self._has_login_cookie():
+            raise LoginRequiredError(
+                "未检测到研招网登录凭证，请先运行 yam fetch-seeds -m <专业代码> --login 完成登录"
+            )
         reader = DynamicReader()
         try:
             await reader.init(headless=headless)

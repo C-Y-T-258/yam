@@ -245,6 +245,36 @@
 - [x] 更新 `docs/known-issues.md`：补充 ISSUE-004 修复说明。
 - [x] 验证：`npm run build` 通过；`cargo check` 通过；Python 语法检查通过；CLI 测试 085400 立即提示登录；CLI 重新抓取 085410 成功 217 所并同步到 Tauri DB。
 
+## 985/211 标签缺失修复（ISSUE-014，2026-07-16）
+
+- **背景**：ISSUE-013 修复后用户刷新 085410 数据，反馈"院校层级有错误，目前的工作区展示完全不涉及985211，全用双一流来展示，而且还有漏标，没有价值"。
+- **根因分析**：
+  - 研招网 API `b985` 字段对所有学校返回 '0'（不可靠），且无 `b211` 字段。
+  - `yanzhao.py` `_infer_level` 依赖 `b985` 判断 985，导致 985 永远不出现。
+  - `sync_to_tauri.py` `_enrich_school_fields` 从 level 文本反推字段（逻辑反），`apply_zhangshangkaoyan_rank` 调用已失效的 `schoolListBySpecial` 接口（404）。
+  - 调用顺序错误：先生成 level 文本，再覆写字段。
+- **修复内容**：
+  - `yam/crawler/yanzhao.py`：`_infer_level` 移除 `b985` 依赖，985/211 判断交给 sync 阶段。
+  - `yam/crawler/zhangshangkaoyan.py`：新增 `fetch_school_tags_map(school_names)`，按学校名查询 `/school/schoolList` 接口，结果缓存到 `~/.yam/cache/zhangshangkaoyan_tags.json`。
+  - `yam/scripts/sync_to_tauri.py`：
+    - `apply_zhangshangkaoyan_rank` 重写：只对双一流学校查询标签（985/211 是双一流子集），覆写 is_985/is_211/double_first_class。
+    - `_enrich_school_fields` 重写：从字段值生成 level 文本。
+    - 调用顺序调换：先覆写字段，再生成 level 文本。
+  - `yam-desktop/src/pages/WorkspacePage.tsx`：Level 列改为彩色标签（985 红色、211 蓝色、双一流 绿色）。
+  - `yam/crawler/dynamic.py` + `yam/crawler/yanzhao.py`：种子文件缺失时自动调用动态爬虫，无登录凭证时抛 `LoginRequiredError`。
+- **验证结果**（同步 085410 后）：
+  - 17 所 985（北航等）level="985 / 211 / 双一流" ✓
+  - 38 所 211（非985）level="211 / 双一流" ✓
+  - 7 所双一流（非211）level="双一流" ✓
+  - 155 所普通本科 level="普通本科" ✓
+- **编译验证**：`npm run build` 通过；Python 语法检查通过。
+- **记录**：ISSUE-014 已添加到 `docs/known-issues.md`。
+- **后续待办**：
+  - 通过桌面端 UI 验证彩色标签显示效果。
+  - 调查"刷新很慢"问题（63 次串行 API 调用，已有缓存缓解）。
+
+---
+
 ## Python 错误信息无法传递前端修复（2026-07-16）
 
 - **背景**：ISSUE-012 修复后通过 CDP 测试 085400 采集流程时，发现前端 `error` 字段始终为"采集脚本异常退出"，而非 Python CLI 抛出的"需要登录研招网：研招网接口返回异常：请登录"。用户无法判断失败原因。

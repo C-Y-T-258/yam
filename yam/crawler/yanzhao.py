@@ -12,6 +12,7 @@ import requests
 
 from yam.config import config
 from yam.crawler.base import BaseCrawler
+from yam.crawler.dynamic import LoginRequiredError
 from yam.utils import now_str, sleep
 
 
@@ -64,9 +65,34 @@ class YanZhaoCrawler(BaseCrawler):
         """获取开设目标专业的院校列表.
 
         优先读取本地种子文件。种子文件来自研招网公开查询结果。
+        若种子文件不存在，尝试使用动态爬虫自动抓取并保存。
         """
         if not self.seed_file.exists():
-            return []
+            try:
+                from yam.crawler.dynamic import DynamicYanZhaoCrawler
+
+                dynamic = DynamicYanZhaoCrawler(self.major_code, self.major_name)
+                import asyncio
+
+                count = asyncio.run(dynamic.fetch_and_save())
+                print(f"已自动抓取 {self.major_code} 种子数据：{count} 所院校")
+            except LoginRequiredError:
+                print(
+                    f"抓取 {self.major_code} 种子数据需要登录研招网，"
+                    f"请先运行：yam fetch-seeds -m {self.major_code} --login"
+                )
+                raise
+            except Exception as e:
+                print(f"自动抓取 {self.major_code} 种子数据失败：{e}")
+                raise RuntimeError(
+                    f"无法获取 {self.major_code} 的院校种子数据：{e}"
+                ) from e
+
+        if not self.seed_file.exists():
+            raise RuntimeError(
+                f"无法获取 {self.major_code} 的院校种子数据，"
+                f"请尝试运行：yam fetch-seeds -m {self.major_code} --login"
+            )
 
         with open(self.seed_file, "r", encoding="utf-8") as f:
             raw = json.load(f)
@@ -95,14 +121,14 @@ class YanZhaoCrawler(BaseCrawler):
         """根据研招网返回的标识推断学校层次.
 
         科研院所（研究院/研究所/科学院）独立标记，不归入普通本科；
-        985 自动包含 211/双一流；syl 标识双一流；其它归普通本科。
+        研招网 b985 字段不可靠（全为 0），且无 b211 字段；
+        syl 标识双一流。985/211 的准确判断由 sync_to_tauri.py 调用
+        掌上考研 API 覆写，这里只做初步推断。
         """
         name = item.get("dwmc", "")
         is_research = any(p in name for p in ("研究院", "研究所", "科学院", "研究生院"))
         if is_research:
             return "科研院所"
-        if item.get("b985") == "1":
-            return "985/211/双一流"
         if item.get("syl") == "1":
             return "双一流"
         return "普通本科"

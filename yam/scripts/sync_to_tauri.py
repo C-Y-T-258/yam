@@ -212,43 +212,76 @@ def load_schools(conn: sqlite3.Connection, major_code: str) -> list[dict[str, An
 def apply_zhangshangkaoyan_rank(
     schools: list[dict[str, Any]], major_code: str
 ) -> list[dict[str, Any]]:
-    """用掌上考研排名覆写 display_order，失败降级到 school_code 升序."""
-    try:
-        from yam.crawler.zhangshangkaoyan import ZhangShangKaoYanCrawler
+    """用掌上考研数据覆写 is_985/is_211/double_first_class 标签，并按 school_code 排序.
 
-        crawler = ZhangShangKaoYanCrawler(major_code, major_code)
-        rank_map = crawler.fetch_school_rank_map(major_code)
-    except Exception:
-        rank_map = {}
+    研招网 API 的 b985 字段不可靠（全为 0）且无 b211 字段，
+    掌上考研 /school/schoolList 接口（按名字查）返回完整的
+    is_985/is_211/is_zihuaxian 字段，以此作为 985/211 标识的权威数据源。
 
-    if not rank_map:
-        # 降级：按 school_code 升序赋 display_order
-        schools.sort(key=lambda s: s.get("school_code", "") or "")
-        for idx, s in enumerate(schools):
-            s["display_order"] = idx
-        return schools
+    为减少 API 调用，只对双一流学校（syl=1）查询掌上考研标签，
+    因为 985/211 必然是双一流的子集。查询结果会缓存到本地文件。
 
-    # 用掌上考研排名赋值；排名未命中的学校排在末尾
-    max_rank = max(rank_map.values()) + 1 if rank_map else 0
-    for s in schools:
-        normalized = _normalize_name(s.get("name", ""))
-        s["display_order"] = rank_map.get(normalized, max_rank)
-    # 重新按 display_order 排序
-    schools.sort(key=lambda s: s.get("display_order", 0))
+    display_order 按 school_code 升序赋值（掌上考研 schoolListBySpecial 接口已失效）。
+    """
+    # 筛选双一流学校，只对这些学校查询 985/211 标签
+    double_first_schools = [
+        s for s in schools
+        if s.get("double_first_class") == 1 and s.get("level") != "科研院所"
+    ]
+
+    if double_first_schools:
+        try:
+            from yam.crawler.zhangshangkaoyan import ZhangShangKaoYanCrawler
+
+            crawler = ZhangShangKaoYanCrawler(major_code, major_code)
+            tags_map = crawler.fetch_school_tags_map(
+                [s.get("name", "") for s in double_first_schools]
+            )
+        except Exception:
+            tags_map = {}
+
+        # 用掌上考研标签覆写 985/211/double_first_class
+        for s in double_first_schools:
+            normalized = _normalize_name(s.get("name", ""))
+            tags = tags_map.get(normalized)
+            if tags is not None:
+                s["is_985"] = tags["is_985"]
+                s["is_211"] = tags["is_211"]
+                s["double_first_class"] = tags["syl"]
+
+    # display_order 按 school_code 升序赋值
+    schools.sort(key=lambda s: s.get("school_code", "") or "")
+    for idx, s in enumerate(schools):
+        s["display_order"] = idx
     return schools
 
 
 def _enrich_school_fields(school: dict[str, Any]) -> None:
-    """根据 level 文本反推 is_985/is_211/double_first_class，覆盖种子默认值."""
-    level = school.get("level", "") or ""
-    if level == "科研院所":
+    """根据 is_985/is_211/double_first_class 字段更新 level 文本.
+
+    研招网 b985 字段不可靠，is_985/is_211 在 apply_zhangshangkaoyan_rank 中
+    由掌上考研数据覆写。这里根据最终的 is_985/is_211/double_first_class 字段值
+    生成规范的 level 文本。
+    """
+    if school.get("level") == "科研院所":
         school["is_985"] = 0
         school["is_211"] = 0
         school["double_first_class"] = 0
         return
-    school["is_985"] = 1 if "985" in level else school.get("is_985", 0)
-    school["is_211"] = 1 if "211" in level else school.get("is_211", 0)
-    school["double_first_class"] = 1 if "双一流" in level else school.get("double_first_class", 0)
+
+    is_985 = int(school.get("is_985", 0))
+    is_211 = int(school.get("is_211", 0))
+    is_double = int(school.get("double_first_class", 0))
+
+    # 生成规范的 level 文本
+    tags = []
+    if is_985:
+        tags.append("985")
+    if is_211:
+        tags.append("211")
+    if is_double:
+        tags.append("双一流")
+    school["level"] = " / ".join(tags) if tags else "普通本科"
 
 
 def load_departments(conn: sqlite3.Connection, school_id: str, major_code: str) -> list[dict[str, Any]]:
@@ -385,10 +418,11 @@ def sync_major(source: sqlite3.Connection, target: sqlite3.Connection, major_cod
             # 科研院所 level 修正（无论种子是否存在都按名称判断）
             if _is_research_institute(s.get("name", "")):
                 s["level"] = "科研院所"
-    # 根据 level 文本最终确认 is_985/is_211/double_first_class
+    # 先用掌上考研数据覆写 is_985/is_211/double_first_class 字段
+    schools = apply_zhangshangkaoyan_rank(schools, major_code)
+    # 再根据最终的 is_985/is_211/double_first_class 字段生成规范的 level 文本
     for s in schools:
         _enrich_school_fields(s)
-    schools = apply_zhangshangkaoyan_rank(schools, major_code)
     inserted_schools = 0
     inserted_departments = 0
     inserted_years = 0
