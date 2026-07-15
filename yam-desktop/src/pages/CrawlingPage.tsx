@@ -153,7 +153,17 @@ export function CrawlingPage() {
             intervalRef.current = null;
           }
           addCrawlingLog(`采集结束：成功 ${p.success} 所，失败 ${p.failed} 所，跳过 ${p.skipped} 所`);
-          await handleSync();
+          // ISSUE-011: 采集失败时不添加专业到管理列表
+          if (p.error) {
+            setError(p.error);
+            addCrawlingLog(`采集失败：${p.error}，专业未添加到管理列表`);
+          } else if (p.success === 0) {
+            const msg = '采集未取得任何数据，专业未添加到管理列表';
+            setError(msg);
+            addCrawlingLog(msg);
+          } else {
+            await handleSync();
+          }
         }
       } catch (err) {
         addCrawlingLog(`获取进度失败：${err instanceof Error ? err.message : String(err)}`);
@@ -181,7 +191,28 @@ export function CrawlingPage() {
     addCrawlingLog('正在同步数据到工作区...');
     try {
       await syncWorkspaceData(crawlTarget.code);
-      // 同步成功后才把专业加入管理列表，避免未采集成功就被添加
+      // ISSUE-011: 同步后检查实际数据量，无数据则不添加专业
+      let schoolCount = 0;
+      try {
+        const available = await fetchAvailableMajors();
+        const info = available.find((m) => m.major_code === crawlTarget.code);
+        if (info) {
+          schoolCount = info.school_count;
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        addCrawlingLog(`更新专业统计失败：${msg}`);
+      }
+
+      if (schoolCount === 0) {
+        // 同步后仍无数据，不添加到管理列表
+        addCrawlingLog(`同步完成，但专业 ${crawlTarget.code} 无数据，未添加到管理列表`);
+        setError('同步后无数据，请确认采集任务是否成功完成');
+        setSyncing(false);
+        return;
+      }
+
+      // 有数据才添加到管理列表
       const exists = crawledMajors.some((m) => m.code === crawlTarget.code);
       if (!exists) {
         addMajor({
@@ -189,22 +220,14 @@ export function CrawlingPage() {
           name: crawlTarget.name,
           dataVersion: '2026',
           lastUpdated: '刚刚',
-          schoolCount: 0,
+          schoolCount,
           dbSize: '-',
         });
-      }
-      try {
-        const available = await fetchAvailableMajors();
-        const info = available.find((m) => m.major_code === crawlTarget.code);
-        if (info) {
-          updateMajor(crawlTarget.code, {
-            schoolCount: info.school_count,
-            lastUpdated: '刚刚',
-          });
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        addCrawlingLog(`更新专业统计失败：${msg}`);
+      } else {
+        updateMajor(crawlTarget.code, {
+          schoolCount,
+          lastUpdated: '刚刚',
+        });
       }
       addCrawlingLog('数据同步完成，即将进入数据就绪页面');
       setTimeout(() => {
