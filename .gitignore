@@ -22,3 +22,19 @@ data/cache/
 ui-research/
 tmp_*
 *.log
+
+# Temporary debug artifacts
+.dbg/
+test-*.cjs
+test_*.png
+test-*.png
+e2e-*.png
+full-*.png
+ui-*.png
+verify-*.png
+webview_*.png
+screenshot-*.png
+diagnostic-*.png
+diag-*.png
+kaoyan_majors_raw.json
+.commit-msg-tmp.txt

@@ -245,6 +245,28 @@
 - [x] 更新 `docs/known-issues.md`：补充 ISSUE-004 修复说明。
 - [x] 验证：`npm run build` 通过；`cargo check` 通过；Python 语法检查通过；CLI 测试 085400 立即提示登录；CLI 重新抓取 085410 成功 217 所并同步到 Tauri DB。
 
+## 项目清理与方案 A 设计（2026-07-16 晚）
+
+- **背景**：用户反馈采集流程仍要求手动打开终端执行 `yam fetch-seeds -m <code> --login`，过于抽象；且 `CrawlingPage` 存在重复启动采集的日志混乱。用户选择方案 A（内置登录向导 + 原子启动锁），并要求先清理过时内容。
+- **清理内容**：
+  - 删除根目录临时脚本：`test-*.cjs`（10 个）、`test_webview.py`。
+  - 删除根目录临时截图：`test_*.png`、`ui-*.png`、`verify-*.png`、`webview_*.png`、`diag-*.png`、`e2e-*.png`、`full-*.png` 等约 70 个。
+  - 删除 `yam-desktop/` 下临时截图：`screenshot-*.png`、`test-*.png` 等 35 个。
+  - 删除 `.dbg/` 目录下调试脚本与日志 12 个。
+  - 删除空文件 `何意味.md`、过时会话记录 `将被回退的上个回话.md`、`yam-desktop/src/components/上个会话.md`。
+- **文档更新**：
+  - `README.md`：更新"当前下一步目标"为方案 A。
+  - `docs/session-handoff.md`：新增"当前目标（方案 A）"小节。
+  - `docs/data-collection-handoff-prompt.md`：重写为方案 A 设计文档，包含登录向导、原子启动锁、状态机重构、验收标准。
+  - `.gitignore`：新增对临时调试产物（`.dbg/`、`test-*.cjs`、`*截图*.png` 等）的忽略规则。
+- **修复遗留问题**：
+  - `yam-desktop/src-tauri/tauri.conf.json`：恢复被误删的默认窗口配置（`windows: []` 改回 1200×800 的"研喵 YAM"窗口）。
+- **待提交改动**：
+  - 待提交：`.gitignore`、`README.md`、`docs/session-handoff.md`、`docs/data-collection-handoff-prompt.md`、`yam-desktop/src-tauri/tauri.conf.json`、删除的 yam-desktop 截图。
+  - 仍保留在工作区：`yam-desktop/src/components/SplashScreen.tsx`、`yam-desktop/src/stores/appStore.ts` 的功能增强（需在方案 A 实施前或作为独立提交处理）。
+
+---
+
 ## 985/211 标签缺失修复（ISSUE-014，2026-07-16）
 
 - **背景**：ISSUE-013 修复后用户刷新 085410 数据，反馈"院校层级有错误，目前的工作区展示完全不涉及985211，全用双一流来展示，而且还有漏标，没有价值"。

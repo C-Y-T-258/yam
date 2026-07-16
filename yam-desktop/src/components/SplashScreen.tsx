@@ -12,7 +12,42 @@ import type {
   Major,
 } from '../data/majors';
 
-type DegreeType = 'academic' | 'professional';
+type DegreeType = 'all' | 'academic' | 'professional';
+
+function mergeCategories(
+  academic: DisciplineCategory[],
+  professional: DisciplineCategory[]
+): DisciplineCategory[] {
+  const map = new Map<string, DisciplineCategory>();
+  for (const cat of academic) {
+    map.set(cat.code, { ...cat, disciplines: [...cat.disciplines] });
+  }
+  for (const cat of professional) {
+    const existing = map.get(cat.code);
+    if (existing) {
+      existing.disciplines = [...existing.disciplines, ...cat.disciplines];
+    } else {
+      map.set(cat.code, { ...cat, disciplines: [...cat.disciplines] });
+    }
+  }
+  return Array.from(map.values()).sort((a, b) => a.code.localeCompare(b.code));
+}
+
+function getDisciplinesWithType(category: DisciplineCategory): Array<{
+  type: 'academic' | 'professional';
+  discipline: FirstLevelDiscipline;
+}> {
+  const academicCat = ACADEMIC_CATEGORIES.find((c) => c.code === category.code);
+  const professionalCat = PROFESSIONAL_CATEGORIES.find((c) => c.code === category.code);
+  const results: Array<{ type: 'academic' | 'professional'; discipline: FirstLevelDiscipline }> = [];
+  if (academicCat) {
+    for (const d of academicCat.disciplines) results.push({ type: 'academic', discipline: d });
+  }
+  if (professionalCat) {
+    for (const d of professionalCat.disciplines) results.push({ type: 'professional', discipline: d });
+  }
+  return results.sort((a, b) => a.discipline.code.localeCompare(b.discipline.code));
+}
 
 interface CrawledMajor {
   code: string;
@@ -29,13 +64,17 @@ interface SplashScreenProps {
 
 export function SplashScreen({ onSelect, onStartCrawl, crawledMajors = [] }: SplashScreenProps) {
   const { enableProfessionalThreeLevelMenu, setEnableProfessionalThreeLevelMenu } = useAppStore();
-  const [degreeType, setDegreeType] = useState<DegreeType>('academic');
+  const [degreeType, setDegreeType] = useState<DegreeType>('all');
   const [selectedCategory, setSelectedCategory] = useState<DisciplineCategory | null>(null);
   const [selectedDiscipline, setSelectedDiscipline] = useState<FirstLevelDiscipline | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedMajors, setSelectedMajors] = useState<Set<string>>(new Set());
 
-  const categories = degreeType === 'academic' ? ACADEMIC_CATEGORIES : PROFESSIONAL_CATEGORIES;
+  const categories = useMemo(() => {
+    if (degreeType === 'academic') return ACADEMIC_CATEGORIES;
+    if (degreeType === 'professional') return PROFESSIONAL_CATEGORIES;
+    return mergeCategories(ACADEMIC_CATEGORIES, PROFESSIONAL_CATEGORIES);
+  }, [degreeType]);
   const isProfessionalFlat = degreeType === 'professional' && !enableProfessionalThreeLevelMenu;
 
   const hasData = crawledMajors.length > 0;
@@ -75,6 +114,27 @@ export function SplashScreen({ onSelect, onStartCrawl, crawledMajors = [] }: Spl
   }, [searchQuery]);
 
   const isSearching = searchQuery.trim().length > 0;
+
+  const allMajors = useMemo(() => {
+    const results: Array<{
+      type: Exclude<DegreeType, 'all'>;
+      category: DisciplineCategory;
+      discipline: FirstLevelDiscipline;
+      major: Major;
+    }> = [];
+    const collect = (type: Exclude<DegreeType, 'all'>, cats: DisciplineCategory[]) => {
+      for (const cat of cats) {
+        for (const disc of cat.disciplines) {
+          for (const major of disc.majors) {
+            results.push({ type, category: cat, discipline: disc, major });
+          }
+        }
+      }
+    };
+    collect('academic', ACADEMIC_CATEGORIES);
+    collect('professional', PROFESSIONAL_CATEGORIES);
+    return results;
+  }, []);
 
   const toggleMajorSelection = (code: string) => {
     setSelectedMajors(prev => {
@@ -222,6 +282,21 @@ export function SplashScreen({ onSelect, onStartCrawl, crawledMajors = [] }: Spl
           <div className="inline-flex rounded-lg bg-gray-100 p-1">
             <button
               onClick={() => {
+                setDegreeType('all');
+                setSelectedCategory(null);
+                setSelectedDiscipline(null);
+                setSearchQuery('');
+              }}
+              className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                degreeType === 'all'
+                  ? 'bg-white text-primary shadow-sm'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              全部
+            </button>
+            <button
+              onClick={() => {
                 setDegreeType('academic');
                 setSelectedCategory(null);
                 setSelectedDiscipline(null);
@@ -325,9 +400,9 @@ export function SplashScreen({ onSelect, onStartCrawl, crawledMajors = [] }: Spl
               <p className="text-center text-gray-500 py-8">未找到匹配的专业</p>
             )}
           </div>
-        ) : isProfessionalFlat ? (
-          /* Flat 2-column cascading for professional degree (default off) */
-          <div className="grid grid-cols-2 gap-4">
+        ) : degreeType === 'all' ? (
+          /* 3-column cascading for all degree types */
+          <div className="grid grid-cols-3 gap-4">
             {/* Column 1: 门类 */}
             <div className="border rounded-lg p-3 h-64 overflow-auto">
               <h3 className="text-sm font-medium text-gray-500 mb-2">学科门类</h3>
@@ -351,36 +426,172 @@ export function SplashScreen({ onSelect, onStartCrawl, crawledMajors = [] }: Spl
               ))}
             </div>
 
-            {/* Column 2: 专业 */}
+            {/* Column 2: 一级学科/专业学位类别 */}
             <div className="border rounded-lg p-3 h-64 overflow-auto">
-              <h3 className="text-sm font-medium text-gray-500 mb-2">专业</h3>
+              <h3 className="text-sm font-medium text-gray-500 mb-2">学科类别</h3>
               <AnimatePresence mode="wait">
                 {selectedCategory ? (
-                  selectedCategory.disciplines.flatMap((disc) => disc.majors).length > 0 ? (
-                    selectedCategory.disciplines
-                      .flatMap((disc) => disc.majors)
-                      .map((m) => (
-                        <motion.button
-                          key={m.code}
-                          initial={{ opacity: 0, x: -10 }}
-                          animate={{ opacity: 1, x: 0 }}
-                          exit={{ opacity: 0, x: 10 }}
-                          whileHover={{ x: 4 }}
-                          onClick={() => onStartCrawl?.(m.code)}
-                          className="w-full text-left px-3 py-2 rounded text-sm mb-1 hover:bg-primary/10 transition-colors"
-                        >
-                          <span className="text-gray-500 mr-2 font-mono">{m.code}</span>
-                          {m.name}
-                        </motion.button>
-                      ))
+                  getDisciplinesWithType(selectedCategory).length > 0 ? (
+                    getDisciplinesWithType(selectedCategory).map((item) => (
+                      <motion.button
+                        key={`${item.type}-${item.discipline.code}`}
+                        initial={{ opacity: 0, x: -10 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        exit={{ opacity: 0, x: 10 }}
+                        whileHover={{ x: 4 }}
+                        onClick={() => setSelectedDiscipline(item.discipline)}
+                        className={`w-full text-left px-3 py-2 rounded text-sm mb-1 transition-colors ${
+                          selectedDiscipline?.code === item.discipline.code
+                            ? 'bg-primary text-white'
+                            : 'hover:bg-gray-100'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs opacity-60 mr-1">{item.discipline.code}</span>
+                          <span className="font-medium">{item.discipline.name}</span>
+                          <span
+                            className={`text-xs px-1.5 py-0.5 rounded ${
+                              item.type === 'academic'
+                                ? 'bg-blue-50 text-blue-600'
+                                : 'bg-green-50 text-green-600'
+                            }`}
+                          >
+                            {item.type === 'academic' ? '学硕' : '专硕'}
+                          </span>
+                        </div>
+                      </motion.button>
+                    ))
                   ) : (
-                    <p className="text-center text-gray-400 py-8 text-sm">该门类下暂无专业</p>
+                    <p className="text-center text-gray-400 py-8 text-sm">该门类下暂无学科</p>
                   )
                 ) : (
                   <p className="text-center text-gray-400 py-8 text-sm">请选择门类</p>
                 )}
               </AnimatePresence>
             </div>
+
+            {/* Column 3: 专业 */}
+            <div className="border rounded-lg p-3 h-64 overflow-auto">
+              <h3 className="text-sm font-medium text-gray-500 mb-2">专业</h3>
+              <AnimatePresence mode="wait">
+                {selectedDiscipline ? (
+                  allMajors.filter(
+                    (item) =>
+                      item.category.code === selectedCategory?.code &&
+                      item.discipline.code === selectedDiscipline.code
+                  ).length > 0 ? (
+                    allMajors
+                      .filter(
+                        (item) =>
+                          item.category.code === selectedCategory?.code &&
+                          item.discipline.code === selectedDiscipline.code
+                      )
+                      .sort((a, b) => a.major.code.localeCompare(b.major.code))
+                      .map((item) => (
+                        <motion.button
+                          key={`${item.type}-${item.major.code}`}
+                          initial={{ opacity: 0, x: -10 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          exit={{ opacity: 0, x: 10 }}
+                          whileHover={{ x: 4 }}
+                          onClick={() => onStartCrawl?.(item.major.code)}
+                          className="w-full text-left px-3 py-2 rounded text-sm mb-1 hover:bg-primary/10 transition-colors"
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className="text-gray-500 mr-2 font-mono">{item.major.code}</span>
+                            <span className="font-medium">{item.major.name}</span>
+                            <span
+                              className={`text-xs px-1.5 py-0.5 rounded ${
+                                item.type === 'academic'
+                                  ? 'bg-blue-50 text-blue-600'
+                                  : 'bg-green-50 text-green-600'
+                              }`}
+                            >
+                              {item.type === 'academic' ? '学硕' : '专硕'}
+                            </span>
+                          </div>
+                        </motion.button>
+                      ))
+                  ) : (
+                    <p className="text-center text-gray-400 py-8 text-sm">该学科下暂无专业</p>
+                  )
+                ) : (
+                  <p className="text-center text-gray-400 py-8 text-sm">请选择学科类别</p>
+                )}
+              </AnimatePresence>
+            </div>
+          </div>
+        ) : isProfessionalFlat ? (
+          /* Professional: category -> research directions (old interaction) */
+          <div className="flex gap-4 overflow-hidden">
+            {/* Column 1: 专业学位类别 */}
+            <motion.div
+              layout
+              transition={{ duration: 0.3, ease: 'easeOut' }}
+              className="border rounded-lg p-3 h-64 overflow-auto min-w-0"
+              style={{ flex: 1 }}
+            >
+              <h3 className="text-sm font-medium text-gray-500 mb-2">专业学位类别</h3>
+              {PROFESSIONAL_CATEGORIES.flatMap((cat) => cat.disciplines)
+                .sort((a, b) => a.code.localeCompare(b.code))
+                .map((disc) => (
+                  <motion.button
+                    key={disc.code}
+                    whileHover={{ x: 4 }}
+                    onClick={() => {
+                      if (disc.majors.length > 1) {
+                        setSelectedDiscipline(disc);
+                      } else if (disc.majors.length === 1) {
+                        setSelectedDiscipline(null);
+                        onStartCrawl?.(disc.majors[0].code);
+                      } else {
+                        setSelectedDiscipline(null);
+                      }
+                    }}
+                    className={`w-full text-left px-3 py-2 rounded text-sm mb-1 transition-colors whitespace-nowrap overflow-hidden text-ellipsis ${
+                      selectedDiscipline?.code === disc.code
+                        ? 'bg-primary text-white'
+                        : 'hover:bg-gray-100'
+                    }`}
+                  >
+                    <span className="text-xs opacity-60 mr-1">{disc.code}</span>
+                    {disc.name}
+                    {disc.majors.length > 1 && (
+                      <span className="ml-2 text-xs opacity-60">({disc.majors.length}个方向)</span>
+                    )}
+                  </motion.button>
+                ))}
+            </motion.div>
+
+            {/* Column 2: 研究方向 */}
+            <AnimatePresence initial={false} mode="popLayout">
+              {selectedDiscipline && selectedDiscipline.majors.length > 1 && (
+                <motion.div
+                  initial={{ opacity: 0, x: 30 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: 30 }}
+                  transition={{ duration: 0.3, ease: 'easeOut' }}
+                  className="border rounded-lg p-3 h-64 overflow-auto min-w-0"
+                  style={{ flex: 1 }}
+                >
+                  <h3 className="text-sm font-medium text-gray-500 mb-2">研究方向</h3>
+                  {selectedDiscipline.majors.map((m, i) => (
+                    <motion.button
+                      key={m.code}
+                      initial={{ opacity: 0, x: -10 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: i * 0.02 }}
+                      whileHover={{ x: 4 }}
+                      onClick={() => onStartCrawl?.(m.code)}
+                      className="w-full text-left px-3 py-2 rounded text-sm mb-1 hover:bg-primary/10 transition-colors whitespace-nowrap overflow-hidden text-ellipsis"
+                    >
+                      <span className="text-gray-500 mr-2 font-mono">{m.code}</span>
+                      {m.name}
+                    </motion.button>
+                  ))}
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
         ) : (
           /* 3-column cascading for academic or professional (when enabled) */

@@ -47,6 +47,7 @@ interface AppState {
   toggleVisibleMajor: (code: string) => void;
   setCrawlTarget: (target: CrawlTarget | null) => void;
   setEnableProfessionalThreeLevelMenu: (enabled: boolean) => void;
+  updateMajor: (code: string, updates: Partial<CrawledMajor>) => void;
 }
 
 function isClient(): boolean {
@@ -70,7 +71,10 @@ export const useAppStore = create<AppState>()(
         if (state.crawledMajors.some((m) => m.code === major.code)) {
           return state;
         }
-        return { crawledMajors: [...state.crawledMajors, major] };
+        return {
+          crawledMajors: [...state.crawledMajors, major],
+          visibleMajorCodes: Array.from(new Set([...state.visibleMajorCodes, major.code])),
+        };
       }),
 
       removeMajor: (code) => set((state) => ({
@@ -113,6 +117,12 @@ export const useAppStore = create<AppState>()(
 
       setCrawlTarget: (target) => set({ crawlTarget: target }),
       setEnableProfessionalThreeLevelMenu: (enabled) => set({ enableProfessionalThreeLevelMenu: enabled }),
+
+      updateMajor: (code, updates) => set((state) => ({
+        crawledMajors: state.crawledMajors.map((m) =>
+          m.code === code ? { ...m, ...updates } : m
+        ),
+      })),
     }),
     {
       name: 'yam-app-store',
