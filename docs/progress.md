@@ -1,7 +1,18 @@
 # 进度跟踪 - 2026-07-17
 
 > 本文件用于上下文压缩后恢复进度。每完成一步立即更新。
-> 当前任务：修复 ISSUE-015（翻页"请登录"）和 ISSUE-016（错误横幅显示 traceback），验证方案 A 登录后的完整采集流程。
+> 当前任务：UI bug 修复已完成并验证；新增 4 个 ISSUE 已记录到 known-issues.md（ISSUE-023 ~ ISSUE-026），等待后续开发。
+
+---
+
+## 新规划（2026-07-21）
+
+用户提出 4 个新需求，已登记到 `docs/known-issues.md`：
+
+- **ISSUE-023**：专业目录更新流程耗时过长（30 分钟+）。短期方案 `update_majors_catalog.py` 改 asyncio + aiohttp 并发，目标 10 分钟内完成。
+- **ISSUE-024**：登录状态缺乏统一管理。短期方案 SettingsPage 新增"登录状态"卡片 + `check_login_status` / `refresh_login` / `clear_login` 三个 Tauri 命令；中期抽象 `SessionStore` 接口支持研招网 + 掌上考研。
+- **ISSUE-025**：未采集实际分数线信息。短期方案调研 `scoreLines.do` 接口 + 新增 `fetch_score_lines` 方法 + `score_lines` 表 + WorkspacePage 显示。
+- **ISSUE-026**：工作区"导出"按钮无功能。短期方案调用 Tauri `dialog.save` + `fs.writeTextFile` 导出 CSV。
 
 ---
 
@@ -31,6 +42,23 @@
 
 ### 编译验证
 - `npm run build`：通过（2198 modules，799ms）
+
+### CDP 干净复测（2026-07-21 后续）
+重新启动桌面端，从 localStorage 强制设置 `currentPage=major-select` 重载页面，选择 学术学位 → 医学 → 1002 临床医学（96 个专业），等动画完成后采样 Column 3 DOM：
+
+| 字段 | 值 | 说明 |
+|---|---|---|
+| col3.height | 320 | 容器高度 |
+| col3.scrollHeight | 4016 | 内容总高度（96 个 button × ~40px） |
+| col3.clientHeight | 319 | 可视区高度 |
+| col3.children | 2 | H3 + motion.div |
+| H3.offsetTop | 335 | 紧贴顶部 padding |
+| motion.div.offsetTop | 363 | 紧接 H3 + mb-2(8px) |
+| motion.div.height | 3964 | 包含 96 个 button |
+| motion.div.firstBtnTop | 0 | 内部首个 button 紧贴 motion.div 顶部 |
+| motion.div.opacity | 1 | 动画完成 |
+
+**结论**：无"上方空白"。motion.div 紧接 H3（gap 8px 来自 `mb-2`），第一个 button 紧贴 motion.div 顶部。子专业多时右边栏上方空白 bug 已确认修复。
 
 ---
 

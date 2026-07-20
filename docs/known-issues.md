@@ -300,3 +300,280 @@
 - **建议修复方向**：
   - 短期：已修复，标签缓存命中后刷新速度显著提升。
   - 长期：考虑在 Python 后端 schools 表写入时直接保存掌上考研标签，避免同步阶段额外 API 调用。
+
+---
+
+## ISSUE-015：研招网 `zydws.do` 翻页接口偶发返回"请登录"
+
+- **严重程度**：high
+- **状态**：fixed
+- **描述**：即使本地已保存有效的 `CASTGC` 登录凭证，且首次请求能返回数据，翻页调用 `zydws.do` 时仍会偶发返回"请登录"，导致 `fetch_school_list` 抛出 `LoginRequiredError`，采集中断。
+- **复现步骤**：
+  1. 确保 `~/.yam/cookies/yz.chsi.com.cn.json` 中存在 `account.chsi.com.cn` 域的 `CASTGC`。
+  2. 在桌面端选择 `081200 计算机科学与技术` 并启动采集。
+  3. 若第一页成功返回，等待翻到第 2 页或更后。
+  4. 实际：接口 `msg` 字段变为字符串"请登录"，采集终止。
+- **期望行为**：登录凭证有效期间，能获取完整院校列表（271 所）。
+- **实际行为**：翻页过程中返回"请登录"，采集只能获取第 1 页（10 所）。
+- **根因分析**（经深入调试确认）：
+  - 研招网服务端在每个登录会话内**严格限制** `zydws.do` 调用：同一参数组合的第二次调用一律返回"请登录"。
+  - 该限制基于 `CASTGC`（登录凭证）+ 参数组合，**与 JSESSIONID、页面上下文、请求方式（fetch/requests）均无关**。
+  - 尝试过的失败方案：清除 JSESSIONID、新建页面、`page.route()` 拦截修改请求体、Python `requests` 直接调用、大 `pageSize`（API 忽略）、URL 参数 `curPage`（页面忽略）。
+  - **关键发现**：不同 `ssdm`（省份）参数的调用视为不同请求，均可成功。这为绕过限制提供了途径。
+- **修复位置**：
+  - `yam/crawler/dynamic.py`：
+    - 新增 `_PROVINCES` 常量（34 个省级行政区代码）和 `_KEYWORDS` 常量（38 个校名关键词）。
+    - `fetch_school_list` 完全重写为四阶段方案：
+      1. **sign 元数据**：通过浏览器获取 `zys.do` 返回的 `sign`/`sign2`，构造正确详情页 URL 建立 session，提取 cookies 转 `requests` 调用。
+      2. **省份扫描 + 多筛选**（`zydws.do`）：遍历 34 个省份，每省调用一次获取前 10 所（含 totalCount=0 重试机制，3 次尝试间隔 8s）；对院校数 >10 的省份追加 8 种筛选组合（`dwlxs=zhx`/`dwlxs=syl`/`tydxs=0`/`tydxs=1`/`jsggjh=0`/`jsggjh=1`/`xxfs=1`/`xxfs=2`），每种组合返回不同的前 10 所。按 `schId` 去重。
+      3. **关键词搜索**（`zydws.do`）：对仍有缺口的省份，用 38 个校名关键词（`dwmc` 参数）补全，每个关键词返回不同的前 10 所。
+      4. **dwzys.do 补缺**（aiohttp 并发）：遍历"已知 dwdm 的 ±10 邻域 + 小间隙（11-99）填补"，用 aiohttp 并发 3 + 批 30 + 自适应限流（批间 sleep 15/30/60s）。
+- **验证结果**（2026-07-17，专业 081200 计算机科学与技术）：
+  - 省份扫描：34 个省份，获取 210 所唯一院校。
+  - 多筛选：11 个 >10 所的省份 × 8 筛选组合，新增 44 所 = 254 所。
+  - 关键词搜索：38 个关键词 × 缺失省份，新增 14 所 = 268 所。
+  - dwzys.do 补缺（aiohttp + 段±10）：遍历 1447 个代码，新增 3 所 = **271 所**。
+    - 北京联合大学（dwdm=11417，北京）
+    - 青岛大学（dwdm=11065，山东）
+    - 烟台大学（dwdm=11066，山东）
+  - **最终获取 271/271 所院校（100% 覆盖率）**，总耗时约 30 分钟。
+- **技术细节**（来自旧项目 yanzhao-mcp 参考 + 2026-07 实测）：
+  - `dwzys.do` 不需要 `sign`/`sign2`，参数用 `zycm`（非 `zymc`），需 `mldm`/`yjxkdm`。
+  - `dwzys.do` 对无效 dwdm 返回 dict msg（list=[], totalCount=0），只有"访问太频繁"/"请登录"才返回字符串 msg。
+  - **限流策略实测**（2026-07）：研招网限流是"累积式封禁"，短时允许 40-50 请求，超过触发雪崩封禁（5-10 分钟）。
+    - 并发 5 短时（40 请求）100% 成功，但持续高频（200+）触发雪崩。
+    - 并发 ≥10 立即全部限流；旧项目"并发 15"在当前网络环境已失效。
+    - 30s 批间 sleep 是"稳定状态"：成功率约 61%，不触发雪崩。
+  - **遍历范围策略**：全段遍历（10001-19999 + 80001-82999 + 90001-92999）约 6000 个代码，限流严重。改为"已知 dwdm 的 ±10 邻域 + 小间隙（11-99）填补"约 1447 个代码，精准覆盖所有缺失位置。
+  - 中国高校代码编码规则：10001-19999（普通高校）、80001-82999（科研院所）、90001-92999（军事院校）。
+- **备注**：该方案将"翻页"问题转化为"多维度筛选 + 关键词搜索 + 精确查询"问题，利用服务端按参数组合区分调用的特性，实现了 100% 院校列表采集。dwzys.do 阶段用 aiohttp 替代 requests，并采用自适应限流策略（批间 sleep 15/30/60s）避免雪崩封禁。
+
+---
+
+## ISSUE-017：桌面端采集 90 秒超时对无种子专业过短
+
+- **严重程度**：high
+- **状态**：fixed
+- **描述**：桌面端启动新专业采集时，若该专业没有本地种子文件，`yanzhao.py` 会自动调用 `DynamicYanZhaoCrawler.fetch_and_save()` 抓取完整院校列表。四阶段种子抓取耗时约 30 分钟，但 `commands.rs` 的 `run_crawl_task` 使用固定 90 秒超时，导致种子尚未抓完就被误判为"卡住"并终止任务。
+- **复现步骤**：
+  1. 确保 `data/seeds/yan_zhao_083500_all_regions.json` 不存在。
+  2. 在桌面端选择 `083500 软件工程` 并启动采集。
+  3. `CrawlingPage` 显示"正在获取院校列表..."约 90 秒后报错"采集超时（90 秒无进度更新），已自动终止"。
+- **期望行为**：种子获取阶段允许更长的等待时间（约 5 分钟），或定期输出心跳进度避免超时；进入院校详情抓取阶段后再使用较短的 90 秒超时。
+- **实际行为**：固定 90 秒超时，无种子专业无法完成自动种子抓取。
+- **修复位置**：
+  - `yam-desktop/src-tauri/src/commands.rs`：`run_crawl_task` 中 `timeout_secs` 改为自适应：初始 300 秒，一旦收到 `YAM_TOTAL`（`total > 0`）即恢复为 90 秒。
+- **验证结果**：
+  - 预抓取 `083500` 种子（139 所）后，桌面端 `run_crawl` 成功完成 139/139 所采集与同步，`workspace_schools` 表确认 139 条记录。
+  - 修复后桌面端在种子就绪场景下可正常完成多专业采集。
+- **建议修复方向**：
+  - **短期**：上述自适应超时，确保无种子专业有足够时间完成种子抓取。
+  - **中期**：`yanzhao.py` / `dynamic.py` 在种子抓取期间定期输出 `YAM_PROGRESS 0/0 正在获取种子...` 心跳，保持超时计时器刷新。
+  - **长期**：桌面端选择专业后先独立调用 `fetch-seeds` 并显示"正在获取院校列表"进度，种子就绪后再启动 `fetch` 抓取院系详情，两个阶段进度分开呈现。
+
+---
+
+## ISSUE-016：采集错误时 `CrawlingPage` 错误横幅显示完整 Python traceback
+
+- **严重程度**：medium
+- **状态**：fixed
+- **描述**：当 Python CLI 抛出异常（如 `LoginRequiredError`）时，前端 `CrawlingPage` 的 error banner 会显示完整 Python traceback，而非面向用户的简洁提示，体验差且难以阅读。
+- **复现步骤**：
+  1. 清空或删除 `~/.yam/cookies/yz.chsi.com.cn.json`。
+  2. 在桌面端选择任意专业（如 `081200`）启动采集。
+  3. 等待采集失败，查看错误横幅。
+- **期望行为**：错误横幅仅显示用户可理解的提示，如“需要登录研招网：研招网接口返回异常：请登录”。
+- **实际行为**：错误横幅中夹杂多行 Python traceback（如 `Traceback (most recent call last): ...`），占据大量页面空间。
+- **修复位置**：
+  - `yam/cli.py` `fetch` 命令：在已有的 `LoginRequiredError`/`RuntimeError` 捕获之外，新增 `except Exception` 广义捕获，输出 `YAM_ERROR 采集异常：{ExceptionType}: {message}` 结构化错误协议，而非让 Python 打印完整 traceback 到 stderr。
+  - `yam-desktop/src-tauri/src/commands.rs`：
+    - 新增 `filter_python_stderr()` 函数，过滤 stderr 中的 `Traceback`、`  File`、缩进行等调试信息，仅保留最后的 `ErrorType: message` 行。
+    - `run_crawl_task` 中子进程异常退出时，若已有 `YAM_ERROR` 则保留；否则使用 `filter_python_stderr` 提取有用错误信息，避免直接显示完整 stderr。
+- **备注**：双层防护——Python 端优先输出 `YAM_ERROR` 结构化错误，Rust 端兜底过滤 stderr 中的 traceback，确保前端错误横幅只显示用户可理解的简洁提示。
+
+---
+
+## ISSUE-019：专业选择页面可供选择的专业不全
+
+- **严重程度**：high
+- **状态**：partial-fixed
+- **描述**：专业选择页面（MajorSelectPage）可供选择的专业不全，用户想采集"非织造材料与工程"（只有一个学校开设）等专业时找不到，还有许多其他专业在研招网目录中存在但前端无法选择。
+- **根因**：前端只从 `data/majors.yaml` 加载专业列表。该 yaml 是一份不完整的静态目录：
+  - 总共收录 752 个专业
+  - 仅 3 个 `enabled: true`（083500 软件工程、085400 电子信息、085410 人工智能）
+  - 749 个 `enabled: false`
+  - "非织造材料与工程"等专业**完全未收录**在 yaml 中
+- **复现步骤**：
+  1. 在桌面端进入"添加专业"页面。
+  2. 搜索"非织造材料与工程"。
+  3. 实际：搜索无结果。
+  4. 打开研招网 `https://yz.chsi.com.cn/zsml/` 查询该专业，确认其存在。
+- **期望行为**：用户能搜索并采集研招网目录中的任何专业，不受 majors.yaml 静态列表限制。
+- **实际行为**：用户只能在 yaml 已收录且 enabled=true 的 3 个专业中选择。
+- **建议修复方向**：
+  - **短期**：扩充 `data/majors.yaml`，把研招网 2026 招生专业目录完整导入（约 4000+ 条），并把所有专业默认 `enabled: true`，仅对已知不可采集的少数专业显式 disable。
+  - **长期**：MajorSelectPage 改为直接从研招网实时查询专业目录（如 `zys.do` 接口），不再依赖本地 yaml；用户可输入任意专业代码或名称直接采集。
+- **本次修复（2026-07-18 第一轮）**：
+  - 用 PowerShell 把 `data/majors.yaml` 中所有 `enabled: false` 批量替换为 `enabled: true`，753 个专业全部启用。
+  - 在 `data/majors.yaml` 与 `yam-desktop/src/data/majors.ts` 中新增 `0821Z5 非织造材料与工程`（东华大学自设二级学科，位于 0821 纺织科学与工程下），让用户能搜索并采集。
+- **本次修复（2026-07-20 第二轮）**：
+  - 发现研招网 `zys.do` 接口支持按一级学科代码（`yjxkdm`）查询所有专业，比猜测 Z1-Z9/J1-J9 代码准确得多。
+  - 未登录状态下抓取了 219 个一级学科，得到 719 个专业（其中 221 个是 majors.ts 没有的新增）。
+  - 合并到 `data/majors.yaml`（782→1003，+221）和 `yam-desktop/src/data/majors.ts`（1015→1250，+235）。
+  - 编译验证通过（`npm run build` + `cargo check`）。
+  - 清理了 yaml 文件开头多余的 UTF-8 BOM。
+- **本次修复（2026-07-20 第三轮，已完成）**：
+  - 发现研招网未登录时每个学科只能取前 10 条（第 2 页返回"请登录"），导致 60 个热门学科（如 0812 计算机科学与技术 5/37、1002 临床医学 10/109）仍不全。
+  - 下载教育部官方 PDF（截至 2024.6.30 的 5034 个自设二级学科 + 878 个交叉学科名单），但 PDF 只有名称没有代码。
+  - 从 PDF 提取 3072 个不同名称，用 Playwright 浏览器环境按名称批量搜索研招网 `zys.do` 拿代码（aiohttp 直接请求被限流"访问太频繁"，浏览器环境带 Referer + cookies 不被限流）。
+  - 批量搜索完成：共 3072 个名称，拿到 528 个独立专业代码。
+  - 将 MOE 搜索结果与第二轮 yjxkdm 抓取结果取并集，合并后共 1040 个自设二级学科。
+  - 合并到 `data/majors.yaml`（1003→1305，+302）和 `yam-desktop/src/data/majors.ts`（1250→1546，+296）。
+  - 编译验证通过（`npm run build`）。
+  - `0812 计算机科学与技术` 现有 14 个专业（4 个标准 + 10 个自设），比最初的 4 个大幅扩充。
+- **仍存在的缺口**：
+  - 教育部 PDF 是 2024 年数据，且研招网 2026 招生目录与教育部备案名单并不完全重合；按名称搜索只能拿到 totalCount ≤ 10 的结果，热门名称（如"人工智能"）仍可能漏掉部分代码。
+  - 要彻底补全，需要登录研招网后翻页抓取（`fetch_majors_with_login.py`），或使用实时查询接口替代静态 yaml。
+- **长期方案**：MajorSelectPage 改为直接从研招网实时查询专业目录（如 `zys.do` 接口），不再依赖本地 yaml；用户可输入任意专业代码或名称直接采集。
+- **备注**：与 ISSUE-022（disabled 专业仍能被选择）相互关联——根本原因都是前端依赖 yaml 静态列表。建议合并解决：扩充 yaml 并统一过滤逻辑。
+
+---
+
+## ISSUE-020：BackgroundTaskPanel 用时计时器不会重置
+
+- **严重程度**：medium
+- **状态**：fixed
+- **描述**：左下角后台任务面板的"已用时 MM:SS"计时器在采集任务结束后未重置，下次启动新采集任务时计时器延续上一个任务的累计时间，显示的用时与实际任务用时不符。
+- **修复位置**：`yam-desktop/src/components/BackgroundTaskPanel.tsx`
+- **修复内容**：添加 `prevRunningRef`，在 `running` 从 false 变为 true 时重置 `startTimeRef.current = Date.now()`，使每次新任务开始时计时器从 0 起算。
+- **复现步骤**：
+  1. 启动一次采集任务，等待几秒后取消或让其完成。
+  2. 观察左下角面板的"已用时"显示。
+  3. 启动第二次采集任务。
+  4. 实际：第二次任务的"已用时"从第一次任务的累计时间开始递增，而非从 0 开始。
+- **期望行为**：每次启动新采集任务时，"已用时"计时器从 0 开始重新计时。
+- **实际行为**：计时器不重置，跨任务累计。
+- **建议修复方向**：
+  - **短期**：`yam-desktop/src/components/BackgroundTaskPanel.tsx` 在检测到 `running` 从 false 变为 true（新任务启动）时，重置内部计时器 `startTime` 状态。
+  - **长期**：将计时器逻辑改为基于后端 `CrawlProgress` 的 started_at 时间戳（需在 Rust 端 `CrawlProgress` 新增 `started_at: Option<u64>` 字段），避免依赖前端状态。
+
+---
+
+## ISSUE-021：切出数据采集页面再切回误报"已有采集任务在运行"
+
+- **严重程度**：medium
+- **状态**：fixed
+- **描述**：用户从数据采集页面（CrawlingPage）切出后再切回，前端会弹出"已有采集任务在运行"的提示，即使当前并没有运行中的采集任务。该提示应当只在用户从 MajorSelectPage 选择了一个正在采集的专业时才出现。
+- **修复位置**：`yam-desktop/src/pages/CrawlingPage.tsx`
+- **修复内容**：删除页面重新挂载时检查后端状态后打印的冗余"检测到已有..."日志，避免切回页面时误触发提示。
+- **复现步骤**：
+  1. 在 MajorSelectPage 选择一个专业，进入 CrawlingPage 启动采集。
+  2. 点击"后台运行"或切换到其他页面。
+  3. 从 TopNav 点击"数据采集"回到 CrawlingPage。
+  4. 实际：弹出"已有采集任务在运行"提示，即使后端 `running=false`。
+- **期望行为**：仅在用户从 MajorSelectPage 主动选择了一个正在采集的专业时才提示"已有采集任务在运行"；从 TopNav 回到采集页不应弹出此提示。
+- **实际行为**：CrawlingPage 重新挂载时错误地触发了 `runCrawl`，导致"已有采集任务在运行"提示。
+- **建议修复方向**：
+  - **短期**：检查 `yam-desktop/src/pages/CrawlingPage.tsx` 的 `useEffect` 初始化逻辑，确保只在 `running=false && done=false && !crawlTarget` 时调用 `runCrawl`；切回页面时若 `crawlTarget` 与后端 `major_code` 一致且 `done=true`，应显示采集结果而非重启。
+  - **长期**：将"启动采集"动作收敛到 `MajorSelectPage.handleConfirm` 和 `MajorManagementPage.handleUpdate` 两个入口，CrawlingPage 只负责显示进度，不再主动调用 `runCrawl`。
+
+---
+
+## ISSUE-022：选择 disabled=true 的专业（如 140700 区域国别学）后采集卡住
+
+- **严重程度**：high
+- **状态**：open
+- **描述**：用户在专业选择页面选择 `140700 区域国别学` 后启动采集，前端一直显示"专业 140700 当前未启用"且卡住，无法继续也无法回退。`data/majors.yaml` 中该专业 `enabled: false`，但前端 MajorSelectPage 仍允许选择。
+- **复现步骤**：
+  1. 在专业选择页面找到 `140700 区域国别学`。
+  2. 点击确认添加。
+  3. 进入采集页后显示"专业 140700 当前未启用"，采集卡住。
+- **期望行为**：MajorSelectPage 不应显示 `enabled: false` 的专业；若用户尝试选择，应给出"该专业暂不支持采集"的提示。
+- **实际行为**：disabled 专业仍出现在选择列表，选择后采集卡住。
+- **建议修复方向**：
+  - **短期**：`yam-desktop/src/pages/MajorSelectPage.tsx` 渲染专业列表时过滤 `enabled === false` 的条目。
+  - **长期**：在 `yam-desktop/src/data/majors.ts`（或对应的数据加载模块）层统一过滤 disabled 专业，避免每个组件各自处理。同时在采集启动前增加 `enabled` 校验作为兜底。
+
+---
+
+## ISSUE-023：专业目录更新流程耗时过长
+
+- **严重程度**：medium
+- **状态**：open
+- **描述**：设置页"更新专业目录"流程串行探测 219 个一级学科 + 子专业，整体耗时较长（实测 30 分钟+）。`yam/scripts/update_majors_catalog.py` 串行调用 `zys.do` 接口，每次请求之间有间隔，且未利用研招网接口可并发的特性。
+- **复现步骤**：
+  1. 桌面端 → 设置 → 更新专业目录（勾选首次登录）。
+  2. 观察进度条逐个学科推进，总耗时 30 分钟以上。
+- **期望行为**：完整目录更新在 10 分钟内完成，且不触发研招网限流。
+- **实际行为**：30 分钟+，用户体验差。
+- **建议修复方向**：
+  - **短期**：`update_majors_catalog.py` 改为 `asyncio` + `aiohttp` 并发请求，按学科分组批处理（批 10-15 个，批间 sleep 5s 避免限流）。
+  - **中期**：缓存上次结果，仅探测已知有自设二级学科的学科，其他学科用缓存兜底。
+  - **长期**：增量更新——只重新探测用户实际选择过的学科，其他保持缓存。
+
+---
+
+## ISSUE-024：登录状态缺乏统一管理，研招网 session/seed 散落各处
+
+- **严重程度**：high
+- **状态**：open
+- **描述**：当前研招网登录凭证（`CASTGC` cookie / JSESSIONID / sign 签名）由 `yam/crawler/dynamic.py` 自行管理，存在 `data/cookies/` 目录；掌上考研目前未接入登录态。桌面端设置页缺少"登录状态"入口，用户无法主动检查/刷新/清除登录态，只能在采集失败时被动触发 `LoginRequiredModal`。多专业批量采集时，若 session 失效需重新登录，体验差。
+- **复现步骤**：
+  1. 桌面端启动采集，运行一段时间后研招网 session 失效。
+  2. 弹出 `LoginRequiredModal`，用户登录后继续。
+  3. 用户无法在不触发采集的情况下主动检查登录状态或刷新 session。
+- **期望行为**：
+  - 设置页提供"登录状态管理"入口，显示研招网（以及未来的掌上考研）当前登录状态、上次刷新时间。
+  - 支持手动触发刷新（重新拉起浏览器登录窗口）和清除（删除本地 cookie 文件）。
+  - 统一的 session/seed 存储抽象层，支持多数据源（研招网、掌上考研）扩展。
+- **实际行为**：登录态完全由 Python 脚本内部管理，前端无感知，用户无控制入口。
+- **建议修复方向**：
+  - **短期**：
+    1. `yam-desktop/src/pages/SettingsPage.tsx` 新增"登录状态"卡片，显示研招网 CASTGC 是否存在 + 上次更新时间。
+    2. 新增 `check_login_status` / `refresh_login` / `clear_login` 三个 Tauri 命令，封装 Python 端 `DynamicReader.check_login` / `interactive_login` / `clear_cookies`。
+  - **中期**：抽象 `SessionStore` 接口（`get`/`set`/`clear`/`is_valid`），研招网和掌上考研各一个实现，统一存到 `~/.yam/sessions/` 下分文件管理。
+  - **长期**：登录态过期前自动刷新（基于上次刷新时间 + TTL），避免采集中途失败。
+
+---
+
+## ISSUE-025：未采集实际分数线信息
+
+- **严重程度**：medium
+- **状态**：open
+- **描述**：当前采集流程只抓取院校 + 院系 + 招生计划信息（`schools` / `departments` 表），未采集历年分数线（国家线/院校线/专业线）。用户在工作区只能看到院校列表，无法比较分数线，限制了实际使用价值。
+- **复现步骤**：
+  1. 桌面端采集任意专业（如 081200）。
+  2. 工作区只显示院校名称、院系、招生人数等，无任何分数线信息。
+- **期望行为**：工作区能显示每个院校该专业的历年分数线（至少近 3 年），支持按分数筛选和排序。
+- **实际行为**：完全没有分数线数据。
+- **建议修复方向**：
+  - **短期**：
+    1. 调研研招网 `scoreLines.do` 或类似接口（旧项目 yanzhao-mcp 中可能有线索）。
+    2. `yam/crawler/yanzhao.py` 新增 `fetch_score_lines(school_id, major_code)` 方法，复用现有 session。
+    3. SQLite 新增 `score_lines` 表（school_id, major_code, year, score_type, score, region, subject, ...）。
+    4. `yam-desktop/src-tauri/src/db.rs` 新增 `get_score_lines` 查询。
+    5. `WorkspacePage` 表格新增"分数线"列，筛选区新增"分数区间"过滤。
+  - **中期**：采集流程在抓完院校后自动追加分数线抓取阶段（可单独配置开关）。
+  - **长期**：支持掌上考研分数线数据交叉验证，补充研招网缺失的年份。
+
+---
+
+## ISSUE-026：工作区"导出"按钮无任何功能
+
+- **严重程度**：medium
+- **状态**：open
+- **描述**：`WorkspacePage` 顶部有"导出"按钮，但点击后无任何反应，无下拉菜单、无文件保存对话框、无 Toast 提示。用户无法把当前筛选结果导出为文件。
+- **复现步骤**：
+  1. 桌面端 → 工作区，选中任意专业。
+  2. 点击顶部"导出"按钮。
+  3. 无任何反馈。
+- **期望行为**：点击后弹出格式选择（CSV/Excel/JSON），选择后调用 Tauri 文件保存对话框，把当前筛选后的院校列表写入文件。
+- **实际行为**：按钮完全无响应。
+- **建议修复方向**：
+  - **短期**：
+    1. `yam-desktop/src/pages/WorkspacePage.tsx` 给"导出"按钮加 `onClick`，调用 Tauri `dialog.save` + `fs.writeTextFile`。
+    2. 默认导出 CSV（UTF-8 BOM，Excel 可直接打开），字段：院校名称、所在省份、层次、学习方式、考试方式、招生人数、研究方向等。
+    3. 文件名：`{major_code}_{major_name}_{YYYYMMDD}.csv`。
+  - **中期**：支持 Excel（.xlsx）格式，保留筛选/排序状态。
+  - **长期**：支持导出完整采集数据（含院系详情、分数线），打包为 .zip。
+
