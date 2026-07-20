@@ -586,7 +586,7 @@
 ## ISSUE-026：工作区"导出"按钮无任何功能
 
 - **严重程度**：medium
-- **状态**：open
+- **状态**：fixed
 - **描述**：`WorkspacePage` 顶部有"导出"按钮，但点击后无任何反应，无下拉菜单、无文件保存对话框、无 Toast 提示。用户无法把当前筛选结果导出为文件。
 - **复现步骤**：
   1. 桌面端 → 工作区，选中任意专业。
@@ -601,4 +601,16 @@
     3. 文件名：`{major_code}_{major_name}_{YYYYMMDD}.csv`。
   - **中期**：支持 Excel（.xlsx）格式，保留筛选/排序状态。
   - **长期**：支持导出完整采集数据（含院系详情、分数线），打包为 .zip。
+- **本次修复（2026-07-21，短期方案）**：
+  - **方案**：在 Rust 端实现 `export_csv` 命令（弹保存对话框 + 写文件），前端只调用 `invoke('export_csv', { defaultFilename, content })`，避免引入 `@tauri-apps/plugin-dialog` / `@tauri-apps/plugin-fs` 两个 npm 依赖。CSV 内容由前端构造（含 UTF-8 BOM、字段转义），Rust 端只负责 OS 级弹窗 + `std::fs::write`。
+  - **修改文件**：
+    - `yam-desktop/src-tauri/Cargo.toml`：新增 `tauri-plugin-dialog = "2"` 依赖。
+    - `yam-desktop/src-tauri/src/main.rs`：注册 `tauri_plugin_dialog::init()` + 把 `commands::export_csv` 加入 `invoke_handler`。
+    - `yam-desktop/src-tauri/capabilities/default.json`：新增 `"dialog:allow-save"` 权限。
+    - `yam-desktop/src-tauri/src/commands.rs`：新增 `export_csv(app, default_filename, content) -> Result<Option<String>, String>` 命令——用 `app.dialog().file().add_filter("CSV", &["csv"]).set_file_name(&default_filename).blocking_save_file()` 弹窗，`std::fs::write` 写文件。返回 `Ok(None)` 表示用户取消。
+    - `yam-desktop/src/pages/WorkspacePage.tsx`：新增 `handleExport` 函数（构造 CSV 表头+11 列字段+UTF-8 BOM+RFC4180 转义），给"导出"按钮加 `onClick` + `disabled` 状态；浏览器环境用 `Blob + a.download` 回退。
+  - **字段**：院校代码、院校名称、省份、层次、最低分、招生人数、自划线、博士点、双一流、985、211（共 11 列）。
+  - **文件名**：`{major_code}_{major_name}_{YYYYMMDD}.csv`，例：`085400_电子信息_20260721.csv`。
+  - **验证**：`cargo check` 通过（含新依赖 tauri-plugin-dialog v2.7.2 编译）；`npm run build` 通过（522.75 kB → 522.75 kB，无新增 chunk）。桌面端实测待用户确认。
+  - **未做的部分**：未实现 Excel/JSON 格式（ChevronDown 图标保留但暂时只触发 CSV 导出，未来可加下拉菜单支持多格式）；未导出院系详情/分数线（长期方案）。
 

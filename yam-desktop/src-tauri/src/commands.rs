@@ -9,6 +9,7 @@ use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager, State};
+use tauri_plugin_dialog::DialogExt;
 
 #[tauri::command]
 pub fn fetch_schools(state: State<'_, DbConn>, major_code: String) -> Vec<School> {
@@ -1425,4 +1426,36 @@ pub fn read_majors_catalog() -> Result<Option<String>, String> {
     let content = std::fs::read_to_string(&path)
         .map_err(|e| format!("读取 majors_realtime.json 失败: {}", e))?;
     Ok(Some(content))
+}
+
+/// ISSUE-026：弹出"保存文件"对话框并将 CSV 内容写入用户选择的路径。
+///
+/// - `default_filename`：默认文件名（如 `085400_电子信息_20260721.csv`）
+/// - `content`：完整 CSV 文本（前端已加 UTF-8 BOM、已转义字段）
+///
+/// 返回 `Ok(Some(path))` 表示保存成功并返回写入路径；`Ok(None)` 表示用户取消；
+/// `Err(msg)` 表示写入失败。
+#[tauri::command]
+pub fn export_csv(
+    app: tauri::AppHandle,
+    default_filename: String,
+    content: String,
+) -> Result<Option<String>, String> {
+    let file_path = app
+        .dialog()
+        .file()
+        .add_filter("CSV", &["csv"])
+        .set_file_name(&default_filename)
+        .blocking_save_file();
+
+    let path = match file_path {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+
+    // 转成底层 PathBuf 字符串
+    let path_str = path.to_string();
+    std::fs::write(&path_str, content.as_bytes())
+        .map_err(|e| format!("写入文件失败: {}", e))?;
+    Ok(Some(path_str))
 }

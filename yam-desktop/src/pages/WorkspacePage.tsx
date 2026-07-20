@@ -15,6 +15,7 @@ import {
   toggleFavorite as toggleFavoriteApi,
   addRecentView,
   syncWorkspaceData,
+  isTauri,
   type WorkspaceSchool,
   type WorkspaceDepartment,
   type FilterOptions,
@@ -396,6 +397,83 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
   const paginatedData = filteredData.slice((currentPageNum - 1) * pageSize, currentPageNum * pageSize);
   const totalPages = Math.max(1, Math.ceil(filteredData.length / pageSize));
 
+  // ISSUE-026：导出当前筛选结果为 CSV
+  const handleExport = async () => {
+    if (filteredData.length === 0) {
+      setError('当前没有可导出的数据');
+      setTimeout(() => setError(null), 2500);
+      return;
+    }
+    const majorName = crawledMajors.find((m) => m.code === majorCode)?.name ?? majorCode;
+    const today = new Date();
+    const ymd = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}`;
+    const defaultFilename = `${majorCode}_${majorName}_${ymd}.csv`;
+
+    // CSV 表头与字段（按 WorkspaceSchool 类型挑选用户关心字段）
+    const headers = [
+      '院校代码', '院校名称', '省份', '层次',
+      '最低分', '招生人数', '自划线', '博士点',
+      '双一流', '985', '211',
+    ];
+    const rows = filteredData.map((s) => [
+      s.school_code ?? '',
+      s.name ?? '',
+      s.province ?? '',
+      s.level ?? '',
+      s.min_score ?? 0,
+      s.enroll_count ?? 0,
+      s.self_scoring ? '是' : '否',
+      s.doctoral_program ? '是' : '否',
+      s.double_first_class ? '是' : '否',
+      s.is_985 ? '是' : '否',
+      s.is_211 ? '是' : '否',
+    ]);
+
+    // CSV 字段转义：包含 , " \n 的字段用双引号包裹，内部双引号转义为 ""
+    const escapeField = (v: string | number) => {
+      const s = String(v);
+      if (/[",\n\r]/.test(s)) {
+        return `"${s.replace(/"/g, '""')}"`;
+      }
+      return s;
+    };
+    const csvBody = [headers, ...rows]
+      .map((row) => row.map(escapeField).join(','))
+      .join('\r\n');
+    // UTF-8 BOM 让 Excel 正确识别中文
+    const csvContent = '\uFEFF' + csvBody;
+
+    if (!isTauri) {
+      // 浏览器环境：用 Blob + a 标签触发下载
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = defaultFilename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      return;
+    }
+
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const result = await invoke<string | null>('export_csv', {
+        defaultFilename,
+        content: csvContent,
+      });
+      if (result === null) {
+        // 用户取消保存
+        return;
+      }
+      setError(`已导出 ${filteredData.length} 条到: ${result}`);
+      setTimeout(() => setError(null), 4000);
+    } catch (e) {
+      setError(`导出失败: ${e}`);
+    }
+  };
+
   const expandedDept = departments[expandedDeptIndex];
   const yearData = expandedDept?.years.find(y => y.year === activeYear) || expandedDept?.years[0];
 
@@ -447,9 +525,12 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
               刷新数据
             </motion.button>
             <motion.button
-              className="flex items-center gap-1 text-gray-600 hover:text-gray-800 text-sm"
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.97 }}
+              onClick={handleExport}
+              disabled={!majorCode || filteredData.length === 0}
+              className="flex items-center gap-1 text-gray-600 hover:text-gray-800 text-sm disabled:opacity-40 disabled:cursor-not-allowed"
+              whileHover={majorCode ? { scale: 1.02 } : undefined}
+              whileTap={majorCode ? { scale: 0.97 } : undefined}
+              title="导出当前筛选结果为 CSV"
             >
               <Download size={14} />
               导出

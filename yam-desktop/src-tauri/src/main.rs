@@ -10,6 +10,7 @@ use tauri::Manager;
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let db_path = app
                 .path()
@@ -54,6 +55,7 @@ fn main() {
             commands::reset_catalog_update,
             commands::get_catalog_update_progress,
             commands::read_majors_catalog,
+            commands::export_csv,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
