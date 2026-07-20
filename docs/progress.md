@@ -5,6 +5,67 @@
 
 ---
 
+## UI bug 修复：子专业多时右边栏上方空白（2026-07-21）
+
+### 现象
+用户报告：当遇到子专业数量非常多的一级学科（如临床医学 1002，96 个专业），最右边子专业那一栏上面会空出来很大一片地方，子专业越多空白越大。
+
+### 根因
+`MajorSelectPage.tsx` 中 3 列级联布局的 Column 2（学科类别）和 Column 3（专业）使用 `AnimatePresence mode="wait"` 直接包裹多个 `motion.button`，每个 button 单独带 `initial/animate/exit` 动画。切换学科时，旧 button 列表逐个进入 exit 动画（opacity→0），但仍在 DOM 中；新 button 列表同时渲染，导致旧+新 button 叠加（实测 t0 时刻 buttonsCount=169=旧73+新96）。旧 button 的半透明残留区域视觉上表现为"上方空白"，子专业越多残留越大。
+
+### 修复
+用 `motion.div` 包裹整个列表，`motion.div` 作为 `AnimatePresence` 的直接子元素，`key` 基于选中项（`selectedCategory.code` / `selectedDiscipline.code`）。整个列表作为一个整体 enter/exit，不再逐个 button exit。`motion.button` 去掉 `initial/animate/exit`，仅保留 `whileHover`。
+
+涉及 4 处修改（`yam-desktop/src/pages/MajorSelectPage.tsx`）：
+1. `degreeType === 'all'` 分支 Column 2（学科类别）
+2. `degreeType === 'all'` 分支 Column 3（专业）
+3. academic/professional 三级菜单分支 Column 2（一级学科/专业学位类别）
+4. academic/professional 三级菜单分支 Column 3（专业）
+
+### 验证
+通过 CDP 干净测试（刷新页面后从工作区导航到选择专业页）：
+- 切换前（0812 计算机）：childrenCount=2（H3 + motion.div），motion.div 包含 37 个 button，opacity=1
+- t0（切换到 1002 临床医学）：childrenCount=2，motion.div 包含 96 个 button，opacity=0（initial 状态）
+- t400：motion.div opacity=1（animate 完成）
+- 对比修复前 t0：buttonsCount=169（旧 73 + 新 96 叠加）→ 修复后 buttonsCount=0（button 全在 motion.div 内，无叠加）
+
+### 编译验证
+- `npm run build`：通过（2198 modules，799ms）
+
+---
+
+## DONE 后误 kill Python 进程导致"异常退出"误报修复（2026-07-21）
+
+### 现象
+目录更新流程跑完 219 个一级学科全部成功，但 UI 显示"目录更新脚本异常退出"。
+
+### 根因
+`commands.rs` 中 `run_update_catalog_task` 主循环开头的取消检查条件为 `if !running && done { child.kill(); break; }`。处理 `YAM_MAJORS_UPDATE_DONE` 行时同步设置 `running=false` 和 `done=true`，下一次循环检查就 kill 了正在收尾（return + asyncio.run 清理 + GC）的 Python 进程，导致 Python 退出码非 0，触发"目录更新脚本异常退出"误报。
+
+### 修复
+将条件改为 `if !running && !done { child.kill(); break; }`。仅当用户取消（`done=false`）时才 kill；任务完成（`done=true`）时让 Python 自然退出，等 stdout EOF 触发 break。
+
+### 验证
+CDP 查询 `get_catalog_update_progress`：`error=null, done=true, success_count=219, failed_count=0`，无"异常退出"报错。
+
+### 备注
+`run_crawl_task` 中存在相同的 `if !running && p.done` 条件（行 410），但该处为死代码（`done` 只在函数返回后才设为 true），不会触发"采集脚本异常退出"。"采集脚本异常退出"只在 Python 退出码非 0 时出现（行 478）。
+
+---
+
+## 调试日志误用 WARN 协议导致 failed_count 误报修复（2026-07-21）
+
+### 现象
+目录更新流程运行中，UI 显示 `failed=24` 且随 `current` 同步增长，但最终 DONE 时 failed=0。
+
+### 根因
+`yam/scripts/update_majors_catalog.py` 中调试日志用了 `YAM_MAJORS_UPDATE_WARN` 前缀，Rust 端 `process_catalog_stdout_line` 把每条 WARN 计入 `failed_count`。
+
+### 修复
+将调试日志改为普通 `print()`（不带 `YAM_` 前缀）。
+
+---
+
 ## 多专业验证（2026-07-17 会话）
 
 ### 083500 软件工程验证
@@ -747,6 +808,14 @@
 - [ ] 用户在桌面端手动测试：点击设置 → 更新专业目录 → 验证完成后选择专业页加载实时数据
 - [ ] 实测耗时确认（预计 1-2 小时；如登录失效需勾选"首次需要登录"复选框）
 - [ ] 完成后通过问答框验证任务完成
+
+### 修复：DONE 后误 kill Python 进程导致"异常退出"误报（2026-07-21）
+
+- **背景**：用户跑完 219 个学科全部成功，但 UI 显示"目录更新脚本异常退出"。通过 CDP 调用 `get_catalog_update_progress` 验证：`success_count=219, failed_count=0, current=219=total, done=true` 但 `error="目录更新脚本异常退出"`。
+- **根因**：`run_update_catalog_task` 主循环开头检查 `if !running && done { child.kill(); break; }`。处理 `YAM_MAJORS_UPDATE_DONE` 行时同步设置 `running=false, done=true`，下一次循环检查就 kill 了正在收尾（return + asyncio.run 清理 + GC）的 Python 进程，导致 Python 退出码非 0。
+- **修复**：将条件改为 `if !running && !done { child.kill(); break; }`。仅当用户取消（`running=false, done=false`）时才 kill；任务完成（`done=true`）时让 Python 自然退出，等 stdout EOF 触发 break。
+- **验证**：`cargo check` 通过。待用户重新测试。
+- **修改文件**：[yam-desktop/src-tauri/src/commands.rs](file:///d:/yam/yam-desktop/src-tauri/src/commands.rs#L1206-L1217)
 
 ---
 

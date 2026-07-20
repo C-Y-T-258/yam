@@ -3,12 +3,14 @@
 用法：
     python -m yam.scripts.update_majors_catalog
     python -m yam.scripts.update_majors_catalog --login  # 首次需要登录时
+    python -m yam.scripts.update_majors_catalog --resume  # 断点续传（基于已存在的 JSON）
 
 输出协议（stdout）：
     YAM_MAJORS_UPDATE_PROGRESS <current> <total> <name>
     YAM_MAJORS_UPDATE_DONE <json>
 
 完成后会在 d:/yam/data/majors_realtime.json 写入完整目录。
+增量保存：每 5 个 yjxkdm 写一次 JSON，中断后可读已爬部分数据。
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -24,6 +27,8 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 MAJORS_TS = REPO_ROOT / "yam-desktop" / "src" / "data" / "majors.ts"
 OUTPUT_JSON = REPO_ROOT / "data" / "majors_realtime.json"
+PARTIAL_JSON = REPO_ROOT / "data" / "majors_realtime.partial.json"
+INCREMENTAL_SAVE_INTERVAL = 5  # 每完成 5 个 yjxkdm 保存一次
 
 
 def parse_yjxkdm_list_from_majors_ts() -> list[tuple[str, str, str, str]]:
@@ -75,91 +80,16 @@ def parse_yjxkdm_list_from_majors_ts() -> list[tuple[str, str, str, str]]:
     return results
 
 
-async def update_all_majors(login: bool = False) -> dict[str, Any]:
-    """遍历所有 yjxkdm，调 search_by_yjxkdm 拿完整专业列表，返回结构化目录."""
-    from yam.majors_searcher import MajorsSearcher
-    from yam.crawler.dynamic import (
-        _DISCIPLINE_CATEGORIES,
-        _FIRST_LEVEL_DISCIPLINES,
-        is_professional_degree,
-    )
+def _build_catalog_output(
+    catalog: dict[str, dict[str, Any]],
+    failed: list[tuple[str, str]],
+    total: int,
+    completed_codes: list[str],
+    is_partial: bool = False,
+) -> dict[str, Any]:
+    """根据 catalog 字典构建最终 JSON 输出结构（按学位类型拆分）."""
+    from yam.crawler.dynamic import is_professional_degree
 
-    yjxkdm_list = parse_yjxkdm_list_from_majors_ts()
-    total = len(yjxkdm_list)
-    print(f"YAM_MAJORS_UPDATE_PROGRESS 0 {total} 准备开始", flush=True)
-
-    print(f"YAM_MAJORS_UPDATE_PROGRESS 0 {total} 启动浏览器", flush=True)
-    searcher = MajorsSearcher(headless=not login)
-    await searcher._ensure_browser()
-    print(f"YAM_MAJORS_UPDATE_PROGRESS 0 {total} 浏览器就绪", flush=True)
-
-    if login:
-        # 首次需要登录：打开可见浏览器，用第一个学科作为登录入口
-        print(f"YAM_MAJORS_UPDATE_PROGRESS 0 {total} 等待登录", flush=True)
-        logged_in = await searcher.interactive_login(
-            major_code_for_login=yjxkdm_list[0][0] + "00"
-        )
-        if not logged_in:
-            print("YAM_MAJORS_UPDATE_ERROR 未检测到登录凭证", flush=True)
-            await searcher.close()
-            return {"error": "未登录"}
-        print(f"YAM_MAJORS_UPDATE_PROGRESS 0 {total} 登录成功", flush=True)
-
-    # 用 mldm 聚合结果：{mldm: {mlmc, disciplines: {yjxkdm: {yjxkmc, majors: [...]}}}}
-    catalog: dict[str, dict[str, Any]] = {}
-    failed: list[tuple[str, str]] = []
-
-    try:
-        for idx, (yjxkdm, yjxkmc, mldm, mlmc) in enumerate(yjxkdm_list, 1):
-            # 统一格式：`<current> <total> <yjxkdm> <yjxkmc>`，描述在 Rust 端按需拼接
-            print(
-                f"YAM_MAJORS_UPDATE_PROGRESS {idx} {total} {yjxkdm} {yjxkmc}",
-                flush=True,
-            )
-            try:
-                result = await searcher.search_by_yjxkdm(yjxkdm)
-            except Exception as e:
-                print(f"YAM_MAJORS_UPDATE_WARN {yjxkdm} 查询失败: {e}", flush=True)
-                failed.append((yjxkdm, str(e)))
-                continue
-
-            if result.get("need_login"):
-                print(
-                    f"YAM_MAJORS_UPDATE_ERROR 需要登录才能继续查询（在 {yjxkdm} 处中断）",
-                    flush=True,
-                )
-                break
-
-            majors = result.get("majors", [])
-            if not majors:
-                # 该学科可能按一级学科招生，用 yjxkdm + "00" 作为兜底
-                majors = [{
-                    "zydm": yjxkdm + "00",
-                    "zymc": yjxkmc,
-                    "yjxkdm": yjxkdm,
-                    "yjxkmc": yjxkmc,
-                    "mldm": mldm,
-                    "mlmc": mlmc,
-                    "xwlx": "zy" if is_professional_degree(yjxkdm + "00") else "xs",
-                }]
-
-            # 聚合到 catalog
-            if mldm not in catalog:
-                catalog[mldm] = {"mlmc": mlmc, "disciplines": {}}
-            if yjxkdm not in catalog[mldm]["disciplines"]:
-                catalog[mldm]["disciplines"][yjxkdm] = {
-                    "yjxkmc": yjxkmc,
-                    "majors": [],
-                }
-            catalog[mldm]["disciplines"][yjxkdm]["majors"].extend(majors)
-
-            # 释放事件循环，避免长时间阻塞
-            await asyncio.sleep(0.1)
-    finally:
-        await searcher.close()
-
-    # 转换为前端期望的格式：{categories: [{code, name, disciplines: [{code, name, majors: [{code, name}]}]}]}
-    # 按学位类型拆分：学术学位（yjxkdm 第 3 位非 "5"）vs 专业学位（第 3 位为 "5"）
     academic_categories: list[dict[str, Any]] = []
     professional_categories: list[dict[str, Any]] = []
 
@@ -204,20 +134,203 @@ async def update_all_majors(login: bool = False) -> dict[str, Any]:
                 "disciplines": professional_disciplines,
             })
 
-    output = {
+    return {
         "academic_categories": academic_categories,
         "professional_categories": professional_categories,
         "failed": failed,
         "total_yjxkdm": total,
-        "success_yjxkdm": total - len(failed),
+        "success_yjxkdm": len(completed_codes),
+        "completed_yjxkdm": completed_codes,
+        "is_partial": is_partial,
     }
 
-    # 写入 JSON 文件
-    OUTPUT_JSON.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT_JSON.write_text(
-        json.dumps(output, ensure_ascii=False, indent=2),
+
+def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
+    """原子写入 JSON：先写临时文件，再 rename，避免中断时文件损坏."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    os.replace(tmp, path)
+
+
+async def update_all_majors(login: bool = False, resume: bool = False) -> dict[str, Any]:
+    """遍历所有 yjxkdm，调 search_by_yjxkdm 拿完整专业列表，返回结构化目录.
+
+    resume=True 时，加载 PARTIAL_JSON 中已完成的 yjxkdm，跳过这些不重跑。
+    每完成 INCREMENTAL_SAVE_INTERVAL 个 yjxkdm 写一次 PARTIAL_JSON。
+    """
+    from yam.majors_searcher import MajorsSearcher
+    from yam.crawler.dynamic import (
+        _DISCIPLINE_CATEGORIES,
+        _FIRST_LEVEL_DISCIPLINES,
+        is_professional_degree,
+    )
+
+    yjxkdm_list = parse_yjxkdm_list_from_majors_ts()
+    total = len(yjxkdm_list)
+
+    # 断点续传：加载已存在的 partial JSON
+    catalog: dict[str, dict[str, Any]] = {}
+    failed: list[tuple[str, str]] = []
+    completed_codes: set[str] = set()
+    if resume and PARTIAL_JSON.exists():
+        try:
+            existing = json.loads(PARTIAL_JSON.read_text(encoding="utf-8"))
+            completed_codes = set(existing.get("completed_yjxkdm", []))
+            # 重建 catalog dict
+            for cat in existing.get("academic_categories", []) + existing.get("professional_categories", []):
+                mldm = cat["code"]
+                mlmc = cat["name"]
+                if mldm not in catalog:
+                    catalog[mldm] = {"mlmc": mlmc, "disciplines": {}}
+                for disc in cat["disciplines"]:
+                    yjxkdm = disc["code"]
+                    yjxkmc = disc["name"]
+                    if yjxkdm not in catalog[mldm]["disciplines"]:
+                        catalog[mldm]["disciplines"][yjxkdm] = {
+                            "yjxkmc": yjxkmc,
+                            "majors": [],
+                        }
+                    # 重建 majors 原始字段
+                    for m in disc["majors"]:
+                        is_prof = is_professional_degree(yjxkdm + "00")
+                        catalog[mldm]["disciplines"][yjxkdm]["majors"].append({
+                            "zydm": m["code"],
+                            "zymc": m["name"],
+                            "yjxkdm": yjxkdm,
+                            "yjxkmc": yjxkmc,
+                            "mldm": mldm,
+                            "mlmc": mlmc,
+                            "xwlx": "zy" if is_prof else "xs",
+                        })
+            print(
+                f"YAM_MAJORS_UPDATE_PROGRESS 0 {total} 恢复模式：已加载 {len(completed_codes)} 个已完成的 yjxkdm",
+                flush=True,
+            )
+        except Exception as e:
+            print(f"YAM_MAJORS_UPDATE_WARN resume 加载失败，重新开始: {e}", flush=True)
+            catalog = {}
+            failed = []
+            completed_codes = set()
+    else:
+        print(f"YAM_MAJORS_UPDATE_PROGRESS 0 {total} 准备开始", flush=True)
+
+    print(f"YAM_MAJORS_UPDATE_PROGRESS 0 {total} 启动浏览器", flush=True)
+    searcher = MajorsSearcher(headless=not login)
+    await searcher._ensure_browser()
+    print(f"YAM_MAJORS_UPDATE_PROGRESS 0 {total} 浏览器就绪", flush=True)
+
+    if login:
+        # 首次需要登录：打开可见浏览器，用第一个学科作为登录入口
+        print(f"YAM_MAJORS_UPDATE_PROGRESS 0 {total} 等待登录", flush=True)
+        logged_in = await searcher.interactive_login(
+            major_code_for_login=yjxkdm_list[0][0] + "00"
+        )
+        if not logged_in:
+            print("YAM_MAJORS_UPDATE_ERROR 未检测到登录凭证", flush=True)
+            await searcher.close()
+            return {"error": "未登录"}
+        print(f"YAM_MAJORS_UPDATE_PROGRESS 0 {total} 登录成功", flush=True)
+
+    try:
+        for idx, (yjxkdm, yjxkmc, mldm, mlmc) in enumerate(yjxkdm_list, 1):
+            # 断点续传：跳过已完成的
+            if yjxkdm in completed_codes:
+                print(
+                    f"YAM_MAJORS_UPDATE_PROGRESS {idx} {total} {yjxkdm} {yjxkmc} (跳过已完成)",
+                    flush=True,
+                )
+                continue
+
+            print(
+                f"YAM_MAJORS_UPDATE_PROGRESS {idx} {total} {yjxkdm} {yjxkmc}",
+                flush=True,
+            )
+            try:
+                result = await searcher.search_by_yjxkdm(yjxkdm)
+            except Exception as e:
+                print(f"YAM_MAJORS_UPDATE_WARN {yjxkdm} 查询失败: {e}", flush=True)
+                failed.append((yjxkdm, str(e)))
+                continue
+
+            if result.get("need_login"):
+                print(
+                    f"YAM_MAJORS_UPDATE_ERROR 需要登录才能继续查询（在 {yjxkdm} 处中断）",
+                    flush=True,
+                )
+                break
+
+            majors = result.get("majors", [])
+            # 调试日志：打印每个 yjxkdm 拿到的专业数（普通 print，不带 YAM_ 前缀，
+            # 避免 Rust 端把 WARN 当作失败计入 failed_count）
+            print(
+                f"  [debug] {yjxkdm} {yjxkmc} 拿到 {len(majors)} 个专业 "
+                f"(total_count={result.get('total_count')}, fetched={result.get('fetched_count')})",
+                flush=True,
+            )
+            if not majors:
+                # 该学科可能按一级学科招生，用 yjxkdm + "00" 作为兜底
+                majors = [{
+                    "zydm": yjxkdm + "00",
+                    "zymc": yjxkmc,
+                    "yjxkdm": yjxkdm,
+                    "yjxkmc": yjxkmc,
+                    "mldm": mldm,
+                    "mlmc": mlmc,
+                    "xwlx": "zy" if is_professional_degree(yjxkdm + "00") else "xs",
+                }]
+
+            # 聚合到 catalog
+            if mldm not in catalog:
+                catalog[mldm] = {"mlmc": mlmc, "disciplines": {}}
+            if yjxkdm not in catalog[mldm]["disciplines"]:
+                catalog[mldm]["disciplines"][yjxkdm] = {
+                    "yjxkmc": yjxkmc,
+                    "majors": [],
+                }
+            catalog[mldm]["disciplines"][yjxkdm]["majors"].extend(majors)
+            completed_codes.add(yjxkdm)
+
+            # 增量保存：每 INCREMENTAL_SAVE_INTERVAL 个 yjxkdm 后写一次 JSON
+            if idx % INCREMENTAL_SAVE_INTERVAL == 0:
+                partial_output = _build_catalog_output(
+                    catalog,
+                    failed,
+                    total,
+                    sorted(completed_codes),
+                    is_partial=True,
+                )
+                _atomic_write_json(PARTIAL_JSON, partial_output)
+                print(
+                    f"YAM_MAJORS_UPDATE_PROGRESS {idx} {total} {yjxkdm} {yjxkmc} (已保存 {len(completed_codes)} 个学科)",
+                    flush=True,
+                )
+
+            # 释放事件循环，避免长时间阻塞
+            await asyncio.sleep(0.05)
+    finally:
+        await searcher.close()
+
+    # 构建最终输出
+    output = _build_catalog_output(
+        catalog,
+        failed,
+        total,
+        sorted(completed_codes),
+        is_partial=False,
+    )
+
+    # 写入最终 JSON
+    OUTPUT_JSON.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_json(OUTPUT_JSON, output)
+    # 清理 partial 文件
+    if PARTIAL_JSON.exists():
+        try:
+            PARTIAL_JSON.unlink()
+        except Exception:
+            pass
 
     print(
         f"YAM_MAJORS_UPDATE_DONE {json.dumps(output, ensure_ascii=False)}",
@@ -233,10 +346,15 @@ def main() -> None:
         action="store_true",
         help="首次需要登录时加上此参数",
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="断点续传：加载 majors_realtime.partial.json 中已完成的 yjxkdm",
+    )
     args = parser.parse_args()
 
     try:
-        result = asyncio.run(update_all_majors(login=args.login))
+        result = asyncio.run(update_all_majors(login=args.login, resume=args.resume))
     except Exception as e:
         print(f"YAM_MAJORS_UPDATE_ERROR {e}", flush=True)
         sys.exit(1)

@@ -365,35 +365,39 @@ export function MajorSelectPage() {
               <AnimatePresence mode="wait">
                 {selectedCategory ? (
                   disciplinesInSelectedCategory.length > 0 ? (
-                    disciplinesInSelectedCategory.map((item) => (
-                      <motion.button
-                        key={`${item.type}-${item.discipline.code}`}
-                        initial={{ opacity: 0, x: -10 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        exit={{ opacity: 0, x: 10 }}
-                        whileHover={{ x: 4 }}
-                        onClick={() => handleSelectDiscipline(item.discipline)}
-                        className={`w-full text-left px-3 py-2 rounded text-sm mb-1 transition-colors ${
-                          selectedDiscipline?.code === item.discipline.code
-                            ? 'bg-[#1e3a5f] text-white'
-                            : 'hover:bg-gray-100'
-                        }`}
-                      >
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs opacity-60 mr-1">{item.discipline.code}</span>
-                          <span className="font-medium">{item.discipline.name}</span>
-                          <span
-                            className={`text-xs px-1.5 py-0.5 rounded ${
-                              item.type === 'academic'
-                                ? 'bg-blue-50 text-blue-600'
-                                : 'bg-green-50 text-green-600'
-                            }`}
-                          >
-                            {item.type === 'academic' ? '学硕' : '专硕'}
-                          </span>
-                        </div>
-                      </motion.button>
-                    ))
+                    <motion.div
+                      key={selectedCategory.code}
+                      initial={{ opacity: 0, x: -10 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, x: 10 }}
+                    >
+                      {disciplinesInSelectedCategory.map((item) => (
+                        <motion.button
+                          key={`${item.type}-${item.discipline.code}`}
+                          whileHover={{ x: 4 }}
+                          onClick={() => handleSelectDiscipline(item.discipline)}
+                          className={`w-full text-left px-3 py-2 rounded text-sm mb-1 transition-colors ${
+                            selectedDiscipline?.code === item.discipline.code
+                              ? 'bg-[#1e3a5f] text-white'
+                              : 'hover:bg-gray-100'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs opacity-60 mr-1">{item.discipline.code}</span>
+                            <span className="font-medium">{item.discipline.name}</span>
+                            <span
+                              className={`text-xs px-1.5 py-0.5 rounded ${
+                                item.type === 'academic'
+                                  ? 'bg-blue-50 text-blue-600'
+                                  : 'bg-green-50 text-green-600'
+                              }`}
+                            >
+                              {item.type === 'academic' ? '学硕' : '专硕'}
+                            </span>
+                          </div>
+                        </motion.button>
+                      ))}
+                    </motion.div>
                   ) : (
                     <p className="text-center text-gray-400 py-8 text-sm">该门类下暂无学科</p>
                   )
@@ -413,42 +417,46 @@ export function MajorSelectPage() {
                       item.category.code === selectedCategory?.code &&
                       item.discipline.code === selectedDiscipline.code
                   ).length > 0 ? (
-                    allSearchResults
-                      .filter(
-                        (item) =>
-                          item.category.code === selectedCategory?.code &&
-                          item.discipline.code === selectedDiscipline.code
-                      )
-                      .sort((a, b) => a.major.code.localeCompare(b.major.code))
-                      .map((item) => (
-                        <motion.button
-                          key={`${item.type}-${item.major.code}`}
-                          initial={{ opacity: 0, x: -10 }}
-                          animate={{ opacity: 1, x: 0 }}
-                          exit={{ opacity: 0, x: 10 }}
-                          whileHover={{ x: 4 }}
-                          onClick={() => handleSelectMajor(item.major)}
-                          className={`w-full text-left px-3 py-2 rounded text-sm mb-1 transition-colors ${
-                            selectedMajor?.code === item.major.code
-                              ? 'bg-[#1e3a5f] text-white'
-                              : 'hover:bg-[#1e3a5f]/10'
-                          }`}
-                        >
-                          <div className="flex items-center gap-2">
-                            <span className="text-gray-500 mr-2 font-mono">{item.major.code}</span>
-                            <span className="font-medium">{item.major.name}</span>
-                            <span
-                              className={`text-xs px-1.5 py-0.5 rounded ${
-                                item.type === 'academic'
-                                  ? 'bg-blue-50 text-blue-600'
-                                  : 'bg-green-50 text-green-600'
-                              }`}
-                            >
-                              {item.type === 'academic' ? '学硕' : '专硕'}
-                            </span>
-                          </div>
-                        </motion.button>
-                      ))
+                    <motion.div
+                      key={selectedDiscipline.code}
+                      initial={{ opacity: 0, x: -10 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, x: 10 }}
+                    >
+                      {allSearchResults
+                        .filter(
+                          (item) =>
+                            item.category.code === selectedCategory?.code &&
+                            item.discipline.code === selectedDiscipline.code
+                        )
+                        .sort((a, b) => a.major.code.localeCompare(b.major.code))
+                        .map((item) => (
+                          <motion.button
+                            key={`${item.type}-${item.major.code}`}
+                            whileHover={{ x: 4 }}
+                            onClick={() => handleSelectMajor(item.major)}
+                            className={`w-full text-left px-3 py-2 rounded text-sm mb-1 transition-colors ${
+                              selectedMajor?.code === item.major.code
+                                ? 'bg-[#1e3a5f] text-white'
+                                : 'hover:bg-[#1e3a5f]/10'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2">
+                              <span className="text-gray-500 mr-2 font-mono">{item.major.code}</span>
+                              <span className="font-medium">{item.major.name}</span>
+                              <span
+                                className={`text-xs px-1.5 py-0.5 rounded ${
+                                  item.type === 'academic'
+                                    ? 'bg-blue-50 text-blue-600'
+                                    : 'bg-green-50 text-green-600'
+                                }`}
+                              >
+                                {item.type === 'academic' ? '学硕' : '专硕'}
+                              </span>
+                            </div>
+                          </motion.button>
+                        ))}
+                    </motion.div>
                   ) : (
                     <p className="text-center text-gray-400 py-8 text-sm">该学科下暂无专业</p>
                   )
@@ -563,24 +571,28 @@ export function MajorSelectPage() {
               </h3>
               <AnimatePresence mode="wait">
                 {selectedCategory ? (
-                  selectedCategory.disciplines.map((disc) => (
-                    <motion.button
-                      key={disc.code}
-                      initial={{ opacity: 0, x: -10 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      exit={{ opacity: 0, x: 10 }}
-                      whileHover={{ x: 4 }}
-                      onClick={() => handleSelectDiscipline(disc)}
-                      className={`w-full text-left px-3 py-2 rounded text-sm mb-1 transition-colors ${
-                        selectedDiscipline?.code === disc.code
-                          ? 'bg-[#1e3a5f] text-white'
-                          : 'hover:bg-gray-100'
-                      }`}
-                    >
-                      <span className="text-xs opacity-60 mr-1">{disc.code}</span>
-                      {disc.name}
-                    </motion.button>
-                  ))
+                  <motion.div
+                    key={selectedCategory.code}
+                    initial={{ opacity: 0, x: -10 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: 10 }}
+                  >
+                    {selectedCategory.disciplines.map((disc) => (
+                      <motion.button
+                        key={disc.code}
+                        whileHover={{ x: 4 }}
+                        onClick={() => handleSelectDiscipline(disc)}
+                        className={`w-full text-left px-3 py-2 rounded text-sm mb-1 transition-colors ${
+                          selectedDiscipline?.code === disc.code
+                            ? 'bg-[#1e3a5f] text-white'
+                            : 'hover:bg-gray-100'
+                        }`}
+                      >
+                        <span className="text-xs opacity-60 mr-1">{disc.code}</span>
+                        {disc.name}
+                      </motion.button>
+                    ))}
+                  </motion.div>
                 ) : (
                   <p className="text-center text-gray-400 py-8 text-sm">请选择门类</p>
                 )}
@@ -592,30 +604,32 @@ export function MajorSelectPage() {
               <AnimatePresence mode="wait">
                 {selectedDiscipline ? (
                   selectedDiscipline.majors.length > 0 ? (
-                    selectedDiscipline.majors.map((m) => (
-                      <motion.button
-                        key={m.code}
-                        initial={{ opacity: 0, x: -10 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        exit={{ opacity: 0, x: 10 }}
-                        whileHover={{ x: 4 }}
-                        onClick={() => handleSelectMajor(m)}
-                        className={`w-full text-left px-3 py-2 rounded text-sm mb-1 transition-colors ${
-                          selectedMajor?.code === m.code
-                            ? 'bg-[#1e3a5f] text-white'
-                            : 'hover:bg-[#1e3a5f]/10'
-                        }`}
-                      >
-                        <span className="text-gray-500 mr-2 font-mono">{m.code}</span>
-                        {m.name}
-                      </motion.button>
-                    ))
+                    <motion.div
+                      key={selectedDiscipline.code}
+                      initial={{ opacity: 0, x: -10 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, x: 10 }}
+                    >
+                      {selectedDiscipline.majors.map((m) => (
+                        <motion.button
+                          key={m.code}
+                          whileHover={{ x: 4 }}
+                          onClick={() => handleSelectMajor(m)}
+                          className={`w-full text-left px-3 py-2 rounded text-sm mb-1 transition-colors ${
+                            selectedMajor?.code === m.code
+                              ? 'bg-[#1e3a5f] text-white'
+                              : 'hover:bg-[#1e3a5f]/10'
+                          }`}
+                        >
+                          <span className="text-gray-500 mr-2 font-mono">{m.code}</span>
+                          {m.name}
+                        </motion.button>
+                      ))}
+                    </motion.div>
                   ) : (
                     <div className="py-4">
                       <p className="text-sm text-gray-500 mb-3">按一级学科招生</p>
                       <motion.button
-                        initial={{ opacity: 0, x: -10 }}
-                        animate={{ opacity: 1, x: 0 }}
                         whileHover={{ x: 4 }}
                         onClick={() => handleSelectMajor(selectedDiscipline)}
                         className={`w-full text-left px-3 py-2 rounded text-sm transition-colors bg-[#1e3a5f]/5 ${

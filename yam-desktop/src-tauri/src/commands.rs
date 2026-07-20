@@ -1204,10 +1204,13 @@ fn run_update_catalog_task(
     let timeout_secs = 600u64;
 
     loop {
-        // 检查取消
+        // 检查取消：仅当 running=false 且 done=false 时才视为用户取消（kill 子进程）。
+        // 注意：DONE 事件处理会同时设置 running=false 和 done=true，此时 Python 仍在收尾
+        // （return + asyncio.run 清理 + GC），不能再 kill，否则会让 Python 退出码非 0
+        // 触发"目录更新脚本异常退出"误报。等 stdout EOF 自然退出即可。
         {
             let p = state.lock().unwrap();
-            if !p.running.load(Ordering::SeqCst) && p.done {
+            if !p.running.load(Ordering::SeqCst) && !p.done {
                 let _ = child.kill();
                 break;
             }
@@ -1272,6 +1275,12 @@ fn run_update_catalog_task(
                 p.error = Some(msg);
             }
         }
+        // 兜底：无论 DONE 行是否被正确处理，脚本退出后都标记任务结束
+        // 避免前端因漏处理 DONE 行而一直显示"正在更新"状态
+        if !p.done {
+            p.done = true;
+        }
+        p.running.store(false, Ordering::SeqCst);
     }
 
     // 完成后 emit done 事件，无论成功失败
@@ -1345,6 +1354,9 @@ fn process_catalog_stdout_line(
             p.success_count = success;
             p.failed_count = failed_list;
             p.current = total;
+            // 关键：标记任务结束，前端才能切换到"完成"状态
+            p.done = true;
+            p.running.store(false, Ordering::SeqCst);
             *last_progress_time = std::time::Instant::now();
             let snapshot = p.clone();
             drop(p);
