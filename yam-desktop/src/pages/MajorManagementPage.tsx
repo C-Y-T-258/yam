@@ -1,3 +1,4 @@
+import { useEffect, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import { RefreshCw, Trash2, Plus, FolderOpen } from 'lucide-react';
 import { useAppStore } from '../stores/appStore';
@@ -9,7 +10,23 @@ function getMajorCategory(code: string): string {
 }
 
 export function MajorManagementPage() {
-  const { setPage, crawledMajors, removeMajor, setCrawlTarget } = useAppStore();
+  const { setPage, crawledMajors, removeMajor, setCrawlTarget, newlyAddedMajors, clearAllNewMajors } = useAppStore();
+
+  // 卸载页面时清除所有 NEW 标签：用户切出后再切回不应再显示 NEW
+  useEffect(() => {
+    return () => {
+      clearAllNewMajors();
+    };
+  }, [clearAllNewMajors]);
+
+  // NEW 专业置顶，NEW 之间保持原相对顺序（stable sort）
+  const sortedMajors = useMemo(() => {
+    return [...crawledMajors].sort((a, b) => {
+      const aIsNew = newlyAddedMajors.includes(a.code) ? 0 : 1;
+      const bIsNew = newlyAddedMajors.includes(b.code) ? 0 : 1;
+      return aIsNew - bIsNew;
+    });
+  }, [crawledMajors, newlyAddedMajors]);
 
   const handleUpdate = async (code: string) => {
     const major = crawledMajors.find((m) => m.code === code);
@@ -61,14 +78,20 @@ export function MajorManagementPage() {
               <p className="text-sm text-gray-400">点击下方"添加专业"开始采集</p>
             </div>
           ) : (
-            crawledMajors.map((major, index) => {
+            sortedMajors.map((major, index) => {
             const category = getMajorCategory(major.code);
+            const isNew = newlyAddedMajors.includes(major.code);
             return (
               <motion.div
                 key={major.code}
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: index * 0.03 }}
+                layout  // 让位置变化也动画化，新行插入时旧行平滑下移
+                initial={isNew
+                  ? { opacity: 0, y: -50, scale: 0.92 }
+                  : { opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                transition={isNew
+                  ? { type: 'spring', stiffness: 320, damping: 24 }
+                  : { delay: index * 0.03 }}
                 className="grid grid-cols-[2fr_1fr_1.5fr_1fr_1fr_140px] gap-4 px-6 py-4 border-b border-gray-100 hover:bg-gray-50 transition-colors items-center last:border-b-0"
               >
                 {/* Major Name */}
@@ -88,6 +111,11 @@ export function MajorManagementPage() {
                       }`}>
                         {category}
                       </span>
+                      {isNew && (
+                        <span className="text-xs px-1.5 py-0.5 rounded flex-shrink-0 bg-emerald-100 text-emerald-700 border border-emerald-300 font-semibold tracking-wide animate-pulse">
+                          NEW
+                        </span>
+                      )}
                     </div>
                     <span className="text-xs text-gray-400 font-mono">{major.code}</span>
                   </div>

@@ -12,7 +12,7 @@ import requests
 
 from yam.config import config
 from yam.crawler.base import BaseCrawler
-from yam.crawler.dynamic import LoginRequiredError
+from yam.crawler.dynamic import LoginRequiredError, build_detail_url
 from yam.utils import now_str, sleep
 
 
@@ -52,13 +52,7 @@ class YanZhaoCrawler(BaseCrawler):
 
     def _ensure_session(self) -> None:
         """访问任意研招网页面获取必要 cookie."""
-        url = (
-            f"{self.BASE_URL}/zsml/zydetail.do?"
-            f"zydm={self.major_code}&zymc=%E4%BA%BA%E5%B7%A5%E6%99%BA%E8%83%BD"
-            f"&xwlx=zyxw&mldm=08&mlmc=%E5%B7%A5%E5%AD%A6"
-            f"&yjxkdm={self.major_code[:4]}&yjxkmc=%E7%94%B5%E5%AD%90%E4%BF%A1%E6%81%AF"
-            f"&xxfs=1"
-        )
+        url = build_detail_url(self.major_code, self.major_name)
         self.session.get(url, headers=self._headers(), timeout=self.timeout)
 
     def fetch_schools(self) -> list[dict[str, Any]]:
@@ -74,13 +68,9 @@ class YanZhaoCrawler(BaseCrawler):
                 dynamic = DynamicYanZhaoCrawler(self.major_code, self.major_name)
                 import asyncio
 
-                count = asyncio.run(dynamic.fetch_and_save())
-                print(f"已自动抓取 {self.major_code} 种子数据：{count} 所院校")
+                result = asyncio.run(dynamic.fetch_and_save())
+                print(f"已自动抓取 {self.major_code} 种子数据：{result['school_count']} 所院校")
             except LoginRequiredError:
-                print(
-                    f"抓取 {self.major_code} 种子数据需要登录研招网，"
-                    f"请先运行：yam fetch-seeds -m {self.major_code} --login"
-                )
                 raise
             except Exception as e:
                 print(f"自动抓取 {self.major_code} 种子数据失败：{e}")
@@ -90,8 +80,7 @@ class YanZhaoCrawler(BaseCrawler):
 
         if not self.seed_file.exists():
             raise RuntimeError(
-                f"无法获取 {self.major_code} 的院校种子数据，"
-                f"请尝试运行：yam fetch-seeds -m {self.major_code} --login"
+                f"无法获取 {self.major_code} 的院校种子数据"
             )
 
         with open(self.seed_file, "r", encoding="utf-8") as f:

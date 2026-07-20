@@ -16,6 +16,8 @@ export function BackgroundTaskPanel() {
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   // 记录开始时间用于显示已用时
   const startTimeRef = useRef<number | null>(null);
+  // 跟踪上一次的 running 状态，用于检测"新任务启动"（false → true 转变）
+  const prevRunningRef = useRef<boolean>(false);
   const [, forceTick] = useState(0);
 
   useEffect(() => {
@@ -26,10 +28,12 @@ export function BackgroundTaskPanel() {
         if (!active) return;
         setProgress(p);
         setLastUpdate(new Date());
-        // 记录任务开始时间
-        if (p.running && startTimeRef.current === null) {
+        // 检测新任务启动：running 从 false 变为 true 时重置开始时间。
+        // 之前只在 startTimeRef.current === null 时设置，导致跨任务累计（ISSUE-020）。
+        if (p.running && !prevRunningRef.current) {
           startTimeRef.current = Date.now();
         }
+        prevRunningRef.current = p.running;
         // 任务结束（done=true）后 8 秒自动隐藏（仅当无错误时）
         if (p.done && !p.error && p.success > 0) {
           setTimeout(() => active && setProgress(null), 8000);

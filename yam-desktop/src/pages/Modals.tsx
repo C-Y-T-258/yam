@@ -29,7 +29,7 @@ interface ManageMajorsModalProps {
 }
 
 export function ManageMajorsModal({ isOpen, onClose, onConfirm }: ManageMajorsModalProps) {
-  const { crawledMajors, visibleMajorCodes, setVisibleMajorCodes } = useAppStore();
+  const { crawledMajors, visibleMajorCodes, setVisibleMajorCodes, newlyAddedMajors, clearAllNewMajors } = useAppStore();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState('');
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -54,10 +54,24 @@ export function ManageMajorsModal({ isOpen, onClose, onConfirm }: ManageMajorsMo
   };
 
   const filteredMajors = useMemo(() =>
-    crawledMajors.filter((m) =>
-      m.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      m.code.includes(searchQuery)
-    ), [crawledMajors, searchQuery]);
+    crawledMajors
+      .filter((m) =>
+        m.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        m.code.includes(searchQuery)
+      )
+      .sort((a, b) => {
+        // NEW 专业置顶
+        const aIsNew = newlyAddedMajors.includes(a.code) ? 0 : 1;
+        const bIsNew = newlyAddedMajors.includes(b.code) ? 0 : 1;
+        return aIsNew - bIsNew;
+      }),
+    [crawledMajors, searchQuery, newlyAddedMajors]);
+
+  // 关闭 Modal 时清除所有 NEW 标签：用户已"看过"，再次打开不应再显示 NEW
+  const handleClose = () => {
+    clearAllNewMajors();
+    onClose();
+  };
 
   const handleConfirm = async () => {
     const selectedArray = Array.from(new Set(selected));
@@ -80,6 +94,7 @@ export function ManageMajorsModal({ isOpen, onClose, onConfirm }: ManageMajorsMo
     setRefreshProgress(null);
     setIsRefreshing(false);
     onConfirm?.(selectedArray);
+    clearAllNewMajors();
     onClose();
   };
 
@@ -91,7 +106,7 @@ export function ManageMajorsModal({ isOpen, onClose, onConfirm }: ManageMajorsMo
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-          onClick={isRefreshing ? undefined : onClose}
+          onClick={isRefreshing ? undefined : handleClose}
         >
           <motion.div
             initial={{ scale: 0.9, opacity: 0 }}
@@ -107,7 +122,7 @@ export function ManageMajorsModal({ isOpen, onClose, onConfirm }: ManageMajorsMo
                 <p className="text-xs text-gray-500 mt-0.5">勾选需要在工作区显示的专业，确认后将自动刷新数据</p>
               </div>
               <button
-                onClick={onClose}
+                onClick={handleClose}
                 disabled={isRefreshing}
                 className="text-gray-400 hover:text-gray-600 disabled:opacity-40 disabled:cursor-not-allowed"
               >
@@ -150,9 +165,15 @@ export function ManageMajorsModal({ isOpen, onClose, onConfirm }: ManageMajorsMo
                         未找到匹配的专业
                       </div>
                     ) : (
-                      filteredMajors.map((major) => (
-                        <label
+                      filteredMajors.map((major) => {
+                        const isNew = newlyAddedMajors.includes(major.code);
+                        return (
+                        <motion.label
                           key={major.code}
+                          layout  // NEW 行插入时旧行平滑下移
+                          initial={isNew ? { opacity: 0, y: -40, scale: 0.92 } : false}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          transition={isNew ? { type: 'spring', stiffness: 320, damping: 24 } : { duration: 0.2 }}
                           className={`grid grid-cols-[40px_1fr_1fr_auto] gap-4 px-4 py-3 border-b border-gray-100 items-center cursor-pointer transition-colors ${
                             isRefreshing ? 'opacity-60 pointer-events-none' : 'hover:bg-gray-50'
                           }`}
@@ -165,10 +186,18 @@ export function ManageMajorsModal({ isOpen, onClose, onConfirm }: ManageMajorsMo
                             className="w-4 h-4 rounded border-gray-300 text-[#1e3a5f] focus:ring-[#1e3a5f]"
                           />
                           <span className="text-gray-600 font-mono text-sm">{major.code}</span>
-                          <span className="text-gray-900">{major.name}</span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-gray-900">{major.name}</span>
+                            {isNew && (
+                              <span className="text-xs px-1.5 py-0.5 rounded flex-shrink-0 bg-emerald-100 text-emerald-700 border border-emerald-300 font-semibold tracking-wide animate-pulse">
+                                NEW
+                              </span>
+                            )}
+                          </div>
                           <span className="text-gray-600 text-right text-sm">{major.schoolCount}</span>
-                        </label>
-                      ))
+                        </motion.label>
+                        );
+                      })
                     )}
                   </div>
                 </>
@@ -229,7 +258,7 @@ export function ManageMajorsModal({ isOpen, onClose, onConfirm }: ManageMajorsMo
                 <motion.button
                   whileHover={!isRefreshing ? { scale: 1.02 } : undefined}
                   whileTap={!isRefreshing ? { scale: 0.98 } : undefined}
-                  onClick={onClose}
+                  onClick={handleClose}
                   disabled={isRefreshing}
                   className="px-6 py-2 border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >

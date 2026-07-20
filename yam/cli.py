@@ -1,5 +1,8 @@
 """YAM 命令行入口."""
 
+import asyncio
+import os
+import sys
 from typing import Optional
 
 import typer
@@ -63,7 +66,12 @@ def fetch(
         raise typer.Exit(1)
 
     if not major_info.get("enabled"):
-        console.print(f"[yellow]警告：专业 {major} 当前未启用[/yellow]")
+        # 输出结构化 YAM_ERROR 让 Rust 端捕获并展示给用户
+        # 之前只是警告但继续执行，会导致后续采集流程异常卡住（ISSUE-022）
+        msg = f"专业 {major} {major_info['name']} 当前未启用，暂不支持采集，请选择其他专业"
+        console.print(f"[red]错误：{msg}[/red]")
+        print(f"YAM_ERROR {msg}", flush=True)
+        raise typer.Exit(1)
 
     target_years = years or [2026, 2025, 2024, 2023]
 
@@ -80,18 +88,32 @@ def fetch(
 
     crawler = YanZhaoCrawler(major, major_info["name"])
     score_crawler = ZhangShangKaoYanCrawler(major, major_info["name"])
+    is_desktop = bool(os.environ.get("YAM_DESKTOP"))
     try:
         schools = crawler.fetch_schools()
     except LoginRequiredError as e:
-        console.print(
-            f"[red]错误：{e}\n"
-            f"请先在终端运行：yam fetch-seeds -m {major} --login 完成研招网登录后重试。[/red]"
-        )
-        print(f"YAM_ERROR 需要登录研招网：{e}。请先运行 yam fetch-seeds -m {major} --login", flush=True)
+        if is_desktop:
+            console.print(
+                f"[red]错误：{e}\n"
+                f"请在桌面端完成登录向导后再试。[/red]"
+            )
+            print(f"YAM_ERROR 需要登录研招网：{e}", flush=True)
+        else:
+            console.print(
+                f"[red]错误：{e}\n"
+                f"请先在终端运行：yam fetch-seeds -m {major} --login 完成研招网登录后重试。[/red]"
+            )
+            print(f"YAM_ERROR 需要登录研招网：{e}。请先运行 yam fetch-seeds -m {major} --login", flush=True)
         raise typer.Exit(1) from e
     except RuntimeError as e:
         console.print(f"[red]错误：{e}[/red]")
         print(f"YAM_ERROR {e}", flush=True)
+        raise typer.Exit(1) from e
+    except Exception as e:
+        # 捕获所有其他异常（网络超时、Playwright 错误等），
+        # 输出结构化错误而非让 Python 打印完整 traceback 到 stderr。
+        console.print(f"[red]采集异常：{e}[/red]")
+        print(f"YAM_ERROR 采集异常：{type(e).__name__}: {e}", flush=True)
         raise typer.Exit(1) from e
     if limit > 0:
         schools = schools[:limit]
@@ -286,19 +308,126 @@ def fetch_seeds(
         console.print("[yellow]将打开浏览器窗口，请在 5 分钟内完成研招网登录...[/yellow]")
         import asyncio
 
-        count = asyncio.run(crawler.login_and_fetch())
+        result = asyncio.run(crawler.login_and_fetch())
     else:
         try:
             console.print(f"[bold]开始抓取 {major} 的完整院校列表...[/bold]")
             import asyncio
 
-            count = asyncio.run(crawler.fetch_and_save())
+            result = asyncio.run(crawler.fetch_and_save())
         except LoginRequiredError as e:
             console.print(f"[red]{e}[/red]")
             console.print("[yellow]请运行：yam fetch-seeds -m {major} --login[/yellow]")
             raise typer.Exit(1)
 
+    count = result.get("school_count", 0)
     console.print(f"[green]种子文件已更新，共 {count} 所院校[/green]")
+
+
+@app.command()
+def search_majors(
+    yjxkdm: str = typer.Option("", "--yjxkdm", help="按一级学科代码查询，如 0812"),
+    name: str = typer.Option("", "--name", help="按专业名称关键词查询，如 '软件'"),
+    login: bool = typer.Option(False, "--login", "-l", help="先打开浏览器让用户登录"),
+    json_output: bool = typer.Option(False, "--json", help="输出 JSON（供桌面端调用）"),
+) -> None:
+    """实时查询研招网 zys.do 接口获取所有专业.
+
+    --yjxkdm：按一级学科代码查询（推荐，能拿全完整专业列表）
+    --name：按专业名称关键词查询（适合已知名称反查代码）
+
+    未登录时仅能拿前 10 条；加 --login 先在浏览器中登录研招网。
+    """
+    if not yjxkdm and not name:
+        console.print("[red]错误：必须指定 --yjxkdm 或 --name[/red]")
+        raise typer.Exit(1)
+
+    try:
+        import playwright  # noqa: F401
+    except ImportError:
+        msg = "未安装动态抓取依赖，请运行：pip install 'kaoyan-yam[dynamic]'"
+        if json_output:
+            print(f'{{"error": "{msg}"}}', flush=True)
+        else:
+            console.print(f"[red]{msg}[/red]")
+        raise typer.Exit(1)
+
+    from yam.majors_searcher import MajorsSearcher
+
+    searcher = MajorsSearcher(headless=not login)
+
+    async def run() -> dict:
+        await searcher._ensure_browser()
+        try:
+            if login:
+                # --login 模式：先打开可见浏览器让用户手动登录
+                # 清空旧 cookies 强制重新登录，避免过期 session 误判
+                logged_in = await searcher.interactive_login(
+                    major_code_for_login=yjxkdm + "00" if yjxkdm else "081200"
+                )
+                if not logged_in:
+                    return {
+                        "majors": [],
+                        "total_count": 0,
+                        "fetched_count": 0,
+                        "need_login": True,
+                        "error": "未检测到登录凭证，请确认已在浏览器中完成研招网登录",
+                    }
+            if yjxkdm:
+                return await searcher.search_by_yjxkdm(yjxkdm)
+            return await searcher.search_by_name(name)
+        finally:
+            await searcher.close()
+
+    try:
+        result = asyncio.run(run())
+    except Exception as e:
+        msg = str(e)
+        if json_output:
+            print(f'{{"error": "{msg}"}}', flush=True)
+        else:
+            console.print(f"[red]查询失败：{msg}[/red]")
+        raise typer.Exit(1)
+
+    if json_output:
+        # 结构化 JSON 输出，供 Rust 端解析
+        import json as _json
+        print("YAM_SEARCH_RESULT " + _json.dumps(result, ensure_ascii=False), flush=True)
+        return
+
+    majors = result.get("majors", [])
+    total = result.get("total_count", 0)
+    fetched = result.get("fetched_count", 0)
+    need_login = result.get("need_login", False)
+
+    console.print(
+        f"[bold]查询：{yjxkdm or name}[/bold]  "
+        f"研招网返回 {total} 个，已抓取 {fetched} 个"
+    )
+    if need_login:
+        console.print(
+            "[yellow]未登录研招网，仅拿到前 10 条。"
+            "运行 yam search-majors --yjxkdm ... --login 先登录可拿全。[/yellow]"
+        )
+
+    table = Table(title=f"研招网专业列表（{yjxkdm or name}）")
+    table.add_column("代码", style="cyan")
+    table.add_column("名称")
+    table.add_column("一级学科")
+    table.add_column("门类")
+    table.add_column("学位类型")
+
+    for m in majors:
+        xwlx_label = {"xs": "学术", "zy": "专业"}.get(m.get("xwlx", ""), "-")
+        table.add_row(
+            m.get("zydm", ""),
+            m.get("zymc", ""),
+            f"{m.get('yjxkdm', '')} {m.get('yjxkmc', '')}",
+            f"{m.get('mldm', '')} {m.get('mlmc', '')}",
+            xwlx_label,
+        )
+
+    console.print(table)
 
 
 @app.command()

@@ -134,15 +134,22 @@ class MajorsSearcher:
                 for (const [k, v] of Object.entries(params)) {
                     formData.append(k, v);
                 }
-                const response = await fetch('https://yz.chsi.com.cn/zsml/rs/zys.do', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                        'Referer': 'https://yz.chsi.com.cn/zsml/'
-                    },
-                    body: formData.toString()
-                });
-                return await response.json();
+                try {
+                    const response = await fetch('https://yz.chsi.com.cn/zsml/rs/zys.do', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                            'Referer': 'https://yz.chsi.com.cn/zsml/'
+                        },
+                        body: formData.toString()
+                    });
+                    if (!response.ok) {
+                        return {msg: 'HTTP ' + response.status, list: []};
+                    }
+                    return await response.json();
+                } catch (e) {
+                    return {msg: 'fetch失败:' + e.message, list: []};
+                }
             }
             """,
             params,
@@ -225,11 +232,16 @@ class MajorsSearcher:
     async def search_by_yjxkdm(self, yjxkdm: str) -> dict[str, Any]:
         """按一级学科代码查询所有专业（含 J/Z 自设交叉学科）.
 
-        绕过 zys.do "每会话一次" 限制的组合策略：
-        1. 第 1 次默认查询拿第 1 页 + seed_major（用于详情页预热）
-        2. 枚举 zydm（4 位基础码 + J0-J9 + Z0-Z9 自设/交叉学科代码）
-        3. 对 totalCount>10 的 zydm 用 jsggjh=0/1 拆分查询
-        4. 按 (zydm, zymc) 去重合并
+        优化策略（v2）：
+        1. 复用单个 page：同一 yjxkdm 内不再每个 zydm 新建 page（核心加速点）
+        2. 详情页预热只做一次（不再每个 zydm 都 goto 详情页）
+        3. totalCount=0 + first_list 为空时跳过枚举（无数据学科）
+        4. wait 时间从 800/1500ms 压缩到 300/500ms
+        5. sleep 0.3s → 0.1s
+        6. 单 zydm 返回"请登录"时 goto zsml 重置 session 重试一次
+
+        注意：total_count 只是 zydm=yjxkdm+"00" 这一个 zydm 的总数，
+        不代表整个 yjxkdm 下所有 zydm 的总数，所以不能用 total_count≤10 跳过枚举。
 
         返回标准化字段：zydm/zymc/yjxkdm/yjxkmc/mldm/mlmc/xwlx.
         """
@@ -245,139 +257,241 @@ class MajorsSearcher:
 
         await self._ensure_browser()
 
-        # === 第 1 步：拿 seed_major + 第 1 页数据 ===
-        # 关键：传初始 zydm = yjxkdm + "00"，确保只查本学科代码，避免研招网
-        # 忽略 yjxkdm 参数时返回任意专业污染 seed_major
+        # === 第 1 步：新建 page + 默认查询拿 seed_major ===
         initial_zydm = yjxkdm + "00"
-        first_page = await self.reader.context.new_page()
+        page = await self.reader.context.new_page()
         try:
-            await first_page.goto(f"{BASE_URL}/zsml/", wait_until="load", timeout=60000)
-            await first_page.wait_for_timeout(800)
-            first_resp = await self._call_zys_do(
-                first_page,
-                zydm=initial_zydm,
-                yjxkdm=yjxkdm,
-                xwlx=xwlx,
-                mldm=mldm,
-                cur_page=1,
-            )
-            first_msg = first_resp.get("msg", {})
-        finally:
-            await first_page.close()
+            await page.goto(f"{BASE_URL}/zsml/", wait_until="load", timeout=60000)
+            await page.wait_for_timeout(300)
 
-        seed_major = None
-        total_count = 0
-        if isinstance(first_msg, dict):
-            first_list = first_msg.get("list", []) or []
-            if first_list:
-                seed_major = first_list[0]
-                # 优先用 zys.do 返回数据中的 yjxkmc/mlmc，避免本地字典不全
-                if not yjxkmc and seed_major.get("yjxkmc"):
-                    yjxkmc = seed_major["yjxkmc"]
-            total_count = int(first_msg.get("totalCount", 0) or 0)
-        elif isinstance(first_msg, str) and "登录" in first_msg:
-            return {
-                "majors": [],
-                "total_count": 0,
-                "fetched_count": 0,
-                "need_login": True,
-                "yjxkdm": yjxkdm,
-                "yjxkmc": yjxkmc,
-            }
+            async def _first_call() -> tuple[dict[str, Any] | str, bool]:
+                """返回 (msg, is_login_required)。msg 是 dict 表示成功，str 表示错误."""
+                resp = await self._call_zys_do(
+                    page,
+                    zydm=initial_zydm,
+                    yjxkdm=yjxkdm,
+                    xwlx=xwlx,
+                    mldm=mldm,
+                    cur_page=1,
+                )
+                return resp.get("msg", {}), False
 
-        if total_count == 0 or not seed_major:
+            first_msg = await _first_call()
+
+            # 处理限流：如果返回"访问太频繁"，等待 3 秒重试
+            if isinstance(first_msg, str) and "访问太频繁" in first_msg:
+                await asyncio.sleep(3)
+                first_msg = await _first_call()
+            if isinstance(first_msg, str) and "访问太频繁" in first_msg:
+                await asyncio.sleep(5)
+                first_msg = await _first_call()
+
+            seed_major = None
+            total_count = 0
+            first_list: list[dict[str, Any]] = []
+            if isinstance(first_msg, dict):
+                first_list = first_msg.get("list", []) or []
+                if first_list:
+                    seed_major = first_list[0]
+                    if not yjxkmc and seed_major.get("yjxkmc"):
+                        yjxkmc = seed_major["yjxkmc"]
+                total_count = int(first_msg.get("totalCount", 0) or 0)
+            elif isinstance(first_msg, str) and "登录" in first_msg:
+                return {
+                    "majors": [],
+                    "total_count": 0,
+                    "fetched_count": 0,
+                    "need_login": True,
+                    "yjxkdm": yjxkdm,
+                    "yjxkmc": yjxkmc,
+                }
+
+            # 如果第 1 次返回空，可能是 session 未建立。
+            # 尝试 goto 详情页（用 yjxkdm+"00" 构造 URL，不依赖 sign）建立 session，然后重试。
+            # 这解决了 headless 模式下 cookie 存在但 yz.chsi.com.cn 域 session 未建立的问题。
+            if not seed_major and total_count == 0:
+                try:
+                    detail_url = build_detail_url(yjxkdm + "00", yjxkmc)
+                    await page.goto(detail_url, wait_until="load", timeout=60000)
+                    await page.wait_for_timeout(1000)
+                    await page.goto(f"{BASE_URL}/zsml/", wait_until="load", timeout=60000)
+                    await page.wait_for_timeout(500)
+                    # 重试 zys.do
+                    first_resp = await self._call_zys_do(
+                        page,
+                        zydm=initial_zydm,
+                        yjxkdm=yjxkdm,
+                        xwlx=xwlx,
+                        mldm=mldm,
+                        cur_page=1,
+                    )
+                    first_msg = first_resp.get("msg", {})
+                    if isinstance(first_msg, dict):
+                        first_list = first_msg.get("list", []) or []
+                        if first_list:
+                            seed_major = first_list[0]
+                            if not yjxkmc and seed_major.get("yjxkmc"):
+                                yjxkmc = seed_major["yjxkmc"]
+                        total_count = int(first_msg.get("totalCount", 0) or 0)
+                    elif isinstance(first_msg, str) and "登录" in first_msg:
+                        return {
+                            "majors": [],
+                            "total_count": 0,
+                            "fetched_count": 0,
+                            "need_login": True,
+                            "yjxkdm": yjxkdm,
+                            "yjxkmc": yjxkmc,
+                        }
+                except Exception:
+                    pass
+
+            # 空学科（无 seed_major）：直接返回，不枚举
+            # 注意：total_count=0 但 first_list 非空时仍要继续（0854 等可能返回 0 但有 seed）
+            if not seed_major:
+                return {
+                    "majors": [],
+                    "total_count": 0,
+                    "fetched_count": 0,
+                    "need_login": False,
+                    "yjxkdm": yjxkdm,
+                    "yjxkmc": yjxkmc,
+                }
+
+            # 累计结果，按 (zydm, zymc) 唯一性去重
+            seen: set[tuple[str, str]] = set()
+            majors: list[dict[str, Any]] = []
+
+            def add_unique(items: list[dict[str, Any]]) -> int:
+                count = 0
+                for m in items:
+                    normalized = self._normalize_major(
+                        m, yjxkdm, yjxkmc, mldm, mlmc, xwlx
+                    )
+                    key = (normalized["zydm"], normalized["zymc"])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    majors.append(normalized)
+                    count += 1
+                return count
+
+            # 把第 1 页数据加入
+            add_unique(first_list)
+
+            # === 第 2 步：详情页预热（只做一次）===
+            # 实测发现：goto 详情页 + 回到 /zsml/ 后，后续 zys.do 调用更稳定。
+            # 跳过此步骤会导致枚举 30 个 zydm 时部分调用返回空。
+            try:
+                detail_url = _build_detail_url_with_sign(seed_major, study_mode="")
+                await page.goto(detail_url, wait_until="load", timeout=60000)
+                await page.wait_for_timeout(500)
+                await page.goto(f"{BASE_URL}/zsml/", wait_until="load", timeout=60000)
+                await page.wait_for_timeout(300)
+            except Exception:
+                pass
+
+            # === 第 3 步：枚举 zydm 列表（同一 page 内连续调）===
+            # 6 位 zydm 候选：基础学术代码（XX0XX0-9）+ J/Z 自设/交叉学科代码
+            candidate_zydms: list[str] = []
+            for i in range(10):
+                candidate_zydms.append(f"{yjxkdm}0{i}")
+            for suffix_char in ["J", "Z"]:
+                for i in range(10):
+                    candidate_zydms.append(f"{yjxkdm}{suffix_char}{i}")
+
+            # totalCount>10 的 zydm 用 8 种 combo 拆分（在同一 page 内连续调）
+            combos_for_split = [
+                {"jsggjh": "0"},
+                {"jsggjh": "1"},
+                {"tydxs": "0"},
+                {"tydxs": "1"},
+                {"jsggjh": "0", "tydxs": "0"},
+                {"jsggjh": "0", "tydxs": "1"},
+                {"jsggjh": "1", "tydxs": "0"},
+                {"jsggjh": "1", "tydxs": "1"},
+            ]
+
+            async def call_with_retry(zydm: str, **combo) -> tuple[list[dict[str, Any]], int, str | None]:
+                """同一 page 内调 zys.do；空响应/请登录/访问太频繁时重试.
+
+                重试策略：
+                1. 第 1 次调用
+                2. 如果返回空 dict {}（fetch 失败）、msg 是"请登录"或"访问太频繁"，
+                   - "访问太频繁"：等待 3 秒后重试（避免加剧限流）
+                   - 其他：goto /zsml/ 重置 session + 等待 1 秒，重试
+                3. 最多重试 2 次
+                """
+                async def _single_call() -> tuple[list[dict[str, Any]], int, str | None]:
+                    resp = await self._call_zys_do(
+                        page, zydm=zydm, yjxkdm=yjxkdm, xwlx=xwlx, mldm=mldm, **combo
+                    )
+                    msg = resp.get("msg", {})
+                    # 空 dict（fetch 失败或返回异常）
+                    if not msg:
+                        return [], 0, "空响应"
+                    if isinstance(msg, str):
+                        if "登录" in msg or "访问太频繁" in msg or "fetch失败" in msg or "HTTP" in msg:
+                            return [], 0, msg
+                        return [], 0, msg
+                    if not isinstance(msg, dict):
+                        return [], 0, "msg 类型异常"
+                    return (
+                        msg.get("list", []) or [],
+                        int(msg.get("totalCount", 0) or 0),
+                        None,
+                    )
+
+                # 第 1 次调用
+                lst, total, err = await _single_call()
+                if err:
+                    # 限流：等待 3 秒
+                    if "访问太频繁" in (err or ""):
+                        await asyncio.sleep(3)
+                    else:
+                        # 其他错误：goto /zsml/ 重置 session + 等待 1 秒
+                        try:
+                            await page.goto(f"{BASE_URL}/zsml/", wait_until="load", timeout=60000)
+                            await page.wait_for_timeout(1000)
+                        except Exception:
+                            pass
+                    # 重试第 1 次
+                    lst, total, err = await _single_call()
+                if err and "访问太频繁" in (err or ""):
+                    # 仍限流：再等待 5 秒重试一次
+                    await asyncio.sleep(5)
+                    lst, total, err = await _single_call()
+                return lst, total, err
+
+            for zydm in candidate_zydms:
+                lst, total, err = await call_with_retry(zydm)
+                if err:
+                    # 跳过该 zydm，继续下一个
+                    continue
+                add_unique(lst)
+
+                # 如果 total > 10，逐个尝试组合直到拿全该 zydm
+                if total > 10:
+                    target_for_zydm = total
+                    for combo in combos_for_split:
+                        current = sum(1 for m in majors if m["zydm"] == zydm)
+                        if current >= target_for_zydm:
+                            break
+                        lst2, _, _ = await call_with_retry(zydm, **combo)
+                        add_unique(lst2)
+                        await asyncio.sleep(0.1)
+
+                await asyncio.sleep(0.1)
+
             return {
-                "majors": [],
-                "total_count": 0,
-                "fetched_count": 0,
+                "majors": majors,
+                "total_count": total_count,
+                "fetched_count": len(majors),
                 "need_login": False,
                 "yjxkdm": yjxkdm,
                 "yjxkmc": yjxkmc,
             }
-
-        # 累计结果，按 (zydm, zymc) 唯一性去重
-        seen: set[tuple[str, str]] = set()
-        majors: list[dict[str, Any]] = []
-
-        def add_unique(items: list[dict[str, Any]]) -> int:
-            count = 0
-            for m in items:
-                normalized = self._normalize_major(
-                    m, yjxkdm, yjxkmc, mldm, mlmc, xwlx
-                )
-                key = (normalized["zydm"], normalized["zymc"])
-                if key in seen:
-                    continue
-                seen.add(key)
-                majors.append(normalized)
-                count += 1
-            return count
-
-        # 把第 1 页数据加入
-        add_unique(first_list if isinstance(first_msg, dict) else [])
-
-        # === 第 2 步：枚举 zydm 列表 ===
-        # 6 位 zydm 候选：基础学术代码（XX0XX0-9）+ J/Z 自设/交叉学科代码
-        # 081200-081209（基础学术二级学科）
-        # 0812J0-0812J9（教育部自设交叉学科）
-        # 0812Z0-0812Z9（高校自主设置交叉学科）
-        candidate_zydms: list[str] = []
-        for i in range(10):
-            candidate_zydms.append(f"{yjxkdm}0{i}")  # 0812 + 0 + 0-9
-        for suffix_char in ["J", "Z"]:
-            for i in range(10):
-                candidate_zydms.append(f"{yjxkdm}{suffix_char}{i}")
-
-        # === 第 3 步：对每个 zydm 查询，必要时用多种参数组合拿全 ===
-        # 组合策略（按需启用，最多 9 次查询以拿全 totalCount）：
-        # 1. 默认 (jsggjh="", tydxs="")
-        # 2-3. jsggjh=0 / jsggjh=1
-        # 4-5. tydxs=0 / tydxs=1
-        # 6-9. jsggjh+tydxs 4 种组合
-        combos_for_split = [
-            {"jsggjh": "0"},
-            {"jsggjh": "1"},
-            {"tydxs": "0"},
-            {"tydxs": "1"},
-            {"jsggjh": "0", "tydxs": "0"},
-            {"jsggjh": "0", "tydxs": "1"},
-            {"jsggjh": "1", "tydxs": "0"},
-            {"jsggjh": "1", "tydxs": "1"},
-        ]
-
-        for zydm in candidate_zydms:
-            # 第一次：默认参数
-            lst, total, err = await self._query_with_fresh_session(
-                seed_major, yjxkdm, xwlx, mldm, zydm=zydm
-            )
-            if err and "登录" in err:
-                continue
-            add_unique(lst)
-
-            # 如果 total > 10，逐个尝试组合直到拿全该 zydm
-            if total > 10:
-                target_for_zydm = total
-                for combo in combos_for_split:
-                    # 检查当前 zydm 是否已拿全
-                    current = sum(1 for m in majors if m["zydm"] == zydm)
-                    if current >= target_for_zydm:
-                        break
-                    lst2, _, _ = await self._query_with_fresh_session(
-                        seed_major, yjxkdm, xwlx, mldm, zydm=zydm, **combo
-                    )
-                    add_unique(lst2)
-                    await asyncio.sleep(0.3)
-
-            await asyncio.sleep(0.3)
-
-        return {
-            "majors": majors,
-            "total_count": total_count,
-            "fetched_count": len(majors),
-            "need_login": False,
-            "yjxkdm": yjxkdm,
-            "yjxkmc": yjxkmc,
-        }
+        finally:
+            await page.close()
 
     async def search_by_name(self, keyword: str) -> list[dict[str, Any]]:
         """按专业名称关键词查询.

@@ -18,6 +18,9 @@ data/cache/
 .idea/
 .trae/
 
+# Node
+node_modules/
+
 # Project-specific
 ui-research/
 tmp_*
@@ -38,3 +41,22 @@ diagnostic-*.png
 diag-*.png
 kaoyan_majors_raw.json
 .commit-msg-tmp.txt
+
+# Additional temporary debug artifacts (2026-07-17)
+/debug-*
+/check-*
+/click-*
+/trigger-*.cjs
+/continue-*.cjs
+/invoke-*.cjs
+/navigate-*.cjs
+/nav-to-*.cjs
+/reload-and-test.cjs
+/start-crawl.cjs
+/detail-screenshot.cjs
+/connect-cdp.cjs
+/test_*.py
+/test-*.py
+/login-test-err.txt
+/test-login-state.json
+/find_login_url.py

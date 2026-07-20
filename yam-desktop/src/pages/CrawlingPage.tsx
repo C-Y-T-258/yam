@@ -1,13 +1,30 @@
 import { useEffect, useRef, useState } from 'react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import { Building2, Calendar, X, Cloud, Loader2, AlertCircle } from 'lucide-react';
 import { useAppStore } from '../stores/appStore';
 import { TopNav } from '../components/TopNav';
-import { runCrawl, getCrawlProgress, syncWorkspaceData, fetchAvailableMajors, cancelCrawl, type CrawlProgress } from '../lib/db';
+import { LoginRequiredModal } from '../components/LoginRequiredModal';
+import {
+  runCrawl,
+  getCrawlProgress,
+  syncWorkspaceData,
+  fetchAvailableMajors,
+  cancelCrawl,
+  resetCrawl,
+  loginYanzhao,
+  type CrawlProgress,
+} from '../lib/db';
+
+type CrawlStatus = 'idle' | 'checking' | 'running' | 'done' | 'error' | 'cancelled';
 
 function getNowTime(): string {
   const now = new Date();
   return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+}
+
+function isLoginError(message: string | null): boolean {
+  if (!message) return false;
+  return message.includes('登录') || message.toLowerCase().includes('loginrequired');
 }
 
 export function CrawlingPage() {
@@ -26,10 +43,33 @@ export function CrawlingPage() {
   const logContainerRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
+  const [status, setStatus] = useState<CrawlStatus>('idle');
+  const [showLoginModal, setShowLoginModal] = useState(false);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
   const lastSchoolRef = useRef<string>('');
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const isLaunchingRef = useRef<boolean>(false);
 
-  // Initialize and start crawling
+  const startCrawl = async () => {
+    if (!crawlTarget) return;
+    if (isLaunchingRef.current) return;
+    isLaunchingRef.current = true;
+    try {
+      await resetCrawl();
+      await runCrawl(crawlTarget.code);
+      setStatus('running');
+      addCrawlingLog(`启动采集任务：${crawlTarget.code}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg);
+      addCrawlingLog(`启动采集失败：${msg}`);
+      if (isLoginError(msg)) {
+        setShowLoginModal(true);
+      }
+    }
+  };
+
+  // Initialize: check backend state and start crawling atomically
   useEffect(() => {
     if (!crawlTarget) {
       setPage('major-management');
@@ -46,60 +86,56 @@ export function CrawlingPage() {
       isPaused: false,
     });
     lastSchoolRef.current = '';
+    setStatus('checking');
 
-    // 先检查是否已有进行中的采集任务，避免重复启动
     getCrawlProgress()
       .then((p) => {
         if (p.running) {
           if (p.major_code === crawlTarget.code) {
-            addCrawlingLog('检测到已有进行中的同专业采集任务，继续监听进度...');
+            // 后端正在采集同一专业：直接恢复监听，不打印"检测到已有..."日志。
+            // 这样切出 CrawlingPage 再切回不会出现冗余提示（ISSUE-021）。
+            // 用户从 MajorSelectPage 选了正在采集的专业进入时，UI 也会直接显示进度条，符合直觉。
+            setStatus('running');
           } else {
             const msg = `已有其他采集任务在运行（${p.major_code}）`;
+            setStatus('error');
             setError(msg);
             addCrawlingLog(msg);
           }
-        } else if (p.done) {
-          // 后端采集已结束（用户从"后台运行"回来，或残留状态）
-          // 不自动重启采集，避免覆盖已完成的结果
+          return;
+        }
+
+        if (p.done) {
           if (p.major_code === crawlTarget.code) {
             addCrawlingLog(`检测到上次采集已完成：成功 ${p.success} 所，失败 ${p.failed} 所，跳过 ${p.skipped} 所`);
             if (p.error) {
+              setStatus('error');
               setError(p.error);
               addCrawlingLog(`上次采集错误：${p.error}`);
+              if (isLoginError(p.error)) {
+                setShowLoginModal(true);
+              }
             } else if (p.success > 0) {
-              // 采集成功但尚未同步（用户从后台回来），自动同步并跳转
               addCrawlingLog('正在同步数据到工作区...');
               handleSync();
             } else {
-              // 异常状态（success=0 且无 error），提示用户重新采集
+              setStatus('error');
               setError('上次采集未取得数据，请取消后重新选择专业');
             }
           } else {
-            // 不同专业，启动新采集
-            addCrawlingLog(`启动新采集任务：${crawlTarget.code}`);
-            runCrawl(crawlTarget.code).catch((err) => {
-              const msg = err instanceof Error ? err.message : String(err);
-              setError(msg);
-              addCrawlingLog(`启动采集失败：${msg}`);
-            });
+            // 不同专业：重置后启动新采集
+            startCrawl();
           }
-        } else {
-          // 初始状态（done=false, running=false），启动新采集
-          addCrawlingLog(`启动采集任务：${crawlTarget.code}`);
-          runCrawl(crawlTarget.code).catch((err) => {
-            const msg = err instanceof Error ? err.message : String(err);
-            setError(msg);
-            addCrawlingLog(`启动采集失败：${msg}`);
-          });
+          return;
         }
+
+        // 初始状态：启动新采集
+        startCrawl();
       })
       .catch((err) => {
-        addCrawlingLog(`检查采集状态失败：${err instanceof Error ? err.message : String(err)}`);
-        runCrawl(crawlTarget.code).catch((err) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          setError(msg);
-          addCrawlingLog(`启动采集失败：${msg}`);
-        });
+        const msg = err instanceof Error ? err.message : String(err);
+        addCrawlingLog(`检查采集状态失败：${msg}`);
+        startCrawl();
       });
 
     return () => {
@@ -108,25 +144,30 @@ export function CrawlingPage() {
         intervalRef.current = null;
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Poll progress
+  // Poll progress when running
   useEffect(() => {
-    if (!crawlTarget) return;
+    if (!crawlTarget || status !== 'running') {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+      return;
+    }
 
     intervalRef.current = setInterval(async () => {
       try {
         const p: CrawlProgress = await getCrawlProgress();
         const percent = p.total > 0 ? Math.round((p.current / p.total) * 100) : 0;
 
-        // 根据后端状态显示更详细的进度信息
         let displaySchool = '准备中...';
         if (p.done) {
           displaySchool = p.error ? '采集已结束' : '采集完成';
         } else if (p.total > 0) {
           displaySchool = p.current_name || `进度 ${p.current}/${p.total}`;
         } else if (p.current_name) {
-          // total=0 但有 current_name，说明 Python 正在输出（如获取院校列表）
           displaySchool = p.current_name;
         } else if (p.running) {
           displaySchool = '正在获取院校列表...';
@@ -147,18 +188,22 @@ export function CrawlingPage() {
           addCrawlingLog(`错误：${p.error}`);
         }
 
-        if (p.done && !syncing) {
+        if (p.done) {
           if (intervalRef.current) {
             clearInterval(intervalRef.current);
             intervalRef.current = null;
           }
           addCrawlingLog(`采集结束：成功 ${p.success} 所，失败 ${p.failed} 所，跳过 ${p.skipped} 所`);
-          // ISSUE-011: 采集失败时不添加专业到管理列表
           if (p.error) {
+            setStatus('error');
             setError(p.error);
             addCrawlingLog(`采集失败：${p.error}，专业未添加到管理列表`);
+            if (isLoginError(p.error)) {
+              setShowLoginModal(true);
+            }
           } else if (p.success === 0) {
             const msg = '采集未取得任何数据，专业未添加到管理列表';
+            setStatus('error');
             setError(msg);
             addCrawlingLog(msg);
           } else {
@@ -176,7 +221,8 @@ export function CrawlingPage() {
         intervalRef.current = null;
       }
     };
-  }, [crawlTarget, syncing, error]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [crawlTarget, status]);
 
   // Auto scroll logs
   useEffect(() => {
@@ -188,10 +234,10 @@ export function CrawlingPage() {
   const handleSync = async () => {
     if (!crawlTarget) return;
     setSyncing(true);
+    setStatus('done');
     addCrawlingLog('正在同步数据到工作区...');
     try {
       await syncWorkspaceData(crawlTarget.code);
-      // ISSUE-011: 同步后检查实际数据量，无数据则不添加专业
       let schoolCount = 0;
       try {
         const available = await fetchAvailableMajors();
@@ -205,14 +251,13 @@ export function CrawlingPage() {
       }
 
       if (schoolCount === 0) {
-        // 同步后仍无数据，不添加到管理列表
         addCrawlingLog(`同步完成，但专业 ${crawlTarget.code} 无数据，未添加到管理列表`);
+        setStatus('error');
         setError('同步后无数据，请确认采集任务是否成功完成');
         setSyncing(false);
         return;
       }
 
-      // 有数据才添加到管理列表
       const exists = crawledMajors.some((m) => m.code === crawlTarget.code);
       if (!exists) {
         addMajor({
@@ -238,8 +283,43 @@ export function CrawlingPage() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       addCrawlingLog(`同步失败：${msg}`);
+      setStatus('error');
+      setError(msg);
       setSyncing(false);
     }
+  };
+
+  const handleLogin = async () => {
+    if (!crawlTarget) return;
+    setIsLoggingIn(true);
+    try {
+      addCrawlingLog('正在打开研招网登录窗口...');
+      const result = await loginYanzhao(crawlTarget.code);
+      if (result.success) {
+        addCrawlingLog(`登录成功，已抓取 ${result.school_count} 所院校种子`);
+        setShowLoginModal(false);
+        setError(null);
+        isLaunchingRef.current = false;
+        await startCrawl();
+      } else {
+        const msg = result.error || '登录失败';
+        setError(msg);
+        addCrawlingLog(`登录失败：${msg}`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg);
+      addCrawlingLog(`登录异常：${msg}`);
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleCancelLogin = () => {
+    setShowLoginModal(false);
+    setStatus('error');
+    setError('已取消登录，采集未完成');
+    addCrawlingLog('用户取消登录');
   };
 
   const handleCancel = async () => {
@@ -249,7 +329,6 @@ export function CrawlingPage() {
     }
     addCrawlingLog('正在取消采集任务...');
     try {
-      // 调用 Rust 端的 cancel_crawl，kill Python 子进程并重置 running 状态
       await cancelCrawl();
       addCrawlingLog('已取消采集任务');
     } catch (err) {
@@ -262,8 +341,6 @@ export function CrawlingPage() {
   };
 
   const handleBackground = () => {
-    // 后台运行：不取消采集任务，仅返回工作区页面
-    // 采集任务在 Rust 端继续执行，用户回到本页时仍可看到进度
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
@@ -285,28 +362,31 @@ export function CrawlingPage() {
     <div className="min-h-screen bg-white">
       <TopNav activeTab="crawling" />
 
+      <AnimatePresence>
+        {showLoginModal && (
+          <LoginRequiredModal
+            majorCode={crawlTarget.code}
+            onLogin={handleLogin}
+            onCancel={handleCancelLogin}
+            isLoggingIn={isLoggingIn}
+          />
+        )}
+      </AnimatePresence>
+
       {/* Content */}
       <div className="max-w-4xl mx-auto px-6 py-8">
         {/* Error Banner */}
         {error && (
-          <div className={`mb-6 rounded-lg px-4 py-3 border ${error.includes('登录') || error.includes('login') ? 'bg-amber-50 border-amber-200' : 'bg-red-50 border-red-200'}`}>
+          <div className={`mb-6 rounded-lg px-4 py-3 border ${isLoginError(error) ? 'bg-amber-50 border-amber-200' : 'bg-red-50 border-red-200'}`}>
             <div className="flex items-start gap-2">
-              {error.includes('登录') ? <AlertCircle size={18} className="text-amber-500 flex-shrink-0 mt-0.5" /> : <X size={18} className="text-red-500 flex-shrink-0 mt-0.5" />}
+              {isLoginError(error) ? <AlertCircle size={18} className="text-amber-500 flex-shrink-0 mt-0.5" /> : <X size={18} className="text-red-500 flex-shrink-0 mt-0.5" />}
               <div className="flex-1">
-                <div className={`text-sm font-medium ${error.includes('登录') ? 'text-amber-700' : 'text-red-700'}`}>
-                  采集失败
+                <div className={`text-sm font-medium ${isLoginError(error) ? 'text-amber-700' : 'text-red-700'}`}>
+                  {isLoginError(error) ? '需要登录' : '采集失败'}
                 </div>
-                <div className={`text-sm mt-1 ${error.includes('登录') ? 'text-amber-600' : 'text-red-600'}`}>
+                <div className={`text-sm mt-1 ${isLoginError(error) ? 'text-amber-600' : 'text-red-600'}`}>
                   {error}
                 </div>
-                {error.includes('登录') && (
-                  <div className="mt-2 text-xs text-amber-600 bg-amber-100 rounded px-2 py-1">
-                    提示：请在终端运行以下命令完成登录后再采集：
-                    <code className="block mt-1 font-mono bg-white px-2 py-0.5 rounded text-amber-800">
-                      yam fetch-seeds -m {crawlTarget?.code} --login
-                    </code>
-                  </div>
-                )}
               </div>
             </div>
           </div>
