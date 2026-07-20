@@ -524,7 +524,7 @@
 ## ISSUE-023：专业目录更新流程耗时过长
 
 - **严重程度**：medium
-- **状态**：open
+- **状态**：fixed
 - **描述**：设置页"更新专业目录"流程串行探测 219 个一级学科 + 子专业，整体耗时较长（实测 30 分钟+）。`yam/scripts/update_majors_catalog.py` 串行调用 `zys.do` 接口，每次请求之间有间隔，且未利用研招网接口可并发的特性。
 - **复现步骤**：
   1. 桌面端 → 设置 → 更新专业目录（勾选首次登录）。
@@ -535,6 +535,12 @@
   - **短期**：`update_majors_catalog.py` 改为 `asyncio` + `aiohttp` 并发请求，按学科分组批处理（批 10-15 个，批间 sleep 5s 避免限流）。
   - **中期**：缓存上次结果，仅探测已知有自设二级学科的学科，其他学科用缓存兜底。
   - **长期**：增量更新——只重新探测用户实际选择过的学科，其他保持缓存。
+- **修复位置**：
+  - `yam/scripts/update_majors_catalog.py`：新增 `CONCURRENCY=4` / `BATCH_PAUSE=2.0` 常量；`update_all_majors` 主循环从串行 for-loop 改为按批 `asyncio.gather` 并发。
+  - 单 `MajorsSearcher` 实例单 context 多 page 并发（每 page 独立 JSESSIONID，避免"同一会话同参组合"冲突）；批间 sleep 2s 避免触发"访问太频繁"限流。
+  - 保留 `--login` / `--resume` 兼容、YAM_MAJORS_UPDATE_PROGRESS/DONE 协议、PARTIAL_JSON 增量保存（改为每批保存一次）。
+- **预估效果**：219 个 yjxkdm × 平均 ~8s/yjxkdm / 4 并发 ≈ 7-8 分钟，达成 10 分钟目标。
+- **备注**：实测若仍频发"访问太频繁"，可调小 `CONCURRENCY`（3 或 2）或调大 `BATCH_PAUSE`（3-5s）。`MajorsSearcher.search_by_yjxkdm` 内部已有"访问太频繁"→sleep 3s 重试逻辑，并发不会破坏该重试机制。aiohttp 直接请求方案不可行（会触发限流），必须用 Playwright page.evaluate 在浏览器环境内 fetch。
 
 ---
 

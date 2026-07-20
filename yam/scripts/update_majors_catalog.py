@@ -28,7 +28,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 MAJORS_TS = REPO_ROOT / "yam-desktop" / "src" / "data" / "majors.ts"
 OUTPUT_JSON = REPO_ROOT / "data" / "majors_realtime.json"
 PARTIAL_JSON = REPO_ROOT / "data" / "majors_realtime.partial.json"
-INCREMENTAL_SAVE_INTERVAL = 5  # 每完成 5 个 yjxkdm 保存一次
+INCREMENTAL_SAVE_INTERVAL = 5  # 每完成 5 个 yjxkdm 保存一次（保留用于单测/兜底）
+# ISSUE-023：并发优化参数
+# 单 context 多 page 并发，每 page 各自 JSESSIONID，避免"同一会话同参组合"冲突。
+# 批间 sleep 避免触发"访问太频繁"限流。目标 30 分钟 → 10 分钟。
+CONCURRENCY = 4  # 每批并发数
+BATCH_PAUSE = 2.0  # 批间 sleep 秒
 
 
 def parse_yjxkdm_list_from_majors_ts() -> list[tuple[str, str, str, str]]:
@@ -234,82 +239,143 @@ async def update_all_majors(login: bool = False, resume: bool = False) -> dict[s
             return {"error": "未登录"}
         print(f"YAM_MAJORS_UPDATE_PROGRESS 0 {total} 登录成功", flush=True)
 
-    try:
-        for idx, (yjxkdm, yjxkmc, mldm, mlmc) in enumerate(yjxkdm_list, 1):
-            # 断点续传：跳过已完成的
-            if yjxkdm in completed_codes:
-                print(
-                    f"YAM_MAJORS_UPDATE_PROGRESS {idx} {total} {yjxkdm} {yjxkmc} (跳过已完成)",
-                    flush=True,
-                )
-                continue
+    # ISSUE-023：过滤掉已完成的，分批并发处理剩余 yjxkdm
+    pending = [
+        (yjxkdm, yjxkmc, mldm, mlmc)
+        for (yjxkdm, yjxkmc, mldm, mlmc) in yjxkdm_list
+        if yjxkdm not in completed_codes
+    ]
+    total_pending = len(pending)
+    already_done = total - total_pending
+    if already_done > 0:
+        print(
+            f"YAM_MAJORS_UPDATE_PROGRESS {already_done} {total} 恢复模式：跳过 {already_done} 个已完成",
+            flush=True,
+        )
 
+    total_batches = (total_pending + CONCURRENCY - 1) // CONCURRENCY
+
+    async def _process_one(
+        yjxkdm: str, yjxkmc: str, mldm: str, mlmc: str
+    ) -> dict[str, Any]:
+        """单个 yjxkdm 并发任务单元：调 search_by_yjxkdm，返回结果或错误."""
+        try:
+            result = await searcher.search_by_yjxkdm(yjxkdm)
+        except Exception as e:
+            return {
+                "yjxkdm": yjxkdm,
+                "yjxkmc": yjxkmc,
+                "mldm": mldm,
+                "mlmc": mlmc,
+                "error": str(e),
+            }
+        return {
+            "yjxkdm": yjxkdm,
+            "yjxkmc": yjxkmc,
+            "mldm": mldm,
+            "mlmc": mlmc,
+            "result": result,
+        }
+
+    try:
+        processed = already_done
+        need_login_break = False
+
+        for batch_start in range(0, total_pending, CONCURRENCY):
+            batch = pending[batch_start : batch_start + CONCURRENCY]
+            batch_num = batch_start // CONCURRENCY + 1
             print(
-                f"YAM_MAJORS_UPDATE_PROGRESS {idx} {total} {yjxkdm} {yjxkmc}",
+                f"YAM_MAJORS_UPDATE_PROGRESS {processed} {total} "
+                f"批次 {batch_num}/{total_batches} ({len(batch)} 个学科并发)",
                 flush=True,
             )
-            try:
-                result = await searcher.search_by_yjxkdm(yjxkdm)
-            except Exception as e:
-                print(f"YAM_MAJORS_UPDATE_WARN {yjxkdm} 查询失败: {e}", flush=True)
-                failed.append((yjxkdm, str(e)))
-                continue
 
-            if result.get("need_login"):
+            # 并发执行批次：单 context 多 page，每 page 独立 JSESSIONID
+            tasks = [_process_one(*item) for item in batch]
+            results = await asyncio.gather(*tasks)
+
+            for r in results:
+                processed += 1
+                yjxkdm = r["yjxkdm"]
+                yjxkmc = r["yjxkmc"]
+                mldm = r["mldm"]
+                mlmc = r["mlmc"]
+
+                if "error" in r:
+                    print(
+                        f"YAM_MAJORS_UPDATE_WARN {yjxkdm} 查询失败: {r['error']}",
+                        flush=True,
+                    )
+                    failed.append((yjxkdm, r["error"]))
+                    continue
+
+                result = r["result"]
+                if result.get("need_login"):
+                    print(
+                        f"YAM_MAJORS_UPDATE_ERROR 需要登录才能继续查询（在 {yjxkdm} 处中断）",
+                        flush=True,
+                    )
+                    need_login_break = True
+                    break
+
+                majors = result.get("majors", [])
+                # 调试日志：打印每个 yjxkdm 拿到的专业数（普通 print，不带 YAM_ 前缀，
+                # 避免 Rust 端把 WARN 当作失败计入 failed_count）
                 print(
-                    f"YAM_MAJORS_UPDATE_ERROR 需要登录才能继续查询（在 {yjxkdm} 处中断）",
+                    f"  [debug] {yjxkdm} {yjxkmc} 拿到 {len(majors)} 个专业 "
+                    f"(total_count={result.get('total_count')}, "
+                    f"fetched={result.get('fetched_count')})",
                     flush=True,
                 )
+                if not majors:
+                    # 该学科可能按一级学科招生，用 yjxkdm + "00" 作为兜底
+                    majors = [{
+                        "zydm": yjxkdm + "00",
+                        "zymc": yjxkmc,
+                        "yjxkdm": yjxkdm,
+                        "yjxkmc": yjxkmc,
+                        "mldm": mldm,
+                        "mlmc": mlmc,
+                        "xwlx": "zy" if is_professional_degree(yjxkdm + "00") else "xs",
+                    }]
+
+                # 聚合到 catalog
+                if mldm not in catalog:
+                    catalog[mldm] = {"mlmc": mlmc, "disciplines": {}}
+                if yjxkdm not in catalog[mldm]["disciplines"]:
+                    catalog[mldm]["disciplines"][yjxkdm] = {
+                        "yjxkmc": yjxkmc,
+                        "majors": [],
+                    }
+                catalog[mldm]["disciplines"][yjxkdm]["majors"].extend(majors)
+                completed_codes.add(yjxkdm)
+
+                print(
+                    f"YAM_MAJORS_UPDATE_PROGRESS {processed} {total} {yjxkdm} {yjxkmc}",
+                    flush=True,
+                )
+
+            if need_login_break:
                 break
 
-            majors = result.get("majors", [])
-            # 调试日志：打印每个 yjxkdm 拿到的专业数（普通 print，不带 YAM_ 前缀，
-            # 避免 Rust 端把 WARN 当作失败计入 failed_count）
+            # 批后增量保存（每批保存一次，比原每 5 个更密集）
+            partial_output = _build_catalog_output(
+                catalog,
+                failed,
+                total,
+                sorted(completed_codes),
+                is_partial=True,
+            )
+            _atomic_write_json(PARTIAL_JSON, partial_output)
             print(
-                f"  [debug] {yjxkdm} {yjxkmc} 拿到 {len(majors)} 个专业 "
-                f"(total_count={result.get('total_count')}, fetched={result.get('fetched_count')})",
+                f"YAM_MAJORS_UPDATE_PROGRESS {processed} {total} "
+                f"(批次 {batch_num} 完成，已保存 {len(completed_codes)} 个学科)",
                 flush=True,
             )
-            if not majors:
-                # 该学科可能按一级学科招生，用 yjxkdm + "00" 作为兜底
-                majors = [{
-                    "zydm": yjxkdm + "00",
-                    "zymc": yjxkmc,
-                    "yjxkdm": yjxkdm,
-                    "yjxkmc": yjxkmc,
-                    "mldm": mldm,
-                    "mlmc": mlmc,
-                    "xwlx": "zy" if is_professional_degree(yjxkdm + "00") else "xs",
-                }]
 
-            # 聚合到 catalog
-            if mldm not in catalog:
-                catalog[mldm] = {"mlmc": mlmc, "disciplines": {}}
-            if yjxkdm not in catalog[mldm]["disciplines"]:
-                catalog[mldm]["disciplines"][yjxkdm] = {
-                    "yjxkmc": yjxkmc,
-                    "majors": [],
-                }
-            catalog[mldm]["disciplines"][yjxkdm]["majors"].extend(majors)
-            completed_codes.add(yjxkdm)
-
-            # 增量保存：每 INCREMENTAL_SAVE_INTERVAL 个 yjxkdm 后写一次 JSON
-            if idx % INCREMENTAL_SAVE_INTERVAL == 0:
-                partial_output = _build_catalog_output(
-                    catalog,
-                    failed,
-                    total,
-                    sorted(completed_codes),
-                    is_partial=True,
-                )
-                _atomic_write_json(PARTIAL_JSON, partial_output)
-                print(
-                    f"YAM_MAJORS_UPDATE_PROGRESS {idx} {total} {yjxkdm} {yjxkmc} (已保存 {len(completed_codes)} 个学科)",
-                    flush=True,
-                )
-
-            # 释放事件循环，避免长时间阻塞
-            await asyncio.sleep(0.05)
+            # 批间 sleep 避免限流（最后一批不 sleep）
+            if batch_start + CONCURRENCY < total_pending:
+                await asyncio.sleep(BATCH_PAUSE)
     finally:
         await searcher.close()
 
