@@ -373,6 +373,31 @@
 
 ---
 
+## ISSUE-018：085400 电子信息 seed 抓取正常但 zys.do 返回 totalCount=0
+
+- **严重程度**：medium
+- **状态**：open
+- **描述**：早期会话曾误判"085400 作为专业学位门类代码在研招网数据源已不可用"，并把 `data/majors.yaml` 中 085400 的 `enabled` 改为 `false`。实际验证发现：
+  - `data/seeds/yan_zhao_085400_all_regions.json` 成功抓取 **228 所院校**，覆盖 **29 个省份**（北京 22、江苏 17、湖北 17、上海 15、浙江 15 等）。
+  - 228 条记录的 `sign` / `sign2` 字段**全部非空**，证明 `zys.do` 接口对 085400 仍返回完整院校列表。
+  - 但 228 所院校的 `totalCount` **全部为 0**——`zys.do` 在 `zydm=085400` 时不再返回该院系开设的具体招生方向数，需进入 `zydws.do` 院系详情页才能看到 085401-085412 等细分方向。
+  - 结论：085400 **不是"不可查询"**，只是 zys.do 列表页的 `totalCount=0`，**seed 抓取完全可用**。
+- **复现步骤**：
+  1. 查看 `data/seeds/yan_zhao_085400_all_regions.json`（7981 行、228 所院校、29 省）。
+  2. 用 Python 统计：`sum(1 for i in d if i.get('sign'))` = 228，`sum(1 for i in d if i.get('totalCount',0)>0)` = 0。
+  3. 在桌面端选择 `085400 电子信息`，可以正常启动采集（已确认 majors.yaml 中 085400 的 `enabled` 仍为 `true`）。
+- **期望行为**：085400 视为可正常采集专业，不 disable；seed 文件保留作为 fallback；前端在 `totalCount=0` 时显示"列表页无招生方向数据，请进入院系详情查看 085401-085412 细分方向"。
+- **实际行为**：早期误判导致 majors.yaml 中 085400 一度被 disable；当前 `enabled: true` 已恢复，但缺统一说明，未来会话容易再次误判。
+- **本次修复（2026-07-21）**：
+  - 确认 `data/majors.yaml` 第 3317 行 `085400 电子信息` 的 `enabled: true` 状态正确，不再 disable。
+  - 在 `docs/known-issues.md` 中补回此前缺失的 ISSUE-018 条目，明确 085400 的真实情况。
+- **建议修复方向**：
+  - **短期**：保留 085400 的 seed 文件与 `enabled: true`；前端 `totalCount=0` 时给出"该院系在 0854 一级学科下无招生方向，请改选 085401-085412"提示。
+  - **中期**：`fetch-seeds` 阶段对 `totalCount=0` 的专业额外打印警告，避免误判为"采集失败"。
+  - **长期**：MajorSelectPage 支持按一级学科代码（yjxkdm=0854）聚合显示所有细分专业，而不是把 085400 当作独立可采集叶子节点。
+
+---
+
 ## ISSUE-016：采集错误时 `CrawlingPage` 错误横幅显示完整 Python traceback
 
 - **严重程度**：medium
