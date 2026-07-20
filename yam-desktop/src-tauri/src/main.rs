@@ -49,6 +49,8 @@ fn main() {
             commands::reset_crawl,
             commands::check_login_status,
             commands::login_yanzhao,
+            commands::refresh_login,
+            commands::clear_login,
             commands::search_majors,
             commands::update_majors_catalog,
             commands::cancel_catalog_update,

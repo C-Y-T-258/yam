@@ -759,6 +759,37 @@ export async function loginYanzhao(majorCode: string): Promise<LoginResult> {
   return { success: false, school_count: 0, error: '浏览器环境不支持登录' };
 }
 
+// ISSUE-024：登录状态管理三件套（SettingsPage 登录状态卡片使用）
+
+export interface RefreshLoginResult {
+  success: boolean;
+  error: string | null;
+}
+
+export interface ClearLoginResult {
+  success: boolean;
+  cookie_existed: boolean;
+  error: string | null;
+}
+
+/** 刷新登录态：打开可见浏览器让用户登录研招网，不抓取种子 */
+export async function refreshLogin(): Promise<RefreshLoginResult> {
+  if (isTauri) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke('refresh_login');
+  }
+  return { success: false, error: '浏览器环境不支持登录' };
+}
+
+/** 清除登录态：删除本地研招网 cookie 文件 */
+export async function clearLogin(): Promise<ClearLoginResult> {
+  if (isTauri) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke('clear_login');
+  }
+  return { success: false, cookie_existed: false, error: '浏览器环境不支持操作本地文件' };
+}
+
 export interface SearchedMajor {
   zydm: string;
   zymc: string;

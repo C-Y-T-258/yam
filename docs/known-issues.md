@@ -541,7 +541,7 @@
 ## ISSUE-024：登录状态缺乏统一管理，研招网 session/seed 散落各处
 
 - **严重程度**：high
-- **状态**：open
+- **状态**：fixed
 - **描述**：当前研招网登录凭证（`CASTGC` cookie / JSESSIONID / sign 签名）由 `yam/crawler/dynamic.py` 自行管理，存在 `data/cookies/` 目录；掌上考研目前未接入登录态。桌面端设置页缺少"登录状态"入口，用户无法主动检查/刷新/清除登录态，只能在采集失败时被动触发 `LoginRequiredModal`。多专业批量采集时，若 session 失效需重新登录，体验差。
 - **复现步骤**：
   1. 桌面端启动采集，运行一段时间后研招网 session 失效。
@@ -558,6 +558,16 @@
     2. 新增 `check_login_status` / `refresh_login` / `clear_login` 三个 Tauri 命令，封装 Python 端 `DynamicReader.check_login` / `interactive_login` / `clear_cookies`。
   - **中期**：抽象 `SessionStore` 接口（`get`/`set`/`clear`/`is_valid`），研招网和掌上考研各一个实现，统一存到 `~/.yam/sessions/` 下分文件管理。
   - **长期**：登录态过期前自动刷新（基于上次刷新时间 + TTL），避免采集中途失败。
+- **本次修复（2026-07-21，短期方案）**：
+  - **方案**：在 Rust 端新增 `refresh_login` 和 `clear_login` 两个命令（`check_login_status` 此前已存在）；SettingsPage 顶部新增"研招网登录状态"卡片，包含状态徽章 + 凭证过期时间戳 + 上次检查时间 + 三个按钮（检查状态/刷新登录/清除登录）。`refresh_login` 复用 Python 端 `DynamicReader.interactive_login("", "")`，只登录不抓取种子（与 `login_yanzhao` 复合操作区分）。
+  - **修改文件**：
+    - `yam-desktop/src-tauri/src/commands.rs`：新增 `RefreshLoginResult` / `ClearLoginResult` 结构 + `refresh_login` 命令（调用 Python `DynamicReader().interactive_login("", "")`，解析 `YAM_REFRESH_LOGIN_RESULT true/false` 行）+ `clear_login` 命令（`std::fs::remove_file` 删除 `~/.yam/cookies/yz.chsi.com.cn.json`）。
+    - `yam-desktop/src-tauri/src/main.rs`：注册 `refresh_login` + `clear_login` 两个 invoke_handler。
+    - `yam-desktop/src/lib/db.ts`：新增 `RefreshLoginResult` / `ClearLoginResult` 类型 + `refreshLogin()` / `clearLogin()` 前端包装。
+    - `yam-desktop/src/pages/SettingsPage.tsx`：新增"登录状态"section（图标 ShieldCheck/ShieldAlert + 状态徽章 + 三个按钮 + 错误信息）；useEffect 初始化时自动调用 `handleCheckLogin`。
+  - **UI 状态**：登录→绿色已登录徽章 + ShieldCheck 图标；未登录→琥珀色未登录徽章 + ShieldAlert 图标；清除登录按钮在未登录时 disabled。
+  - **验证**：`cargo check` 通过（14.82s）；`npm run build` 通过（522.75 kB → 527.93 kB，新增登录卡片代码）。**桌面端实测通过**（2026-07-21）：用户报告"全部成功"，三个按钮均正常工作。
+  - **未做的部分**：未抽象 `SessionStore` 接口（中期方案）；未实现过期前自动刷新（长期方案）；未接入掌上考研登录态（当前掌上考研也未要求登录）。
 
 ---
 

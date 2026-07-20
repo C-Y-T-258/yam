@@ -688,6 +688,21 @@ pub struct LoginResult {
     pub error: Option<String>,
 }
 
+/// ISSUE-024：刷新登录命令返回结构（不抓取种子，只刷新登录态）
+#[derive(Serialize)]
+pub struct RefreshLoginResult {
+    pub success: bool,
+    pub error: Option<String>,
+}
+
+/// ISSUE-024：清除登录态命令返回结构
+#[derive(Serialize)]
+pub struct ClearLoginResult {
+    pub success: bool,
+    pub cookie_existed: bool,
+    pub error: Option<String>,
+}
+
 /// 检查本地是否保存了有效的研招网登录 cookie
 #[tauri::command]
 pub fn check_login_status(app: tauri::AppHandle) -> Result<LoginStatus, String> {
@@ -831,6 +846,113 @@ print("YAM_LOGIN_RESULT " + json.dumps(result, ensure_ascii=False))
         } else {
             stderr.to_string()
         }),
+    })
+}
+
+/// ISSUE-024：只刷新登录态，不抓取种子。
+///
+/// 调用 Python 端 `DynamicReader().interactive_login("", "")`，打开可见浏览器
+/// 让用户完成研招网登录；登录凭证保存到 `~/.yam/cookies/yz.chsi.com.cn.json`。
+/// 与 `login_yanzhao` 的区别：本命令不抓取任何专业种子，可在 SettingsPage
+/// 独立调用。
+#[tauri::command]
+pub fn refresh_login() -> Result<RefreshLoginResult, String> {
+    let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.to_path_buf())
+        .ok_or("无法确定仓库根目录")?;
+
+    let python = if cfg!(windows) { "python" } else { "python3" };
+
+    // 只调用 interactive_login，不调用 fetch_school_list
+    let script = r#"import asyncio
+from yam.crawler.dynamic import DynamicReader
+async def _run():
+    reader = DynamicReader()
+    try:
+        ok = await reader.interactive_login("", "")
+        print("YAM_REFRESH_LOGIN_RESULT " + ("true" if ok else "false"))
+    finally:
+        await reader.close()
+asyncio.run(_run())
+"#;
+
+    let output = std::process::Command::new(python)
+        .arg("-c")
+        .arg(script)
+        .current_dir(&repo_root)
+        .env("PYTHONPATH", &repo_root)
+        .env("PYTHONUNBUFFERED", "1")
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONUTF8", "1")
+        .output()
+        .map_err(|e| format!("启动刷新登录脚本失败: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !output.status.success() {
+        return Ok(RefreshLoginResult {
+            success: false,
+            error: Some(if stderr.is_empty() {
+                "刷新登录窗口异常退出".to_string()
+            } else {
+                stderr.to_string()
+            }),
+        });
+    }
+
+    for line in stdout.lines() {
+        if let Some(rest) = line.strip_prefix("YAM_REFRESH_LOGIN_RESULT ") {
+            let ok = rest.trim() == "true";
+            return Ok(RefreshLoginResult {
+                success: ok,
+                error: if ok {
+                    None
+                } else {
+                    Some("未检测到登录凭证，请确认已完成研招网登录".to_string())
+                },
+            });
+        }
+    }
+
+    Ok(RefreshLoginResult {
+        success: false,
+        error: Some(if stderr.is_empty() {
+            "未获取到刷新登录结果".to_string()
+        } else {
+            stderr.to_string()
+        }),
+    })
+}
+
+/// ISSUE-024：清除本地研招网登录态。
+///
+/// 删除 `~/.yam/cookies/yz.chsi.com.cn.json` 文件。下次采集时若检测到
+/// 无 cookie 会触发 LoginRequiredModal。
+#[tauri::command]
+pub fn clear_login(app: tauri::AppHandle) -> Result<ClearLoginResult, String> {
+    let cookie_path = app
+        .path()
+        .resolve(".yam/cookies/yz.chsi.com.cn.json", tauri::path::BaseDirectory::Home)
+        .map_err(|e| format!("无法解析 cookie 路径: {}", e))?;
+
+    if !cookie_path.exists() {
+        return Ok(ClearLoginResult {
+            success: true,
+            cookie_existed: false,
+            error: None,
+        });
+    }
+
+    std::fs::remove_file(&cookie_path)
+        .map_err(|e| format!("删除 cookie 文件失败: {}", e))?;
+
+    Ok(ClearLoginResult {
+        success: true,
+        cookie_existed: true,
+        error: None,
     })
 }
 

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { RefreshCw, AlertCircle, CheckCircle2, X, Loader2, LogIn } from 'lucide-react';
+import { RefreshCw, AlertCircle, CheckCircle2, X, Loader2, LogIn, LogOut, ShieldCheck, ShieldAlert } from 'lucide-react';
 import { useAppStore } from '../stores/appStore';
 import { TopNav } from '../components/TopNav';
 import {
@@ -8,7 +8,11 @@ import {
   cancelCatalogUpdate,
   getCatalogUpdateProgress,
   resetCatalogUpdate,
+  checkLoginStatus,
+  refreshLogin,
+  clearLogin,
   type UpdateCatalogProgress,
+  type LoginStatus,
 } from '../lib/db';
 
 /**
@@ -23,6 +27,73 @@ export function SettingsPage() {
   const [progress, setProgress] = useState<UpdateCatalogProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [useLogin, setUseLogin] = useState(false);
+
+  // ISSUE-024：登录状态管理
+  const [loginStatus, setLoginStatus] = useState<LoginStatus | null>(null);
+  const [loginLoading, setLoginLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [lastChecked, setLastChecked] = useState<Date | null>(null);
+
+  const handleCheckLogin = async () => {
+    setLoginLoading(true);
+    setLoginError(null);
+    try {
+      const status = await checkLoginStatus();
+      setLoginStatus(status);
+      setLastChecked(new Date());
+    } catch (e) {
+      setLoginError(String(e));
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
+  const handleRefreshLogin = async () => {
+    setRefreshing(true);
+    setLoginError(null);
+    try {
+      const result = await refreshLogin();
+      if (result.success) {
+        // 刷新成功后重新检查状态
+        const status = await checkLoginStatus();
+        setLoginStatus(status);
+        setLastChecked(new Date());
+      } else {
+        setLoginError(result.error ?? '刷新登录失败');
+      }
+    } catch (e) {
+      setLoginError(String(e));
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const handleClearLogin = async () => {
+    setClearing(true);
+    setLoginError(null);
+    try {
+      const result = await clearLogin();
+      if (result.success) {
+        // 清除后重新检查状态
+        const status = await checkLoginStatus();
+        setLoginStatus(status);
+        setLastChecked(new Date());
+      } else {
+        setLoginError(result.error ?? '清除登录态失败');
+      }
+    } catch (e) {
+      setLoginError(String(e));
+    } finally {
+      setClearing(false);
+    }
+  };
+
+  // 初始化时检查登录状态
+  useEffect(() => {
+    handleCheckLogin();
+  }, []);
 
   // 拉取初始进度 + 监听事件
   useEffect(() => {
@@ -95,6 +166,100 @@ export function SettingsPage() {
       <div className="max-w-4xl mx-auto px-6 py-8">
         <h1 className="text-2xl font-bold text-gray-900 mb-1">设置</h1>
         <p className="text-gray-500 mb-8">应用功能与数据维护。</p>
+
+        {/* ISSUE-024：登录状态卡片 */}
+        <section className="border border-gray-200 rounded-lg p-6 mb-6">
+          <div className="flex items-start gap-4">
+            <div className="w-10 h-10 bg-blue-50 rounded-lg flex items-center justify-center flex-shrink-0">
+              {loginStatus?.logged_in ? (
+                <ShieldCheck className="w-5 h-5 text-emerald-600" />
+              ) : (
+                <ShieldAlert className="w-5 h-5 text-amber-500" />
+              )}
+            </div>
+            <div className="flex-1 min-w-0">
+              <h2 className="text-lg font-semibold text-gray-900 mb-1">研招网登录状态</h2>
+              <p className="text-sm text-gray-500 mb-4 leading-relaxed">
+                检查、刷新或清除本地保存的研招网登录凭证（cookie）。登录态用于采集院校数据时通过 zys.do 接口鉴权。
+              </p>
+
+              {/* 状态展示 */}
+              <div className="flex items-center gap-3 mb-4 text-sm">
+                {loginLoading && <Loader2 className="w-4 h-4 animate-spin text-[#1e3a5f]" />}
+                {!loginLoading && loginStatus?.logged_in && (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
+                    <CheckCircle2 size={12} />
+                    已登录
+                  </span>
+                )}
+                {!loginLoading && loginStatus && !loginStatus.logged_in && (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200">
+                    <AlertCircle size={12} />
+                    未登录
+                  </span>
+                )}
+                {loginStatus?.expires_at && (
+                  <span className="text-xs text-gray-500">
+                    凭证过期时间戳: <code className="text-gray-700">{loginStatus.expires_at}</code>
+                  </span>
+                )}
+                {lastChecked && (
+                  <span className="text-xs text-gray-400 ml-auto">
+                    上次检查: {lastChecked.toLocaleTimeString('zh-CN')}
+                  </span>
+                )}
+              </div>
+
+              {/* 操作按钮 */}
+              <div className="flex items-center gap-3 flex-wrap">
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={handleCheckLogin}
+                  disabled={loginLoading}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-200 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {loginLoading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                  检查状态
+                </motion.button>
+
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={handleRefreshLogin}
+                  disabled={refreshing}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-[#1e3a5f] text-white rounded-lg text-sm font-medium hover:bg-[#162d4a] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {refreshing ? <Loader2 size={14} className="animate-spin" /> : <LogIn size={14} />}
+                  刷新登录
+                </motion.button>
+
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={handleClearLogin}
+                  disabled={clearing || !loginStatus?.logged_in}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-red-50 text-red-600 border border-red-200 rounded-lg text-sm font-medium hover:bg-red-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {clearing ? <Loader2 size={14} className="animate-spin" /> : <LogOut size={14} />}
+                  清除登录
+                </motion.button>
+
+                <span className="text-xs text-gray-500">
+                  {refreshing && '正在打开浏览器，请完成登录...'}
+                  {clearing && '正在清除...'}
+                </span>
+              </div>
+
+              {/* 错误信息 */}
+              {loginError && (
+                <div className="mt-3 text-xs text-red-600 bg-red-50 border border-red-200 rounded p-2">
+                  {loginError}
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
 
         {/* 更新专业目录卡片 */}
         <section className="border border-gray-200 rounded-lg p-6 mb-6">
