@@ -1,10 +1,10 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronLeft, GraduationCap, Award } from 'lucide-react';
 import { ACADEMIC_CATEGORIES, PROFESSIONAL_CATEGORIES } from '../data/majors';
 import type { DisciplineCategory, FirstLevelDiscipline, Major } from '../data/majors';
 import { useAppStore } from '../stores/appStore';
-import { resetCrawl } from '../lib/db';
+import { resetCrawl, readMajorsCatalog, isTauri } from '../lib/db';
 
 type DegreeType = 'all' | 'academic' | 'professional';
 
@@ -13,6 +13,11 @@ interface SearchResult {
   category: DisciplineCategory;
   discipline: FirstLevelDiscipline;
   major: Major;
+}
+
+interface RealtimeCatalog {
+  academic: DisciplineCategory[];
+  professional: DisciplineCategory[];
 }
 
 function mergeCategories(
@@ -34,12 +39,16 @@ function mergeCategories(
   return Array.from(map.values()).sort((a, b) => a.code.localeCompare(b.code));
 }
 
-function getDisciplinesWithType(category: DisciplineCategory): Array<{
+function getDisciplinesWithType(
+  category: DisciplineCategory,
+  academicCats: DisciplineCategory[],
+  professionalCats: DisciplineCategory[]
+): Array<{
   type: 'academic' | 'professional';
   discipline: FirstLevelDiscipline;
 }> {
-  const academicCat = ACADEMIC_CATEGORIES.find((c) => c.code === category.code);
-  const professionalCat = PROFESSIONAL_CATEGORIES.find((c) => c.code === category.code);
+  const academicCat = academicCats.find((c) => c.code === category.code);
+  const professionalCat = professionalCats.find((c) => c.code === category.code);
   const results: Array<{ type: 'academic' | 'professional'; discipline: FirstLevelDiscipline }> = [];
   if (academicCat) {
     for (const d of academicCat.disciplines) results.push({ type: 'academic', discipline: d });
@@ -64,12 +73,46 @@ export function MajorSelectPage() {
   const [selectedDiscipline, setSelectedDiscipline] = useState<FirstLevelDiscipline | null>(null);
   const [selectedMajor, setSelectedMajor] = useState<Major | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  // 实时目录（来自 d:/yam/data/majors_realtime.json），如果存在则覆盖静态数据。
+  // 初始为 null 表示尚未加载；加载后即使为空数组也设为非 null 以触发 useMemo 重算。
+  const [realtimeCatalog, setRealtimeCatalog] = useState<RealtimeCatalog | null>(null);
+
+  // 桌面端启动时尝试读取实时目录；浏览器环境跳过。
+  useEffect(() => {
+    if (!isTauri) return;
+    let active = true;
+    (async () => {
+      try {
+        const jsonStr = await readMajorsCatalog();
+        if (!active || !jsonStr) return;
+        const parsed = JSON.parse(jsonStr) as {
+          academic_categories?: DisciplineCategory[];
+          professional_categories?: DisciplineCategory[];
+        };
+        if (parsed.academic_categories && parsed.professional_categories) {
+          setRealtimeCatalog({
+            academic: parsed.academic_categories,
+            professional: parsed.professional_categories,
+          });
+        }
+      } catch (e) {
+        console.warn('读取实时专业目录失败，回退到静态数据:', e);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // 实际使用的数据源：优先实时目录，否则静态。
+  const academicCats = realtimeCatalog?.academic ?? ACADEMIC_CATEGORIES;
+  const professionalCats = realtimeCatalog?.professional ?? PROFESSIONAL_CATEGORIES;
 
   const categories = useMemo(() => {
-    if (degreeType === 'academic') return ACADEMIC_CATEGORIES;
-    if (degreeType === 'professional') return PROFESSIONAL_CATEGORIES;
-    return mergeCategories(ACADEMIC_CATEGORIES, PROFESSIONAL_CATEGORIES);
-  }, [degreeType]);
+    if (degreeType === 'academic') return academicCats;
+    if (degreeType === 'professional') return professionalCats;
+    return mergeCategories(academicCats, professionalCats);
+  }, [degreeType, academicCats, professionalCats]);
   const isProfessionalFlat = degreeType === 'professional' && !enableProfessionalThreeLevelMenu;
 
   // 构建跨学位类型的统一搜索索引
@@ -84,10 +127,10 @@ export function MajorSelectPage() {
         }
       }
     };
-    collect('academic', ACADEMIC_CATEGORIES);
-    collect('professional', PROFESSIONAL_CATEGORIES);
+    collect('academic', academicCats);
+    collect('professional', professionalCats);
     return results;
-  }, []);
+  }, [academicCats, professionalCats]);
 
   const filteredResults = useMemo(() => {
     if (!searchQuery.trim()) return [];
@@ -107,6 +150,12 @@ export function MajorSelectPage() {
   const isExistingMajor = selectedMajor
     ? crawledMajors.some((m) => m.code === selectedMajor.code)
     : false;
+
+  // 当前选中门类下的所有学科（带学位类型标记）
+  const disciplinesInSelectedCategory = useMemo(() => {
+    if (!selectedCategory) return [];
+    return getDisciplinesWithType(selectedCategory, academicCats, professionalCats);
+  }, [selectedCategory, academicCats, professionalCats]);
 
   const handleSelectMajor = (major: Major) => {
     setSelectedMajor(major);
@@ -315,8 +364,8 @@ export function MajorSelectPage() {
               <h3 className="text-sm font-medium text-gray-500 mb-2">学科类别</h3>
               <AnimatePresence mode="wait">
                 {selectedCategory ? (
-                  getDisciplinesWithType(selectedCategory).length > 0 ? (
-                    getDisciplinesWithType(selectedCategory).map((item) => (
+                  disciplinesInSelectedCategory.length > 0 ? (
+                    disciplinesInSelectedCategory.map((item) => (
                       <motion.button
                         key={`${item.type}-${item.discipline.code}`}
                         initial={{ opacity: 0, x: -10 }}

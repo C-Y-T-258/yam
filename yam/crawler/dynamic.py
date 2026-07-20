@@ -15,6 +15,155 @@ from yam.config import config
 BASE_URL = "https://yz.chsi.com.cn"
 COOKIE_DOMAIN = "yz.chsi.com.cn"
 
+# 已知专业学位 4 位一级学科代码前缀（不完整列表，按需扩展）
+_PROFESSIONAL_PREFIXES: set[str] = {
+    "0251", "0252", "0253", "0254", "0255", "0256",
+    "0351", "0352",
+    "0451", "0452", "0453", "0454",
+    "0551", "0552", "0553",
+    "0651",
+    "0854", "0855", "0856", "0857", "0858", "0859", "0860",
+    "0951", "0952", "0953", "0954",
+    "1051", "1052", "1053", "1054", "1055", "1056", "1057", "1058", "1059",
+    "1151",
+    "1251", "1252", "1253", "1254", "1255", "1256",
+    "1351",
+    "1451",
+}
+
+_DISCIPLINE_CATEGORIES: dict[str, str] = {
+    "01": "哲学",
+    "02": "经济学",
+    "03": "法学",
+    "04": "教育学",
+    "05": "文学",
+    "06": "历史学",
+    "07": "理学",
+    "08": "工学",
+    "09": "农学",
+    "10": "医学",
+    "11": "军事学",
+    "12": "管理学",
+    "13": "艺术学",
+    "14": "交叉学科",
+}
+
+_FIRST_LEVEL_DISCIPLINES: dict[str, str] = {
+    "0812": "计算机科学与技术",
+    "0854": "电子信息",
+    "0839": "网络空间安全",
+    "0809": "电子科学与技术",
+    "0810": "信息与通信工程",
+    "0811": "控制科学与工程",
+    "0855": "机械",
+    "0856": "材料与化工",
+    "0857": "资源与环境",
+    "0858": "能源动力",
+    "0859": "土木水利",
+    "0860": "生物与医药",
+}
+
+# 中国 34 个省级行政区代码（用于按省份扫描院校列表）
+_PROVINCES: dict[str, str] = {
+    "11": "北京", "12": "天津", "13": "河北", "14": "山西", "15": "内蒙古",
+    "21": "辽宁", "22": "吉林", "23": "黑龙江",
+    "31": "上海", "32": "江苏", "33": "浙江", "34": "安徽", "35": "福建", "36": "江西",
+    "37": "山东", "41": "河南", "42": "湖北", "43": "湖南", "44": "广东", "45": "广西",
+    "46": "海南",
+    "50": "重庆", "51": "四川", "52": "贵州", "53": "云南", "54": "西藏",
+    "61": "陕西", "62": "甘肃", "63": "青海", "64": "宁夏", "65": "新疆",
+    "71": "台湾", "81": "香港", "82": "澳门",
+}
+
+# zydws.do 校名关键词（来自旧项目 yanzhao-mcp 策略 B）
+# 不同 dwmc 关键词返回不同的前 10 所院校，用于补全密集省份
+_KEYWORDS: list[str] = [
+    "大学", "学院", "研究院", "研究所",
+    "理工", "工业", "科技", "师范", "农业", "医学",
+    "财经", "政法", "民族", "航空", "航天", "军事",
+    "交通", "邮电", "建筑", "工程", "科学",
+    "电子", "信息", "机械",
+    "中国", "北方", "南方",
+    "华东", "华南", "华北", "华中", "西南", "东南", "东北", "西北",
+    "首都", "市", "省",
+]
+
+
+def is_professional_degree(major_code: str) -> bool:
+    """根据专业代码判断是否专业学位.
+
+    规律：4 位一级学科代码的第 3 位为 "5" 表示专业学位
+    （学术学位第 3 位通常为 0-4 或 7 表示交叉学科，如 0270/0370）。
+    """
+    return len(major_code) >= 3 and major_code[2] == "5"
+
+
+def _is_login_cookie(name: str, domain: str = "") -> bool:
+    """判断 cookie 是否可能是研招网登录凭证.
+
+    注意：
+    - JSESSIONID 只是服务器会话标识，未登录时也会存在，不能作为已登录依据；
+    - CLIENTFLAG、XSRF-TOKEN 等也是非登录 cookie；
+    - 首页未登录时会在 kl.chsi.com.cn 等子域种下 CHSICC01/02，需排除；
+    - 真正代表登录态的是 account.chsi.com.cn 域下的 CASTGC（CAS 票据）。
+    """
+    upper = name.upper()
+    if "JSESSIONID" in upper or "CLIENTFLAG" in upper:
+        return False
+    if "XSRF" in upper or "CSRF" in upper:
+        return False
+    # CAS 登录票据是研招网统一登录凭证
+    if upper == "CASTGC":
+        return True
+    if domain and "kl.chsi.com.cn" in domain:
+        return False
+    if domain and "chsi.com.cn" not in domain:
+        return False
+    return "SESSION" in upper or "CHSICC" in upper or "LOGIN" in upper or "TOKEN" in upper
+
+
+def build_detail_url(major_code: str, major_name: str = "") -> str:
+    """构造研招网专业详情页 URL，自动识别学术/专业学位."""
+    from urllib import parse
+
+    xwlx = "zyxw" if is_professional_degree(major_code) else "xsxw"
+    mldm = major_code[:2]
+    mlmc = _DISCIPLINE_CATEGORIES.get(mldm, "工学")
+    yjxkdm = major_code[:4]
+    yjxkmc = _FIRST_LEVEL_DISCIPLINES.get(yjxkdm, major_name or "未知学科")
+    return (
+        f"{BASE_URL}/zsml/zydetail.do?"
+        f"zydm={major_code}&zymc={parse.quote(major_name or '')}"
+        f"&xwlx={xwlx}&mldm={mldm}&mlmc={parse.quote(mlmc)}"
+        f"&yjxkdm={yjxkdm}&yjxkmc={parse.quote(yjxkmc)}"
+        f"&xxfs=1"
+    )
+
+
+def _build_detail_url_with_sign(major: dict[str, Any], study_mode: str = "") -> str:
+    """使用 zys.do 返回的专业元数据构造正确的详情页 URL.
+
+    实测研招网详情页需要准确的 xwlx、sign、sign2 等参数，否则会出现
+    "访问错误" 或后续 API 返回 "请登录"。
+    """
+    from urllib import parse
+
+    return (
+        f"{BASE_URL}/zsml/zydetail.do?"
+        f"zydm={major.get('zydm', '')}"
+        f"&zymc={parse.quote(major.get('zymc', ''))}"
+        f"&xwlx={major.get('xwlx', '')}"
+        f"&mldm={major.get('mldm', '')}"
+        f"&mlmc={parse.quote(major.get('mlmc', ''))}"
+        f"&yjxkdm={major.get('yjxkdm', '')}"
+        f"&yjxkmc={parse.quote(major.get('yjxkmc', ''))}"
+        f"&xxfs={study_mode}"
+        f"&tydxs="
+        f"&jsggjh="
+        f"&sign={major.get('sign', '')}"
+        f"&sign2={major.get('sign2', '')}"
+    )
+
 
 class LoginRequiredError(RuntimeError):
     """需要用户登录研招网."""
@@ -72,122 +221,537 @@ class DynamicReader:
             pass
 
     async def _save_cookies(self) -> None:
-        """保存 cookie 到本地."""
+        """保存 cookie 到本地.
+
+        一旦检测到 CASTGC 等登录凭证，就把全部 cookie（包括 JSESSIONID 等
+        yz.chsi.com.cn 域下的 session cookie）一起保存，否则后续 API 调用
+        会因为没有 session 而报“请登录”。
+        """
         if not self.context:
             return
         try:
             cookies = await self.context.cookies()
-            important = [
-                c for c in cookies
-                if any(key in c.get("name", "") for key in ["JSESSIONID", "CHSICC", "SESSION"])
-            ]
-            to_save = important if important else cookies
+            has_login = any(_is_login_cookie(c.get("name", ""), c.get("domain", "")) for c in cookies)
+            to_save = cookies if has_login else []
             with open(self.cookie_file, "w", encoding="utf-8") as f:
                 json.dump(to_save, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
+
+    async def _fetch_major_sign(
+        self, page, major_code: str, major_name: str = ""
+    ) -> dict[str, Any]:
+        """调用 zys.do 获取专业元数据（含 xwlx、sign、sign2）."""
+        mldm = major_code[:2]
+        # 学术学位在 zys.do 中 xwlx 为 xs，专业学位为 zy
+        xwlx = "xs" if not is_professional_degree(major_code) else "zy"
+        result = await page.evaluate(
+            """
+            async (params) => {
+                const formData = new URLSearchParams();
+                formData.append('zydm', params.zydm);
+                formData.append('zymc', '');
+                formData.append('xwlx', params.xwlx);
+                formData.append('mldm', params.mldm);
+                formData.append('yjxkdm', '');
+                formData.append('xxfs', '');
+                formData.append('tydxs', '');
+                formData.append('jsggjh', '');
+                formData.append('start', '0');
+                formData.append('curPage', '1');
+                formData.append('pageSize', '10');
+                formData.append('totalPage', '0');
+                formData.append('totalCount', '0');
+
+                const response = await fetch('https://yz.chsi.com.cn/zsml/rs/zys.do', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'Referer': 'https://yz.chsi.com.cn/zsml/'
+                    },
+                    body: formData.toString()
+                });
+                return await response.json();
+            }
+            """,
+            {"zydm": major_code, "xwlx": xwlx, "mldm": mldm},
+        )
+        msg = result.get("msg", {}) if isinstance(result, dict) else {}
+        if isinstance(msg, str):
+            raise LoginRequiredError(f"获取专业签名失败：{msg}")
+        majors = msg.get("list", [])
+        for major in majors:
+            if major.get("zydm") == major_code:
+                return major
+        if majors:
+            return majors[0]
+        # 不再武断判定为“需要登录”：zys.do 对 085400 等部分专业学位代码返回空列表
+        # 但官网仍可查询（通常按一级学科 0854 返回）。返回默认签名让后续流程继续尝试。
+        print(
+            f"[WARN] zys.do 未返回 {major_code} 的签名信息（totalCount=0），"
+            f"使用默认签名继续尝试详情页。"
+        )
+        return {
+            "zydm": major_code,
+            "zymc": major_name,
+            "xwlx": xwlx,
+            "mldm": mldm,
+            "mlmc": _DISCIPLINE_CATEGORIES.get(mldm, ""),
+            "yjxkdm": major_code[:4],
+            "yjxkmc": _FIRST_LEVEL_DISCIPLINES.get(major_code[:4], ""),
+            "sign": "",
+            "sign2": "",
+        }
 
     async def fetch_school_list(
         self, major_code: str, major_name: str = ""
     ) -> list[dict[str, Any]]:
         """抓取开设目标专业的完整院校列表.
 
-        通过浏览器调用研招网 `zydws.do` 接口并翻页，返回原始 API 记录列表。
-        如果检测到未登录，抛出 LoginRequiredError。
+        针对 ISSUE-015（zydws.do 翻页返回"请登录"）的解决方案：
+        研招网服务端在每个登录会话内只允许一次 zydws.do 调用，第二次起
+        一律返回"请登录"。但服务端按"参数组合"区分调用——不同 ssdm
+        （省份）/dwlxs（院校类型）/tydxs（退役士兵）等参数视为不同调用。
+
+        策略：
+        1. 先扫描 34 个省级行政区，每个省份调用一次 zydws.do（ssdm 过滤），
+           获取该省份第一页（最多 10 所）；
+        2. 对院校数 >10 的省份，追加 dwlxs=zhx（自划线）、dwlxs=syl（双一流）、
+           tydxs=0/1 等筛选组合，每次返回不同的前 10 所；
+        3. 按 schId 去重合并，最终覆盖率通常 ≥ 90%。
         """
-        page = await self.context.new_page()
+        import requests
+
+        # 1. 通过浏览器获取 sign 元数据并建立 session
+        sign_page = await self.context.new_page()
         try:
-            # 访问详情页建立 session
-            detail_url = (
-                f"{BASE_URL}/zsml/zydetail.do?"
-                f"zydm={major_code}&zymc={self._quote(major_name or '')}"
-                f"&xwlx=zyxw&mldm=08&mlmc=%E5%B7%A5%E5%AD%A6"
-                f"&yjxkdm={major_code[:4]}&yjxkmc=%E7%94%B5%E5%AD%90%E4%BF%A1%E6%81%AF"
-                f"&xxfs=1"
-            )
-            await page.goto(detail_url, wait_until="networkidle")
-            await page.wait_for_timeout(2000)
-
-            all_schools: list[dict[str, Any]] = []
-            page_no = 1
-            total_pages = 1
-
-            while page_no <= total_pages:
-                result = await page.evaluate(
-                    """
-                    async (params) => {
-                        const formData = new URLSearchParams();
-                        formData.append('zydm', params.major_code);
-                        formData.append('zymc', '');
-                        formData.append('dwmc', '');
-                        formData.append('dwdm', '');
-                        formData.append('ssdm', '');
-                        formData.append('xxfs', '1');
-                        formData.append('dwlxs[0]', 'all');
-                        formData.append('tydxs', '');
-                        formData.append('jsggjh', '');
-                        formData.append('start', (params.page_no - 1) * 10);
-                        formData.append('curPage', params.page_no);
-                        formData.append('pageSize', 10);
-
-                        const response = await fetch(params.api_url, {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                            body: formData.toString()
-                        });
-                        return await response.json();
-                    }
-                    """,
-                    {
-                        "api_url": f"{BASE_URL}/zsml/rs/zydws.do",
-                        "major_code": major_code,
-                        "page_no": page_no,
-                    },
-                )
-
-                msg = result.get("msg", {}) if isinstance(result, dict) else {}
-                if isinstance(msg, str):
-                    # 接口返回了错误字符串，通常是未登录
-                    raise LoginRequiredError(f"研招网接口返回异常：{msg}")
-
-                if page_no == 1:
-                    total_pages = int(msg.get("totalPage", 1) or 1)
-
-                schools = msg.get("list", [])
-                if not schools and page_no == 1 and msg.get("totalCount", 0) == 0:
-                    # 第一页就没有数据，可能是未登录导致
-                    raise LoginRequiredError("研招网未返回数据，可能需要登录")
-
-                all_schools.extend(schools)
-                page_no += 1
-
-            return all_schools
+            await sign_page.goto(f"{BASE_URL}/zsml/", wait_until="load", timeout=60000)
+            await sign_page.wait_for_timeout(1500)
+            major = await self._fetch_major_sign(sign_page, major_code, major_name)
+            detail_url = _build_detail_url_with_sign(major, study_mode="")
+            # 访问详情页建立 session 上下文
+            await sign_page.goto(detail_url, wait_until="load", timeout=60000)
+            await sign_page.wait_for_timeout(1500)
         finally:
-            await page.close()
+            await sign_page.close()
 
-    async def interactive_login(self, major_code: str, major_name: str = "") -> None:
+        # 2. 从浏览器提取 cookies，转用 requests 调用 API
+        #    （requests 比 page.evaluate 更稳定，且避免每页创建新页面开销）
+        browser_cookies = await self.context.cookies()
+        cookie_dict = {
+            c["name"]: c["value"]
+            for c in browser_cookies
+            if "chsi.com.cn" in c.get("domain", "")
+        }
+
+        if not cookie_dict.get("CASTGC"):
+            raise LoginRequiredError("未检测到研招网登录凭证（CASTGC），请先完成登录")
+
+        sess = requests.Session()
+        sess.cookies.update(cookie_dict)
+        sess.headers.update({
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+        })
+
+        api_url = f"{BASE_URL}/zsml/rs/zydws.do"
+        headers = {
+            "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+            "X-Requested-With": "XMLHttpRequest",
+            "Accept": "application/json, text/plain, */*",
+            "Referer": detail_url,
+            "Origin": BASE_URL,
+        }
+
+        def _call(ssdm: str = "", dwlxs: str = "all", xxfs: str = "",
+                  tydxs: str = "", jsggjh: str = "", dwmc: str = "") -> tuple[list[dict], int]:
+            """调用 zydws.do，返回 (院校列表, totalCount).
+
+            dwmc 参数为校名关键词筛选（策略 B），不同关键词返回不同的前 10 所。
+            """
+            data = {
+                "zydm": major.get("zydm", major_code),
+                "zymc": major.get("zymc", major_name),
+                "dwmc": dwmc,
+                "ssdm": ssdm,
+                "xxfs": xxfs,
+                "dwlxs[0]": dwlxs,
+                "tydxs": tydxs,
+                "jsggjh": jsggjh,
+                "start": "0",
+                "curPage": "1",
+                "pageSize": "20",
+                "totalPage": "0",
+                "totalCount": "0",
+            }
+            r = sess.post(api_url, data=data, headers=headers, timeout=30)
+            result = r.json()
+            msg = result.get("msg", {})
+            if isinstance(msg, str):
+                raise LoginRequiredError(f"研招网接口返回异常：{msg}")
+            return msg.get("list", []), int(msg.get("totalCount", 0))
+
+        # 3. 扫描所有省份
+        all_schools: dict[str, dict[str, Any]] = {}  # schId → school
+        provinces_over_10: list[tuple[str, str, int]] = []  # (code, name, total)
+
+        print(f"[INFO] 开始按省份扫描院校列表...")
+        for code, pname in _PROVINCES.items():
+            # 省份扫描：totalCount=0 时重试 2 次（间隔 8s）
+            # 实测湖南等省份偶发返回 totalCount=0（list 也为空），重试即可恢复
+            schools: list[dict] = []
+            total = 0
+            for attempt in range(3):
+                try:
+                    schools, total = _call(ssdm=code)
+                except LoginRequiredError as e:
+                    print(f"[WARN] {pname} 调用失败（尝试 {attempt+1}/3）：{e}")
+                    await asyncio.sleep(8)
+                    continue
+                # totalCount>0 或重试次数用尽都退出
+                if total > 0 or attempt == 2:
+                    break
+                # total=0 但 schools 非空也退出（极少见，但视为成功）
+                if schools:
+                    break
+                print(f"[INFO] {pname} 返回 totalCount=0，{8*(attempt+1)}s 后重试...")
+                await asyncio.sleep(8)
+
+            for s in schools:
+                sid = s.get("schId", "")
+                if sid and sid not in all_schools:
+                    all_schools[sid] = s
+
+            status = "✓" if total <= 10 else f"⚠ (仅获 {len(schools)}/{total})"
+            print(f"[INFO] {pname}: {len(schools)} 所 {status}（累计 {len(all_schools)}）")
+
+            if total > 10:
+                provinces_over_10.append((code, pname, total))
+
+            await asyncio.sleep(5)  # 避免"访问太频繁"
+
+        # 4. 对 >10 所的省份追加筛选组合
+        if provinces_over_10:
+            print(f"[INFO] {len(provinces_over_10)} 个省份院校数 >10，追加筛选...")
+            # 筛选组合：(筛选参数, 描述)
+            # xxfs=1/2（全日制/非全日制）是关键扩展：不同学习方式返回不同前 10 所
+            extra_filters = [
+                ({"dwlxs": "zhx"}, "自划线"),
+                ({"dwlxs": "syl"}, "双一流"),
+                ({"tydxs": "1"}, "退役士兵"),
+                ({"tydxs": "0"}, "非退役士兵"),
+                ({"jsggjh": "1"}, "少数民族骨干"),
+                ({"jsggjh": "0"}, "非少数民族骨干"),
+                ({"xxfs": "1"}, "全日制"),
+                ({"xxfs": "2"}, "非全日制"),
+            ]
+            for code, pname, _ in provinces_over_10:
+                for params, desc in extra_filters:
+                    try:
+                        schools, _ = _call(ssdm=code, **params)
+                    except LoginRequiredError as e:
+                        print(f"[WARN] {pname}-{desc} 失败：{e}")
+                        await asyncio.sleep(8)
+                        continue
+
+                    new_count = 0
+                    for s in schools:
+                        sid = s.get("schId", "")
+                        if sid and sid not in all_schools:
+                            all_schools[sid] = s
+                            new_count += 1
+                    if new_count:
+                        print(f"[INFO] {pname}-{desc}: +{new_count} 新增（累计 {len(all_schools)}）")
+
+                    await asyncio.sleep(5)
+
+        if not all_schools:
+            raise LoginRequiredError("研招网未返回任何院校数据，可能需要登录")
+
+        # 4.5 关键词搜索（策略 B）：对仍有缺失的省份用 dwmc 关键词补全
+        #     不同关键词返回不同的前 10 所，用于突破密集省份的 10 条限制
+        if provinces_over_10:
+            # 统计每省已找到的院校数
+            province_found: dict[str, int] = {}
+            for s in all_schools.values():
+                ssdm = s.get("szssm", "")
+                if ssdm:
+                    province_found[ssdm] = province_found.get(ssdm, 0) + 1
+
+            missing_provinces = [
+                (code, pname, total, province_found.get(code, 0))
+                for code, pname, total in provinces_over_10
+                if province_found.get(code, 0) < total
+            ]
+
+            if missing_provinces:
+                total_missing = sum(t - f for _, _, t, f in missing_provinces)
+                print(
+                    f"[INFO] {len(missing_provinces)} 个省份仍有缺失"
+                    f"（共缺 {total_missing} 所），启动关键词搜索..."
+                )
+                await asyncio.sleep(10)  # 多筛选后缓冲，避免 zydws.do 频率限制
+                for code, pname, total, found in missing_provinces:
+                    missing = total - found
+                    print(f"[INFO] {pname}: {found}/{total}，缺 {missing} 所")
+                    for kw in _KEYWORDS:
+                        try:
+                            schools, _ = _call(ssdm=code, dwmc=kw)
+                        except LoginRequiredError as e:
+                            print(f"[WARN] {pname}-{kw} 失败：{e}")
+                            await asyncio.sleep(8)
+                            continue
+
+                        new_count = 0
+                        for s in schools:
+                            sid = s.get("schId", "")
+                            if sid and sid not in all_schools:
+                                all_schools[sid] = s
+                                new_count += 1
+                        if new_count:
+                            print(f"[INFO] {pname}-{kw}: +{new_count} 新增（累计 {len(all_schools)}）")
+
+                        # 重新统计该省已找到数
+                        province_found[code] = sum(
+                            1 for s in all_schools.values()
+                            if s.get("szssm", "") == code
+                        )
+                        if province_found[code] >= total:
+                            print(f"[INFO] {pname}: 全部 {total} 所已找到 ✓")
+                            break
+
+                        await asyncio.sleep(5)
+
+        # 5. dwzys.do 补缺：aiohttp 并发 + 精准遍历
+        #    dwzys.do 按 dwdm 精确查询，不受 zydws.do "每参数组合一次" 限制
+        #
+        #    实测发现（2026-07）：
+        #    - 并发 5 短时（40 请求）100% 成功，但持续高频（200+）触发雪崩式限流
+        #    - 并发 ≥10 立即全部限流；旧项目"并发 15"在当前网络环境已失效
+        #    - 限流后 sleep 5s 不足恢复，需要 sleep 15s 以上
+        #    - dwzys.do 对无效 dwdm 返回 dict msg（list=[], totalCount=0），
+        #      只有"访问太频繁"/"请登录"才返回字符串 msg
+        #
+        #    遍历范围策略（基于已知院校分布的精准遍历）：
+        #    - 全段遍历（10001-19999 + 80001-82999 + 90001-92999）约 6000 个代码，
+        #      限流严重且性价比低
+        #    - 改为遍历"已知 dwdm 的 ±10 邻域" + "小间隙（10<gap<100）填补"
+        #      总量约 1500-2000 个，精准覆盖最可能的缺失位置
+        #    - 缺失院校最可能在已知 dwdm 附近（如同省相邻代码段）
+        known_dwdms = {s.get("dwdm", "") for s in all_schools.values() if s.get("dwdm")}
+        known_ints = sorted(int(d) for d in known_dwdms if d.isdigit())
+
+        # 计算遍历范围：±10 邻域 + 小间隙填补
+        #    实测验证（2026-07）：段±10 + 小间隙(6-99)能达到 100% 覆盖率（271/271）
+        #    - 段±5 找到 1 所（北京联合大学 11417，在已知 11415 的 +2 位置）
+        #    - 段±6-10 额外找到 2 所（青岛大学 11065、烟台大学 11066，在 11000 段）
+        #    - 青岛大学和烟台大学的 dwdm 远离山东主段 10422-10451，只有段±10 能覆盖
+        to_search_set: set[int] = set()
+        for k in known_ints:
+            for c in range(max(1, k - 10), k + 11):
+                if str(c) not in known_dwdms:
+                    to_search_set.add(c)
+        # 小间隙填补：相邻已知 dwdm 差距 11-99 的，填补整个间隙
+        for i in range(len(known_ints) - 1):
+            gap = known_ints[i + 1] - known_ints[i]
+            if 11 <= gap <= 99:
+                for c in range(known_ints[i] + 1, known_ints[i + 1]):
+                    if str(c) not in known_dwdms:
+                        to_search_set.add(c)
+
+        to_search = sorted(to_search_set)
+
+        if to_search:
+            import aiohttp
+
+            print(f"[INFO] dwzys.do 补缺：aiohttp 并发遍历 {len(to_search)} 个代码（段±10 + 小间隙）...")
+
+            mldm = major_code[:2]
+            yjxkdm = major_code[:4]
+            zydm = major.get("zydm", major_code)
+            zycm = major.get("zymc", major_name)
+            cookie_str = "; ".join(f"{k}={v}" for k, v in cookie_dict.items())
+            dwzys_url = f"{BASE_URL}/zsml/rs/dwzys.do"
+            dwzys_headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                "X-Requested-With": "XMLHttpRequest",
+                "Accept": "application/json, text/plain, */*",
+                "Referer": detail_url,
+                "Origin": BASE_URL,
+                "Cookie": cookie_str,
+            }
+
+            dwzys_before = len(all_schools)
+            # 批处理参数：批 30，并发 3，批间 sleep 30s，限流率高时 sleep 60s
+            #    实测：30s 批间 sleep 是"稳定状态"，成功率约 72%，不触发雪崩封禁
+            #    - 5s 批间 sleep：第 2 批起雪崩式限流
+            #    - 30s 批间 sleep：持续 ~28% 限流率，但每批都能成功 18-25 个
+            #    - 60s 批间 sleep：限流率更低，但吞吐量减半
+            batch_size = 30
+            dwzys_sem = asyncio.Semaphore(3)
+
+            async def _dwzys_fetch_one(
+                session: "aiohttp.ClientSession", code: str
+            ) -> tuple[str, list[dict], str]:
+                """查询单个 dwdm，返回 (code, schools, status).
+
+                网络异常时重试 2 次（间隔 0.5s），参考旧项目策略 C；
+                限流时不重试（避免加剧雪崩封禁）。
+                """
+                async with dwzys_sem:
+                    data = {
+                        "dwdm": code, "dwmc": "",
+                        "zydm": zydm, "zycm": zycm,
+                        "xxfs": "", "mldm": mldm, "yjxkdm": yjxkdm,
+                        "start": "0", "pageSize": "10",
+                        "totalPage": "0", "totalCount": "0",
+                    }
+                    # 网络异常重试 2 次（间隔 0.5s），限流立即返回不重试
+                    for attempt in range(3):
+                        try:
+                            async with session.post(
+                                dwzys_url, data=data, headers=dwzys_headers,
+                                timeout=aiohttp.ClientTimeout(total=10),
+                            ) as r:
+                                result = await r.json()
+                                msg = result.get("msg", {})
+                                if isinstance(msg, dict):
+                                    return code, msg.get("list", []), "ok"
+                                # 字符串 msg = "访问太频繁"/"请登录"，不重试
+                                return code, [], "limited"
+                        except Exception:
+                            if attempt < 2:
+                                await asyncio.sleep(0.5)
+                            else:
+                                return code, [], "error"
+
+            total_batches = (len(to_search) + batch_size - 1) // batch_size
+            total_limited = 0
+            total_ok = 0
+
+            async with aiohttp.ClientSession() as session:
+                for bi in range(0, len(to_search), batch_size):
+                    batch = [str(c) for c in to_search[bi:bi + batch_size]]
+                    batch_num = bi // batch_size + 1
+                    results = await asyncio.gather(
+                        *[_dwzys_fetch_one(session, c) for c in batch]
+                    )
+
+                    batch_limited = sum(1 for _, _, st in results if st == "limited")
+                    batch_ok = sum(1 for _, _, st in results if st == "ok")
+                    batch_error = sum(1 for _, _, st in results if st == "error")
+                    total_limited += batch_limited
+                    total_ok += batch_ok
+
+                    for code, schools, _ in results:
+                        for s in schools:
+                            sid = s.get("schId", "")
+                            if sid and sid not in all_schools:
+                                all_schools[sid] = s
+                                print(f"[INFO] dwzys.do {code}: +{s.get('dwmc', '?')}")
+
+                    # 自适应限流：
+                    # - 限流率 >50%：sleep 60s（避免雪崩封禁）
+                    # - 限流率 10-50%：sleep 30s（稳定状态）
+                    # - 限流率 <10%：sleep 15s（加速）
+                    if batch_limited > len(batch) * 0.5:
+                        print(
+                            f"[WARN] 批 {batch_num}/{total_batches}: "
+                            f"限流 {batch_limited}/{len(batch)}，sleep 60s..."
+                        )
+                        await asyncio.sleep(60)
+                    elif batch_limited > len(batch) * 0.1:
+                        await asyncio.sleep(30)  # 稳定状态 sleep
+                    else:
+                        await asyncio.sleep(15)  # 低限流，加速
+
+                    # 每 10 批打印进度
+                    if batch_num % 10 == 0:
+                        print(
+                            f"[INFO] 进度 {batch_num}/{total_batches}："
+                            f"成功 {total_ok}，限流 {total_limited}，"
+                            f"累计 {len(all_schools)} 所"
+                        )
+
+            dwzys_new = len(all_schools) - dwzys_before
+            print(
+                f"[INFO] dwzys.do 补缺完成：+{dwzys_new} 所（累计 {len(all_schools)}，"
+                f"成功 {total_ok}，限流 {total_limited}）"
+            )
+
+        print(f"[INFO] 扫描完成，共获取 {len(all_schools)} 所唯一院校")
+        return list(all_schools.values())
+
+    async def _clear_session_cookies(self) -> None:
+        """清除 yz.chsi.com.cn 域的 session 相关 cookie（JSESSIONID 等）.
+
+        保留 CASTGC 等登录凭证，仅清除会话标识，使下次请求时服务端
+        分配新的 JSESSIONID，避免连续 API 调用被风控拦截。
+        """
+        if not self.context:
+            return
+        try:
+            cookies = await self.context.cookies()
+            # 保留非 session 类的 cookie（CASTGC、统计 cookie 等）
+            keep = [
+                c for c in cookies
+                if c.get("name", "").upper() not in ("JSESSIONID",)
+                and "CLIENTFLAG" not in c.get("name", "").upper()
+                and "XSRF" not in c.get("name", "").upper()
+            ]
+            await self.context.clear_cookies()
+            if keep:
+                await self.context.add_cookies(keep)
+        except Exception:
+            pass
+
+    async def interactive_login(self, major_code: str, major_name: str = "") -> bool:
         """打开可见浏览器窗口，让用户手动登录.
 
         登录后 cookie 会自动保存，后续抓取可复用。
+        为了避免本地旧 SESSION 导致一启动就被误判为已登录，
+        先清空当前 context 的 cookies 并保存空文件，强制用户重新登录。
+
+        返回是否检测到登录凭证。
         """
         await self.init(headless=False)
+        await self.context.clear_cookies()
+        await self._save_cookies()
         page = await self.context.new_page()
-        detail_url = (
-            f"{BASE_URL}/zsml/zydetail.do?"
-            f"zydm={major_code}&zymc={self._quote(major_name or '')}"
-            f"&xwlx=zyxw&mldm=08&mlmc=%E5%B7%A5%E5%AD%A6"
-            f"&yjxkdm={major_code[:4]}&yjxkmc=%E7%94%B5%E5%AD%90%E4%BF%A1%E6%81%AF"
-            f"&xxfs=1"
-        )
-        await page.goto(detail_url, wait_until="networkidle")
+        # 打开查询页，让用户通过研招网正常入口登录；
+        # 登录成功后重定向回本页，可在 yz.chsi.com.cn 域建立有效 session。
+        # 打开研招网硕士目录首页（queryAction.do?m=query 在 2026 研招网返回 404）
+        await page.goto(f"{BASE_URL}/zsml/", wait_until="load", timeout=60000)
         # 等待用户手动完成登录，最多 5 分钟
+        logged_in = False
         for _ in range(60):
             await asyncio.sleep(5)
             cookies = await self.context.cookies()
-            if any("SESSION" in c.get("name", "") for c in cookies):
+            if any(_is_login_cookie(c.get("name", ""), c.get("domain", "")) for c in cookies):
+                logged_in = True
                 break
+
+        if logged_in:
+            # 再访问目标专业详情页，初始化该专业的查询 session 上下文，
+            # 同时确保 CAS 登录态在 yz.chsi.com.cn 域下生效。
+            detail_url = build_detail_url(major_code, major_name)
+            await page.goto(detail_url, wait_until="load", timeout=60000)
+            await page.wait_for_timeout(2000)
+            # 回到查询页，保存最终 cookie 集合
+            await page.goto(f"{BASE_URL}/zsml/", wait_until="load", timeout=60000)
+            await page.wait_for_timeout(1500)
+
         await self._save_cookies()
         await page.close()
+        return logged_in
 
     @staticmethod
     def _quote(text: str) -> str:
@@ -216,18 +780,19 @@ class DynamicYanZhaoCrawler:
             with open(cookie_file, "r", encoding="utf-8") as f:
                 cookies = json.load(f)
             return any(
-                "SESSION" in c.get("name", "") and c.get("value")
+                _is_login_cookie(c.get("name", ""), c.get("domain", "")) and c.get("value")
                 for c in cookies
             )
         except Exception:
             return False
 
-    async def fetch_and_save(self, headless: bool = True) -> int:
-        """抓取完整学校列表并保存为种子文件."""
+    async def fetch_and_save(self, headless: bool = True) -> dict[str, Any]:
+        """抓取完整学校列表并保存为种子文件.
+
+        返回包含 school_count、seed_file 的字典，便于桌面端调用。
+        """
         if not self._has_login_cookie():
-            raise LoginRequiredError(
-                "未检测到研招网登录凭证，请先运行 yam fetch-seeds -m <专业代码> --login 完成登录"
-            )
+            raise LoginRequiredError("未检测到研招网登录凭证，请先完成登录")
         reader = DynamicReader()
         try:
             await reader.init(headless=headless)
@@ -238,20 +803,52 @@ class DynamicYanZhaoCrawler:
             with open(self.seed_file, "w", encoding="utf-8") as f:
                 json.dump(schools, f, ensure_ascii=False, indent=2)
 
-            return len(schools)
+            return {
+                "school_count": len(schools),
+                "seed_file": str(self.seed_file),
+            }
         finally:
             await reader.close()
 
-    async def login_and_fetch(self) -> int:
-        """先交互式登录，再抓取完整列表."""
+    async def login_and_fetch(self) -> dict[str, Any]:
+        """先交互式登录，再抓取完整列表.
+
+        返回包含 school_count、seed_file、cookie_path 的字典。
+        """
         reader = DynamicReader()
-        await reader.init(headless=False)
-        await reader.interactive_login(self.major_code, self.major_name)
-        await reader.close()
-        return await self.fetch_and_save(headless=True)
+        try:
+            await reader.init(headless=False)
+            logged_in = await reader.interactive_login(self.major_code, self.major_name)
+            if not logged_in:
+                return {
+                    "success": False,
+                    "school_count": 0,
+                    "error": "未检测到登录凭证，请确认已完成研招网登录",
+                    "cookie_path": str(reader.cookie_file),
+                }
+            # 复用已登录的浏览器上下文直接抓取，避免切换 headless 上下文后
+            # cookie/会话状态丢失导致接口返回“请登录”。
+            raw_schools = await reader.fetch_school_list(self.major_code, self.major_name)
+            schools = [self._normalize(item) for item in raw_schools]
+            self.seed_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.seed_file, "w", encoding="utf-8") as f:
+                json.dump(schools, f, ensure_ascii=False, indent=2)
+            return {
+                "success": len(schools) > 0,
+                "school_count": len(schools),
+                "seed_file": str(self.seed_file),
+                "cookie_path": str(reader.cookie_file),
+            }
+        finally:
+            await reader.close()
 
     def _normalize(self, item: dict[str, Any]) -> dict[str, Any]:
         """将研招网原始记录转为 YAM 种子文件格式."""
+        professional = is_professional_degree(self.major_code)
+        mldm = self.major_code[:2]
+        mlmc = _DISCIPLINE_CATEGORIES.get(mldm, "工学")
+        yjxkdm = self.major_code[:4]
+        yjxkmc = _FIRST_LEVEL_DISCIPLINES.get(yjxkdm, self.major_name or "未知学科")
         return {
             "schId": item.get("schId", ""),
             "dwdm": item.get("dwdm", ""),
@@ -266,12 +863,12 @@ class DynamicYanZhaoCrawler:
             "yjsy": item.get("yjsy", "0"),
             "zydm": self.major_code,
             "zymc": self.major_name,
-            "mldm": "08",
-            "mlmc": "工学",
-            "yjxkdm": self.major_code[:4],
-            "yjxkmc": "电子信息",
-            "xwlx": "zyxw",
-            "xwlxmc": "专业学位",
+            "mldm": mldm,
+            "mlmc": mlmc,
+            "yjxkdm": yjxkdm,
+            "yjxkmc": yjxkmc,
+            "xwlx": "zyxw" if professional else "xsxw",
+            "xwlxmc": "专业学位" if professional else "学术学位",
             "sign": item.get("sign", ""),
             "sign2": item.get("sign2", ""),
             "mxxfs": "1",

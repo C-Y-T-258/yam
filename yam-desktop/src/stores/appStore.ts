@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
-export type Page = 'welcome' | 'major-management' | 'major-select' | 'crawling' | 'data-ready' | 'workspace' | 'favorites' | 'recent';
+export type Page = 'welcome' | 'major-management' | 'major-select' | 'crawling' | 'data-ready' | 'workspace' | 'favorites' | 'recent' | 'settings';
 
 export interface CrawledMajor {
   code: string;
@@ -35,6 +35,11 @@ interface AppState {
   visibleMajorCodes: string[];
   crawlTarget: CrawlTarget | null;
   enableProfessionalThreeLevelMenu: boolean;
+  /// 新采集完成但用户还没在专业管理/管理显示专业 Modal 中"看过"的专业 major_code 列表。
+  /// 由 App.tsx 监听 `crawl-synced` 事件后调用 `markMajorAsNew` 添加；
+  /// MajorManagementPage 卸载或 ManageMajorsModal 关闭时调用 `clearAllNewMajors` 清空。
+  /// 不持久化：重启后 NEW 标签消失（用户重启应用视为"已看过"）。
+  newlyAddedMajors: string[];
 
   setPage: (page: Page) => void;
   addMajor: (major: CrawledMajor) => void;
@@ -48,6 +53,9 @@ interface AppState {
   setCrawlTarget: (target: CrawlTarget | null) => void;
   setEnableProfessionalThreeLevelMenu: (enabled: boolean) => void;
   updateMajor: (code: string, updates: Partial<CrawledMajor>) => void;
+  markMajorAsNew: (code: string) => void;
+  clearNewMajor: (code: string) => void;
+  clearAllNewMajors: () => void;
 }
 
 function isClient(): boolean {
@@ -64,6 +72,7 @@ export const useAppStore = create<AppState>()(
       visibleMajorCodes: [],
       crawlTarget: null,
       enableProfessionalThreeLevelMenu: false,
+      newlyAddedMajors: [],
 
       setPage: (page) => set({ currentPage: page }),
 
@@ -123,6 +132,17 @@ export const useAppStore = create<AppState>()(
           m.code === code ? { ...m, ...updates } : m
         ),
       })),
+
+      markMajorAsNew: (code) => set((state) => {
+        if (state.newlyAddedMajors.includes(code)) return state;
+        return { newlyAddedMajors: [...state.newlyAddedMajors, code] };
+      }),
+
+      clearNewMajor: (code) => set((state) => ({
+        newlyAddedMajors: state.newlyAddedMajors.filter((c) => c !== code),
+      })),
+
+      clearAllNewMajors: () => set({ newlyAddedMajors: [] }),
     }),
     {
       name: 'yam-app-store',

@@ -136,7 +136,10 @@ export interface RecentView {
   viewed_at: number;
 }
 
-const isTauri = typeof window !== 'undefined' && (window as unknown as { isTauri?: boolean }).isTauri === true;
+export const isTauri =
+  typeof window !== 'undefined' &&
+  !!(window as unknown as { __TAURI__?: unknown; __TAURI_INTERNALS__?: unknown })
+    .__TAURI_INTERNALS__;
 
 export async function fetchSchools(majorCode: string): Promise<School[]> {
   if (isTauri) {
@@ -727,6 +730,164 @@ export async function resetCrawl(): Promise<void> {
     return;
   }
   // 浏览器环境无需操作
+}
+
+export interface LoginStatus {
+  logged_in: boolean;
+  expires_at: string | null;
+}
+
+export interface LoginResult {
+  success: boolean;
+  school_count: number;
+  error: string | null;
+}
+
+export async function checkLoginStatus(): Promise<LoginStatus> {
+  if (isTauri) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke('check_login_status');
+  }
+  return { logged_in: false, expires_at: null };
+}
+
+export async function loginYanzhao(majorCode: string): Promise<LoginResult> {
+  if (isTauri) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke('login_yanzhao', { majorCode });
+  }
+  return { success: false, school_count: 0, error: '浏览器环境不支持登录' };
+}
+
+export interface SearchedMajor {
+  zydm: string;
+  zymc: string;
+  yjxkdm: string;
+  yjxkmc: string;
+  mldm: string;
+  mlmc: string;
+  xwlx: string;
+}
+
+export interface SearchMajorsResult {
+  majors: SearchedMajor[];
+  total_count: number;
+  fetched_count: number;
+  need_login: boolean;
+  yjxkdm: string;
+  yjxkmc: string;
+  error: string | null;
+}
+
+/** 按一级学科代码实时查询研招网 zys.do 接口拿全专业（含 J/Z 自设交叉学科）.
+ * 耗时约 30-60 秒，前端通过 loading state 处理。
+ */
+export async function searchMajorsByYjxkdm(yjxkdm: string): Promise<SearchMajorsResult> {
+  if (isTauri) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke('search_majors', { yjxkdm });
+  }
+  return {
+    majors: [],
+    total_count: 0,
+    fetched_count: 0,
+    need_login: false,
+    yjxkdm,
+    yjxkmc: '',
+    error: '浏览器环境不支持实时查询',
+  };
+}
+
+/** 按专业名称关键词实时查询研招网 zys.do 接口.
+ * 适合已知名称反查代码， totalCount 通常 ≤ 10 可一次拿全。
+ */
+export async function searchMajorsByName(name: string): Promise<SearchMajorsResult> {
+  if (isTauri) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke('search_majors', { name });
+  }
+  return {
+    majors: [],
+    total_count: 0,
+    fetched_count: 0,
+    need_login: false,
+    yjxkdm: '',
+    yjxkmc: '',
+    error: '浏览器环境不支持实时查询',
+  };
+}
+
+// ============================================================================
+// 整个专业目录更新（写入 data/majors_realtime.json）
+// ============================================================================
+
+export interface UpdateCatalogProgress {
+  running: boolean;
+  current: number;
+  total: number;
+  current_yjxkdm: string;
+  current_yjxkmc: string;
+  done: boolean;
+  success_count: number;
+  failed_count: number;
+  error: string | null;
+}
+
+/** 启动整个专业目录更新任务（耗时 1-2 小时，219 个一级学科 × 单学科查询）.
+ * 任务在后台运行，前端通过 listen('catalog-update-progress', ...) 监听进度，
+ * listen('catalog-update-done', ...) 监听完成事件。
+ */
+export async function updateMajorsCatalog(login = false): Promise<void> {
+  if (isTauri) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('update_majors_catalog', { login });
+    return;
+  }
+  throw new Error('浏览器环境不支持更新专业目录');
+}
+
+export async function cancelCatalogUpdate(): Promise<void> {
+  if (isTauri) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('cancel_catalog_update');
+  }
+}
+
+export async function resetCatalogUpdate(): Promise<void> {
+  if (isTauri) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('reset_catalog_update');
+  }
+}
+
+export async function getCatalogUpdateProgress(): Promise<UpdateCatalogProgress> {
+  if (isTauri) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke('get_catalog_update_progress');
+  }
+  return {
+    running: false,
+    current: 0,
+    total: 0,
+    current_yjxkdm: '',
+    current_yjxkmc: '',
+    done: false,
+    success_count: 0,
+    failed_count: 0,
+    error: null,
+  };
+}
+
+/** 读取本地 majors_realtime.json 内容.
+ * 返回 null 表示文件不存在（应回退到本地静态 majors.ts）。
+ * 返回字符串时由调用方 JSON.parse 解析。
+ */
+export async function readMajorsCatalog(): Promise<string | null> {
+  if (isTauri) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke('read_majors_catalog');
+  }
+  return null;
 }
 
 export async function clearRecentViews(): Promise<void> {

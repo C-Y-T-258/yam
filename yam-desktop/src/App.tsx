@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useAppStore, type Page } from './stores/appStore';
-import { fetchAvailableMajors } from './lib/db';
+import { fetchAvailableMajors, isTauri, resetCrawl } from './lib/db';
 import {
   ACADEMIC_CATEGORIES,
   PROFESSIONAL_CATEGORIES,
@@ -15,7 +15,15 @@ import { DataReadyPage } from './pages/DataReadyPage';
 import { WorkspacePage } from './pages/WorkspacePage';
 import { FavoritesPage, RecentPage } from './pages/Modals';
 import { ManageMajorsModal, CompareModal } from './pages/Modals';
+import { SettingsPage } from './pages/SettingsPage';
 import { BackgroundTaskPanel } from './components/BackgroundTaskPanel';
+
+// 后端 emit 的 `crawl-synced` 事件 payload，对应 Rust 端 `CrawlSyncedPayload`
+interface CrawlSyncedPayload {
+  major_code: string;
+  success: boolean;
+  sync_error: string | null;
+}
 
 function findMajorName(code: string): string {
   // 1. 学术学位：精确匹配 4 位一级学科或 6 位专业代码
@@ -56,7 +64,6 @@ export default function App() {
   // On desktop, auto-detect majors already synced to Tauri DB.
   useEffect(() => {
     if (initialized && crawledMajors.length > 0) return;
-    const isTauri = typeof window !== 'undefined' && (window as unknown as { isTauri?: boolean }).isTauri === true;
     if (!isTauri) {
       setInitialized(true);
       return;
@@ -88,10 +95,68 @@ export default function App() {
   // URL hash navigation for testing
   useEffect(() => {
     const hash = window.location.hash.slice(1) as Page;
-    if (hash && ['welcome', 'major-management', 'major-select', 'crawling', 'data-ready', 'workspace', 'favorites', 'recent'].includes(hash)) {
+    if (hash && ['welcome', 'major-management', 'major-select', 'crawling', 'data-ready', 'workspace', 'favorites', 'recent', 'settings'].includes(hash)) {
       setPage(hash);
     }
   }, [setPage]);
+
+  // Expose a minimal debug helper for automated desktop testing
+  useEffect(() => {
+    (window as unknown as Record<string, unknown>).yamSetCrawlTarget = async (
+      code: string,
+      name: string
+    ) => {
+      await resetCrawl();
+      useAppStore.getState().setCrawlTarget({ code, name });
+      useAppStore.getState().setPage('crawling');
+    };
+  }, []);
+
+  // 监听后端 `crawl-synced` 事件：采集完成且数据已同步进 SQLite 后触发。
+  // 不刷新工作区页面（避免打断用户当前筛选/分页状态），仅 addMajor + markMajorAsNew
+  // 让用户在专业管理 / 管理显示专业 Modal 打开时看到新专业置顶 + NEW 标签。
+  useEffect(() => {
+    if (!isTauri) return;
+    let unlisten: (() => void) | null = null;
+    (async () => {
+      const { listen } = await import('@tauri-apps/api/event');
+      unlisten = await listen<CrawlSyncedPayload>('crawl-synced', (event) => {
+        const { major_code, success, sync_error } = event.payload;
+        const store = useAppStore.getState();
+        if (!success) {
+          console.error('后端同步失败:', sync_error);
+          // 错误已通过 CrawlProgress.error 体现（BackgroundTaskPanel / CrawlingPage 会显示）
+          return;
+        }
+        fetchAvailableMajors()
+          .then((majors) => {
+            const info = majors.find((m) => m.major_code === major_code);
+            if (!info) return;
+            const exists = store.crawledMajors.some((m) => m.code === major_code);
+            if (!exists) {
+              store.addMajor({
+                code: major_code,
+                name: findMajorName(major_code),
+                dataVersion: '2026',
+                lastUpdated: '刚刚',
+                schoolCount: info.school_count,
+                dbSize: '-',
+              });
+            } else {
+              store.updateMajor(major_code, {
+                schoolCount: info.school_count,
+                lastUpdated: '刚刚',
+              });
+            }
+            store.markMajorAsNew(major_code);
+          })
+          .catch((err) => console.error('加载已同步专业失败:', err));
+      });
+    })();
+    return () => {
+      unlisten?.();
+    };
+  }, []);
 
   // Check if we have data to determine initial page
   const hasData = crawledMajors.length > 0;
@@ -113,6 +178,8 @@ export default function App() {
         return <FavoritesPage />;
       case 'recent':
         return <RecentPage />;
+      case 'settings':
+        return <SettingsPage />;
       default:
         return <WelcomePage />;
     }

@@ -26,6 +26,8 @@ export function TopNav({ activeTab = 'workspace' }: TopNavProps) {
       setPage('crawling');
     } else if (tab === 'workspace') {
       setPage('workspace');
+    } else if (tab === 'settings') {
+      setPage('settings');
     }
   };
 
