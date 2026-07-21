@@ -398,10 +398,58 @@ export function SettingsPage() {
                       </div>
                     )}
 
-                    {/* 当前学科 */}
+                    {/* 当前学科（保留作为快速参考） */}
                     {isRunning && progress.current_yjxkdm && (
                       <div className="mt-2 text-xs text-gray-500">
                         当前：{progress.current_yjxkdm} {progress.current_yjxkmc}
+                      </div>
+                    )}
+
+                    {/* ISSUE-023：批次内并发项实时状态卡片 */}
+                    {isRunning && progress.batch_items && progress.batch_items.length > 0 && (
+                      <div className="mt-3">
+                        {progress.total_batches > 0 && (
+                          <div className="text-xs text-gray-500 mb-1.5">
+                            批次 {progress.batch_num}/{progress.total_batches}（{progress.batch_items.length} 个学科并发）
+                          </div>
+                        )}
+                        <div className="flex flex-wrap gap-1.5">
+                          {progress.batch_items.map((item) => {
+                            const statusColor =
+                              item.status === 'done'
+                                ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                                : item.status === 'failed'
+                                ? 'bg-red-50 border-red-200 text-red-600'
+                                : item.status === 'running'
+                                ? 'bg-blue-50 border-blue-200 text-blue-700'
+                                : 'bg-gray-50 border-gray-200 text-gray-500';
+                            return (
+                              <motion.div
+                                key={item.yjxkdm}
+                                layout
+                                initial={{ opacity: 0, scale: 0.9 }}
+                                animate={{ opacity: 1, scale: 1 }}
+                                className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-mono border ${statusColor}`}
+                                title={item.detail || item.yjxkmc}
+                              >
+                                {item.status === 'running' && (
+                                  <Loader2 size={11} className="animate-spin" />
+                                )}
+                                {item.status === 'done' && <CheckCircle2 size={11} />}
+                                {item.status === 'failed' && <AlertCircle size={11} />}
+                                {item.status === 'pending' && (
+                                  <span className="w-[11px] h-[11px] rounded-full bg-current opacity-40" />
+                                )}
+                                <span className="font-sans">{item.yjxkdm}</span>
+                                {item.detail && (
+                                  <span className="font-sans opacity-70 truncate max-w-[120px]">
+                                    {item.detail}
+                                  </span>
+                                )}
+                              </motion.div>
+                            );
+                          })}
+                        </div>
                       </div>
                     )}
 

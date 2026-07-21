@@ -390,14 +390,19 @@ class MajorsSearcher:
             except Exception:
                 pass
 
-            # === 第 3 步：枚举 zydm 列表（同一 page 内连续调）===
-            # 6 位 zydm 候选：基础学术代码（XX0XX0-9）+ J/Z 自设/交叉学科代码
-            candidate_zydms: list[str] = []
-            for i in range(10):
-                candidate_zydms.append(f"{yjxkdm}0{i}")
-            for suffix_char in ["J", "Z"]:
-                for i in range(10):
-                    candidate_zydms.append(f"{yjxkdm}{suffix_char}{i}")
+            # === 第 3 步：分段枚举 zydm 列表（同 page 内连续调，分段 break 优化）===
+            # 6 位 zydm 候选分 3 段：
+            # - base (XX00-XX09)：基础学术代码，连续 5 个真正空响应就 break
+            # - J (XXJ0-XXJ9)：J 自设学科，连续 3 个真正空响应就 break
+            # - Z (XXZ0-XXZ9)：Z 交叉学科，连续 3 个真正空响应就 break
+            # 每段单独计数，避免某段全空时拖累下一段。
+            # ISSUE-023: 大部分 yjxkdm 只有 1-5 个有效 zydm，原 30 个全查浪费时间。
+            # 网络错误（err 非空，如限流）不计入"连续空"，避免误 break 漏掉后续数据。
+            segments: list[tuple[list[str], int]] = [
+                ([f"{yjxkdm}0{i}" for i in range(10)], 5),  # base
+                ([f"{yjxkdm}J{i}" for i in range(10)], 3),  # J 自设
+                ([f"{yjxkdm}Z{i}" for i in range(10)], 3),  # Z 交叉
+            ]
 
             # totalCount>10 的 zydm 用 8 种 combo 拆分（在同一 page 内连续调）
             combos_for_split = [
@@ -462,25 +467,36 @@ class MajorsSearcher:
                     lst, total, err = await _single_call()
                 return lst, total, err
 
-            for zydm in candidate_zydms:
-                lst, total, err = await call_with_retry(zydm)
-                if err:
-                    # 跳过该 zydm，继续下一个
-                    continue
-                add_unique(lst)
+            # 分段枚举：每段内连续 N 个真正空响应就 break，进入下一段
+            for candidates, empty_threshold in segments:
+                consecutive_empty = 0
+                for zydm in candidates:
+                    lst, total, err = await call_with_retry(zydm)
+                    if err:
+                        # 网络错误（限流等）：跳过但不计入"连续空"
+                        continue
+                    if not lst and total == 0:
+                        # 真正空响应：计数
+                        consecutive_empty += 1
+                        if consecutive_empty >= empty_threshold:
+                            break  # 跳出当前段，进入下一段
+                        continue
+                    # 有数据：重置连续空计数
+                    consecutive_empty = 0
+                    add_unique(lst)
 
-                # 如果 total > 10，逐个尝试组合直到拿全该 zydm
-                if total > 10:
-                    target_for_zydm = total
-                    for combo in combos_for_split:
-                        current = sum(1 for m in majors if m["zydm"] == zydm)
-                        if current >= target_for_zydm:
-                            break
-                        lst2, _, _ = await call_with_retry(zydm, **combo)
-                        add_unique(lst2)
-                        await asyncio.sleep(0.1)
+                    # 如果 total > 10，逐个尝试组合直到拿全该 zydm
+                    if total > 10:
+                        target_for_zydm = total
+                        for combo in combos_for_split:
+                            current = sum(1 for m in majors if m["zydm"] == zydm)
+                            if current >= target_for_zydm:
+                                break
+                            lst2, _, _ = await call_with_retry(zydm, **combo)
+                            add_unique(lst2)
+                            await asyncio.sleep(0.1)
 
-                await asyncio.sleep(0.1)
+                    await asyncio.sleep(0.1)
 
             return {
                 "majors": majors,

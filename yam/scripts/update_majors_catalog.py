@@ -259,10 +259,22 @@ async def update_all_majors(login: bool = False, resume: bool = False) -> dict[s
     async def _process_one(
         yjxkdm: str, yjxkmc: str, mldm: str, mlmc: str
     ) -> dict[str, Any]:
-        """单个 yjxkdm 并发任务单元：调 search_by_yjxkdm，返回结果或错误."""
+        """单个 yjxkdm 并发任务单元：调 search_by_yjxkdm，返回结果或错误.
+
+        同时输出 YAM_MAJORS_UPDATE_BATCH_ITEM 协议行让前端能展示批次内每个 yjxkdm 的实时状态。
+        """
+        # 通知前端：该 yjxkdm 开始处理
+        print(
+            f"YAM_MAJORS_UPDATE_BATCH_ITEM {yjxkdm} running {yjxkmc}",
+            flush=True,
+        )
         try:
             result = await searcher.search_by_yjxkdm(yjxkdm)
         except Exception as e:
+            print(
+                f"YAM_MAJORS_UPDATE_BATCH_ITEM {yjxkdm} failed {e}",
+                flush=True,
+            )
             return {
                 "yjxkdm": yjxkdm,
                 "yjxkmc": yjxkmc,
@@ -270,6 +282,19 @@ async def update_all_majors(login: bool = False, resume: bool = False) -> dict[s
                 "mlmc": mlmc,
                 "error": str(e),
             }
+
+        # 通知前端：该 yjxkdm 完成或需要登录
+        if result.get("need_login"):
+            print(
+                f"YAM_MAJORS_UPDATE_BATCH_ITEM {yjxkdm} failed 需要登录",
+                flush=True,
+            )
+        else:
+            majors_count = len(result.get("majors", []))
+            print(
+                f"YAM_MAJORS_UPDATE_BATCH_ITEM {yjxkdm} done 拿到 {majors_count} 个专业",
+                flush=True,
+            )
         return {
             "yjxkdm": yjxkdm,
             "yjxkmc": yjxkmc,
@@ -285,6 +310,16 @@ async def update_all_majors(login: bool = False, resume: bool = False) -> dict[s
         for batch_start in range(0, total_pending, CONCURRENCY):
             batch = pending[batch_start : batch_start + CONCURRENCY]
             batch_num = batch_start // CONCURRENCY + 1
+
+            # 通知前端：批次开始（含本批 yjxkdm 列表，前端展示 N 个并发项卡片）
+            batch_info = json.dumps(
+                [{"yjxkdm": y, "yjxkmc": m} for y, m, _, _ in batch],
+                ensure_ascii=False,
+            )
+            print(
+                f"YAM_MAJORS_UPDATE_BATCH_START {batch_num} {total_batches} {batch_info}",
+                flush=True,
+            )
             print(
                 f"YAM_MAJORS_UPDATE_PROGRESS {processed} {total} "
                 f"批次 {batch_num}/{total_batches} ({len(batch)} 个学科并发)",

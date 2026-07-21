@@ -852,6 +852,14 @@ export async function searchMajorsByName(name: string): Promise<SearchMajorsResu
 // 整个专业目录更新（写入 data/majors_realtime.json）
 // ============================================================================
 
+export interface BatchItem {
+  yjxkdm: string;
+  yjxkmc: string;
+  /** pending / running / done / failed */
+  status: string;
+  detail: string;
+}
+
 export interface UpdateCatalogProgress {
   running: boolean;
   current: number;
@@ -862,6 +870,12 @@ export interface UpdateCatalogProgress {
   success_count: number;
   failed_count: number;
   error: string | null;
+  /** ISSUE-023：当前批次号（1-based） */
+  batch_num: number;
+  /** ISSUE-023：总批次数 */
+  total_batches: number;
+  /** ISSUE-023：当前批次内的并发项列表 */
+  batch_items: BatchItem[];
 }
 
 /** 启动整个专业目录更新任务（耗时 1-2 小时，219 个一级学科 × 单学科查询）.
@@ -906,6 +920,9 @@ export async function getCatalogUpdateProgress(): Promise<UpdateCatalogProgress>
     success_count: 0,
     failed_count: 0,
     error: null,
+    batch_num: 0,
+    total_batches: 0,
+    batch_items: [],
   };
 }
 

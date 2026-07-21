@@ -1151,8 +1151,21 @@ pub async fn search_majors(
 //   YAM_MAJORS_UPDATE_WARN <code> <msg>
 //   YAM_MAJORS_UPDATE_ERROR <msg>
 //   YAM_MAJORS_UPDATE_DONE <json>
+//   YAM_MAJORS_UPDATE_BATCH_START <batch_num> <total_batches> <json_array_of_{yjxkdm,yjxkmc}>
+//   YAM_MAJORS_UPDATE_BATCH_ITEM <yjxkdm> <status> <detail>
 //
 // 耗时 1-2 小时（219 个一级学科 × 单学科查询），需要前端提供取消按钮。
+
+/// ISSUE-023：批次内单个 yjxkdm 的实时状态，前端展示为 N 个并发项卡片。
+#[derive(Clone, serde::Serialize)]
+pub struct BatchItem {
+    pub yjxkdm: String,
+    pub yjxkmc: String,
+    /// pending / running / done / failed
+    pub status: String,
+    /// 完成或失败的详情文本
+    pub detail: String,
+}
 
 pub struct UpdateCatalogProgress {
     pub running: AtomicBool,
@@ -1166,6 +1179,12 @@ pub struct UpdateCatalogProgress {
     pub error: Option<String>,
     /// 子进程 PID，用于取消时 kill
     pub child_pid: Option<u32>,
+    /// ISSUE-023：当前批次号（1-based）
+    pub batch_num: i32,
+    /// ISSUE-023：总批次数
+    pub total_batches: i32,
+    /// ISSUE-023：当前批次内的并发项列表
+    pub batch_items: Vec<BatchItem>,
 }
 
 impl Default for UpdateCatalogProgress {
@@ -1181,6 +1200,9 @@ impl Default for UpdateCatalogProgress {
             failed_count: 0,
             error: None,
             child_pid: None,
+            batch_num: 0,
+            total_batches: 0,
+            batch_items: Vec::new(),
         }
     }
 }
@@ -1198,6 +1220,9 @@ impl Clone for UpdateCatalogProgress {
             failed_count: self.failed_count,
             error: self.error.clone(),
             child_pid: self.child_pid,
+            batch_num: self.batch_num,
+            total_batches: self.total_batches,
+            batch_items: self.batch_items.clone(),
         }
     }
 }
@@ -1208,7 +1233,7 @@ impl Serialize for UpdateCatalogProgress {
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("UpdateCatalogProgress", 8)?;
+        let mut state = serializer.serialize_struct("UpdateCatalogProgress", 11)?;
         state.serialize_field("running", &self.running.load(Ordering::SeqCst))?;
         state.serialize_field("current", &self.current)?;
         state.serialize_field("total", &self.total)?;
@@ -1218,6 +1243,9 @@ impl Serialize for UpdateCatalogProgress {
         state.serialize_field("success_count", &self.success_count)?;
         state.serialize_field("failed_count", &self.failed_count)?;
         state.serialize_field("error", &self.error)?;
+        state.serialize_field("batch_num", &self.batch_num)?;
+        state.serialize_field("total_batches", &self.total_batches)?;
+        state.serialize_field("batch_items", &self.batch_items)?;
         state.end()
     }
 }
@@ -1480,7 +1508,82 @@ fn process_catalog_stdout_line(
             // 关键：标记任务结束，前端才能切换到"完成"状态
             p.done = true;
             p.running.store(false, Ordering::SeqCst);
+            // 清空批次项（任务完成，不再展示并发项卡片）
+            p.batch_items.clear();
             *last_progress_time = std::time::Instant::now();
+            let snapshot = p.clone();
+            drop(p);
+            let _ = app_handle.emit("catalog-update-progress", &snapshot);
+        }
+    } else if line.starts_with("YAM_MAJORS_UPDATE_BATCH_START ") {
+        // ISSUE-023：批次开始 - 解析本批 yjxkdm 列表，初始化 batch_items
+        // 格式: YAM_MAJORS_UPDATE_BATCH_START <batch_num> <total_batches> <json_array>
+        let rest = &line["YAM_MAJORS_UPDATE_BATCH_START ".len()..];
+        let parts: Vec<&str> = rest.splitn(3, ' ').collect();
+        if parts.len() >= 3 {
+            let batch_num = parts[0].parse::<i32>().unwrap_or(0);
+            let total_batches = parts[1].parse::<i32>().unwrap_or(0);
+            let json_str = parts[2];
+
+            let mut items: Vec<BatchItem> = Vec::new();
+            if let Ok(arr) = serde_json::from_str::<serde_json::Value>(json_str) {
+                if let Some(list) = arr.as_array() {
+                    for v in list {
+                        let yjxkdm = v.get("yjxkdm").and_then(|s| s.as_str()).unwrap_or("").to_string();
+                        let yjxkmc = v.get("yjxkmc").and_then(|s| s.as_str()).unwrap_or("").to_string();
+                        if !yjxkdm.is_empty() {
+                            items.push(BatchItem {
+                                yjxkdm,
+                                yjxkmc,
+                                status: "pending".to_string(),
+                                detail: String::new(),
+                            });
+                        }
+                    }
+                }
+            }
+
+            let mut p = state.lock().unwrap();
+            p.batch_num = batch_num;
+            p.total_batches = total_batches;
+            p.batch_items = items;
+            *last_progress_time = std::time::Instant::now();
+            let snapshot = p.clone();
+            drop(p);
+            let _ = app_handle.emit("catalog-update-progress", &snapshot);
+        }
+    } else if line.starts_with("YAM_MAJORS_UPDATE_BATCH_ITEM ") {
+        // ISSUE-023：批次内单项状态变更 - 更新对应 batch_item 的 status/detail
+        // 格式: YAM_MAJORS_UPDATE_BATCH_ITEM <yjxkdm> <status> <detail...>
+        let rest = &line["YAM_MAJORS_UPDATE_BATCH_ITEM ".len()..];
+        let parts: Vec<&str> = rest.splitn(3, ' ').collect();
+        if parts.len() >= 2 {
+            let yjxkdm = parts[0];
+            let status = parts[1];
+            let detail = parts.get(2).copied().unwrap_or("").to_string();
+
+            let mut p = state.lock().unwrap();
+            // 在 batch_items 中找匹配的 yjxkdm，更新状态
+            let mut found = false;
+            for item in p.batch_items.iter_mut() {
+                if item.yjxkdm == yjxkdm {
+                    item.status = status.to_string();
+                    item.detail = detail.clone();
+                    found = true;
+                    break;
+                }
+            }
+            // 同步更新 current_yjxkdm/current_yjxkmc（前端顶部"当前学科"也跟着变）
+            if found {
+                if status == "running" || status == "done" || status == "failed" {
+                    p.current_yjxkdm = yjxkdm.to_string();
+                    // 从 batch_items 找到 yjxkmc
+                    if let Some(item) = p.batch_items.iter().find(|i| i.yjxkdm == yjxkdm) {
+                        p.current_yjxkmc = item.yjxkmc.clone();
+                    }
+                    *last_progress_time = std::time::Instant::now();
+                }
+            }
             let snapshot = p.clone();
             drop(p);
             let _ = app_handle.emit("catalog-update-progress", &snapshot);
