@@ -10,7 +10,13 @@
     YAM_MAJORS_UPDATE_DONE <json>
 
 完成后会在 d:/yam/data/majors_realtime.json 写入完整目录。
-增量保存：每 5 个 yjxkdm 写一次 JSON，中断后可读已爬部分数据。
+增量保存：每批保存一次 JSON，中断后可读已爬部分数据。
+
+ISSUE-023 优化（httpx + Playwright 激活方案）：
+- 单 Playwright browser + 多 context 激活 session
+- 每个 yjxkdm 独立 context 拿 seed_major + cookies，然后用 httpx 接管枚举
+- httpx 独立 cookie jar 模拟独立 session，避免 Playwright multi-page session 冲突
+- CONCURRENCY=30 并发，实测 219 个 yjxkdm 约 5 分钟跑完
 """
 
 from __future__ import annotations
@@ -24,19 +30,38 @@ import re
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 MAJORS_TS = REPO_ROOT / "yam-desktop" / "src" / "data" / "majors.ts"
 OUTPUT_JSON = REPO_ROOT / "data" / "majors_realtime.json"
 PARTIAL_JSON = REPO_ROOT / "data" / "majors_realtime.partial.json"
 INCREMENTAL_SAVE_INTERVAL = 5  # 每完成 5 个 yjxkdm 保存一次（保留用于单测/兜底）
-# ISSUE-023：并发优化参数
-# 单 context 多 page 并发，每 page 各自 JSESSIONID，避免"同一会话同参组合"冲突。
-# 批间 sleep 避免触发"访问太频繁"限流。
-# 实测发现 6 并发会触发限流（5 个返回空、1 个卡在重试），降到 3 并发 + 错开请求。
-CONCURRENCY = 3  # 每批并发数（zys.do 按 IP 限流，3 并发 + 错开较安全）
-BATCH_PAUSE = 3.0  # 批间 sleep 秒（让限流恢复）
-ITEM_STAGGER_MAX = 1.5  # 批内每个 yjxkdm 启动前的随机延迟上限（秒）
+
+# ISSUE-023：httpx + Playwright 激活并发方案参数
+# CONCURRENCY=30 实测会触发 IP 级限流导致部分 yjxkdm 枚举失败（如 0270 单独跑 2 个，30 并发只拿到 1 个 fallback）。
+# 降到 15 + 限流指数退避重试（2s→4s→8s）后更稳，预计 6-8 分钟跑完 219 个。
+CONCURRENCY = 15  # 每 batch 并发数
+ZYDM_SLEEP_MS = 400  # zys.do 调用间隔，避免触发"访问太频繁"限流
+
+BASE_URL = "https://yz.chsi.com.cn"
+UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
+)
+
+# total > 10 的 zydm 用 8 种 combo 拆分获取完整列表
+_COMBOS_FOR_SPLIT = [
+    {"jsggjh": "0"},
+    {"jsggjh": "1"},
+    {"tydxs": "0"},
+    {"tydxs": "1"},
+    {"jsggjh": "0", "tydxs": "0"},
+    {"jsggjh": "0", "tydxs": "1"},
+    {"jsggjh": "1", "tydxs": "0"},
+    {"jsggjh": "1", "tydxs": "1"},
+]
 
 
 def parse_yjxkdm_list_from_majors_ts() -> list[tuple[str, str, str, str]]:
@@ -163,18 +188,305 @@ def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
+# === ISSUE-023: httpx + Playwright 激活并发方案 ===
+
+async def _call_zys_do_httpx(
+    client, zydm: str, yjxkdm: str, xwlx: str, mldm: str,
+    jsggjh: str = "", tydxs: str = "",
+) -> tuple[list[dict], int, str | None]:
+    """httpx 调用 zys.do，返回 (list, totalCount, error_msg)."""
+    import httpx
+
+    api_url = f"{BASE_URL}/zsml/rs/zys.do"
+    data = {
+        "zydm": zydm, "zymc": "", "xwlx": xwlx, "mldm": mldm,
+        "yjxkdm": yjxkdm, "xxfs": "", "tydxs": tydxs, "jsggjh": jsggjh,
+        "start": "0", "curPage": "1", "pageSize": "10",
+        "totalPage": "0", "totalCount": "0",
+    }
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Referer": f"{BASE_URL}/zsml/",
+    }
+    try:
+        r = await client.post(api_url, content=urlencode(data), headers=headers, timeout=30.0)
+    except Exception as e:
+        return [], 0, f"httpx 异常: {e}"
+    if r.status_code != 200:
+        return [], 0, f"HTTP {r.status_code}"
+    try:
+        result = r.json()
+    except Exception as e:
+        return [], 0, f"JSON 解析失败: {e}"
+    msg = result.get("msg", {})
+    if isinstance(msg, str):
+        return [], 0, msg
+    if not isinstance(msg, dict):
+        return [], 0, "msg 类型异常"
+    return msg.get("list", []) or [], int(msg.get("totalCount", 0) or 0), None
+
+
+async def _playwright_activate_session(
+    browser, yjxkdm: str, xwlx: str, mldm: str, saved_cookies: list, yjxkmc: str = "",
+) -> tuple[list[dict], int, dict[str, str], str | None]:
+    """用 Playwright 独立 context 激活 session，拿 seed_major + cookies.
+
+    返回 (first_list, total_count, cookies_dict, error_msg).
+
+    first_list 为空时（如 0779 公共卫生与预防医学，zys.do 返回空但官网有交叉学科），
+    访问详情页激活 session 后再尝试一次，仍为空则返回空让 httpx 枚举接管。
+    """
+    from urllib.parse import quote
+    initial_zydm = yjxkdm + "00"
+    context = await browser.new_context(user_agent=UA)
+    try:
+        if saved_cookies:
+            await context.add_cookies(saved_cookies)
+
+        page = await context.new_page()
+        await page.goto(f"{BASE_URL}/zsml/", wait_until="domcontentloaded", timeout=30000)
+        await page.wait_for_timeout(150)
+
+        async def _call_zys_do_initial():
+            params = {
+                "zydm": initial_zydm, "zymc": "", "xwlx": xwlx, "mldm": mldm,
+                "yjxkdm": yjxkdm, "xxfs": "", "tydxs": "", "jsggjh": "",
+                "start": "0", "curPage": "1", "pageSize": "10",
+                "totalPage": "0", "totalCount": "0",
+            }
+            result = await page.evaluate(
+                """
+                async (params) => {
+                    const formData = new URLSearchParams();
+                    for (const [k, v] of Object.entries(params)) {
+                        formData.append(k, v);
+                    }
+                    const response = await fetch('https://yz.chsi.com.cn/zsml/rs/zys.do', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                            'Referer': 'https://yz.chsi.com.cn/zsml/'
+                        },
+                        body: formData.toString()
+                    });
+                    return await response.json();
+                }
+                """,
+                params,
+            )
+            msg = result.get("msg", {}) if isinstance(result, dict) else {}
+            if isinstance(msg, str):
+                return [], 0, f"第 1 次失败: {msg}"
+            first_list = msg.get("list", []) or []
+            total = int(msg.get("totalCount", 0) or 0)
+            return first_list, total, None
+
+        first_list, total, err = await _call_zys_do_initial()
+        if err:
+            return [], 0, {}, err
+
+        # 用 seed_major 访问详情页建立 session 上下文
+        # first_list 为空时，用 yjxkdm+"00" 构造虚拟详情页 URL 激活 session，然后重试一次
+        if first_list:
+            seed = first_list[0]
+            detail_url_with_sign = (
+                f"{BASE_URL}/zsml/zydetail.do?"
+                f"zydm={seed.get('zydm', '')}"
+                f"&zymc={seed.get('zymc', '')}"
+                f"&xwlx={seed.get('xwlx', '')}"
+                f"&mldm={seed.get('mldm', '')}"
+                f"&mlmc={seed.get('mlmc', '')}"
+                f"&yjxkdm={seed.get('yjxkdm', '')}"
+                f"&yjxkmc={seed.get('yjxkmc', '')}"
+                f"&xxfs=&tydxs=&jsggjh="
+                f"&sign={seed.get('sign', '')}"
+                f"&sign2={seed.get('sign2', '')}"
+            )
+        else:
+            # first_list 为空：用 yjxkdm+"00" 构造虚拟详情页 URL 激活 session
+            # 这是为了让后续 httpx 枚举能拿到有效的 JSESSIONID
+            detail_url_with_sign = (
+                f"{BASE_URL}/zsml/zydetail.do?"
+                f"zydm={initial_zydm}"
+                f"&zymc={quote(yjxkmc)}"
+                f"&xwlx={'zyxw' if xwlx == 'zy' else 'xsxw'}"
+                f"&mldm={mldm}"
+                f"&yjxkdm={yjxkdm}"
+                f"&yjxkmc={quote(yjxkmc)}"
+                f"&xxfs=1"
+            )
+
+        try:
+            await page.goto(detail_url_with_sign, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(200)
+            await page.goto(f"{BASE_URL}/zsml/", wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(150)
+        except Exception:
+            pass
+
+        # first_list 为空时，访问详情页后重试一次（可能拿到 seed_major）
+        if not first_list:
+            first_list, total, _ = await _call_zys_do_initial()
+
+        all_cookies = await context.cookies()
+        cookies_dict = {
+            c["name"]: c["value"]
+            for c in all_cookies
+            if "chsi.com.cn" in c.get("domain", "") and c.get("value")
+        }
+        return first_list, total, cookies_dict, None
+    finally:
+        await context.close()
+
+
+async def _httpx_enumerate_yjxkdm(
+    yjxkdm: str, xwlx: str, mldm: str,
+    first_list: list[dict], cookies: dict[str, str],
+) -> tuple[list[dict], int, int]:
+    """单个 yjxkdm 的 httpx 枚举，返回 (majors, error_count, distinct_zydms).
+
+    枚举逻辑：
+    1. base XX00-XX09（连续 5 真正空响应 break）
+    2. J 自设 XXJ0-XXJ9（连续 3 真正空响应 break）
+    3. Z 交叉 XXZ0-XXZ9（连续 3 真正空响应 break）
+    4. total > 10 的 zydm 用 8 种 combo 拆分
+    5. 限流（"访问太频繁"）等待 2 秒重试 1 次
+    """
+    import httpx
+
+    initial_zydm = yjxkdm + "00"
+    all_majors: list[dict] = list(first_list)
+    distinct_zydms: set[str] = {m.get("zydm", "") for m in first_list if m.get("zydm")}
+    error_count = 0
+
+    segments: list[tuple[list[str], int]] = [
+        ([f"{yjxkdm}0{i}" for i in range(10)], 5),  # base XX00-XX09
+        ([f"{yjxkdm}J{i}" for i in range(10)], 3),  # J 自设
+        ([f"{yjxkdm}Z{i}" for i in range(10)], 3),  # Z 交叉
+    ]
+    sleep_s = ZYDM_SLEEP_MS / 1000.0
+
+    async with httpx.AsyncClient(
+        http2=False,
+        follow_redirects=True,
+        headers={"User-Agent": UA},
+        cookies=cookies,
+    ) as client:
+        # first_list 为空时，httpx 是新 session 可以重新调 initial_zydm（不会"请登录"）
+        skip_initial = bool(first_list)
+        for candidates, empty_threshold in segments:
+            consecutive_empty = 0
+            consecutive_rate_limit = 0  # 连续限流计数，避免无谓重试
+            for zydm in candidates:
+                if zydm == initial_zydm and skip_initial:
+                    continue  # 第 1 步已调过，同 session 再调返回"请登录"
+
+                # 限流指数退避重试：最多 3 次（2s → 4s → 8s）
+                lst, total, err = await _call_zys_do_httpx(
+                    client, zydm, yjxkdm, xwlx, mldm
+                )
+                await asyncio.sleep(sleep_s)
+                retry_count = 0
+                while err and "访问太频繁" in (err or "") and retry_count < 3:
+                    backoff = 2 * (2 ** retry_count)  # 2 → 4 → 8
+                    await asyncio.sleep(backoff)
+                    lst, total, err = await _call_zys_do_httpx(
+                        client, zydm, yjxkdm, xwlx, mldm
+                    )
+                    await asyncio.sleep(sleep_s)
+                    retry_count += 1
+                if err:
+                    error_count += 1
+                    if "访问太频繁" in (err or ""):
+                        consecutive_rate_limit += 1
+                        if consecutive_rate_limit >= 3:
+                            # 连续 3 次限流，放弃当前段，进入下一段
+                            break
+                    else:
+                        consecutive_rate_limit = 0
+                    continue
+                consecutive_rate_limit = 0
+                if not lst and total == 0:
+                    consecutive_empty += 1
+                    if consecutive_empty >= empty_threshold:
+                        break
+                    continue
+                consecutive_empty = 0
+                all_majors.extend(lst)
+                distinct_zydms.update(m.get("zydm", "") for m in lst if m.get("zydm"))
+
+                # total > 10 的 zydm 用 8 种 combo 拆分
+                if total > 10:
+                    target = total
+                    for combo in _COMBOS_FOR_SPLIT:
+                        current = sum(1 for m in all_majors if m.get("zydm") == zydm)
+                        if current >= target:
+                            break
+                        lst2, _, _ = await _call_zys_do_httpx(
+                            client, zydm, yjxkdm, xwlx, mldm, **combo
+                        )
+                        await asyncio.sleep(sleep_s)
+                        all_majors.extend(lst2)
+                        distinct_zydms.update(m.get("zydm", "") for m in lst2 if m.get("zydm"))
+
+    return all_majors, error_count, len(distinct_zydms)
+
+
+async def _process_one_yjxkdm(
+    browser, yjxkdm: str, yjxkmc: str, mldm: str, mlmc: str, saved_cookies: list,
+) -> dict[str, Any]:
+    """单个 yjxkdm 的完整处理：Playwright 激活 + httpx 枚举.
+
+    注意：first_list 为空时也走 httpx 枚举（如 0779 公共卫生与预防医学，
+    zys.do 返回空但 0779Z1 流行病与卫生统计学等交叉学科可枚举到）。
+    """
+    from yam.crawler.dynamic import is_professional_degree
+
+    xwlx = "zy" if is_professional_degree(yjxkdm + "00") else "xs"
+
+    first_list, total, cookies, err = await _playwright_activate_session(
+        browser, yjxkdm, xwlx, mldm, saved_cookies, yjxkmc=yjxkmc
+    )
+    if err:
+        return {
+            "yjxkdm": yjxkdm, "yjxkmc": yjxkmc, "mldm": mldm, "mlmc": mlmc,
+            "majors": [], "error": err,
+        }
+
+    # 即使 first_list 为空，也走 httpx 枚举（可能拿到交叉学科 zydm）
+    majors, err_cnt, _ = await _httpx_enumerate_yjxkdm(
+        yjxkdm, xwlx, mldm, first_list, cookies
+    )
+    # 标准化 majors
+    normalized = []
+    for m in majors:
+        normalized.append({
+            "zydm": m.get("zydm", ""),
+            "zymc": m.get("zymc", ""),
+            "yjxkdm": yjxkdm,
+            "yjxkmc": yjxkmc,
+            "mldm": mldm,
+            "mlmc": mlmc,
+            "xwlx": m.get("xwlx", xwlx),
+        })
+    return {
+        "yjxkdm": yjxkdm,
+        "yjxkmc": yjxkmc,
+        "mldm": mldm,
+        "mlmc": mlmc,
+        "majors": normalized,
+        "error": None,
+    }
+
+
 async def update_all_majors(login: bool = False, resume: bool = False) -> dict[str, Any]:
-    """遍历所有 yjxkdm，调 search_by_yjxkdm 拿完整专业列表，返回结构化目录.
+    """遍历所有 yjxkdm，用 httpx + Playwright 激活方案拿完整专业列表.
 
     resume=True 时，加载 PARTIAL_JSON 中已完成的 yjxkdm，跳过这些不重跑。
-    每完成 INCREMENTAL_SAVE_INTERVAL 个 yjxkdm 写一次 PARTIAL_JSON。
+    每批保存一次 PARTIAL_JSON，中断后可读已爬部分数据。
     """
     from yam.majors_searcher import MajorsSearcher
-    from yam.crawler.dynamic import (
-        _DISCIPLINE_CATEGORIES,
-        _FIRST_LEVEL_DISCIPLINES,
-        is_professional_degree,
-    )
+    from yam.crawler.dynamic import is_professional_degree
 
     yjxkdm_list = parse_yjxkdm_list_from_majors_ts()
     total = len(yjxkdm_list)
@@ -201,7 +513,6 @@ async def update_all_majors(login: bool = False, resume: bool = False) -> dict[s
                             "yjxkmc": yjxkmc,
                             "majors": [],
                         }
-                    # 重建 majors 原始字段
                     for m in disc["majors"]:
                         is_prof = is_professional_degree(yjxkdm + "00")
                         catalog[mldm]["disciplines"][yjxkdm]["majors"].append({
@@ -225,24 +536,36 @@ async def update_all_majors(login: bool = False, resume: bool = False) -> dict[s
     else:
         print(f"YAM_MAJORS_UPDATE_PROGRESS 0 {total} 准备开始", flush=True)
 
-    print(f"YAM_MAJORS_UPDATE_PROGRESS 0 {total} 启动浏览器", flush=True)
-    searcher = MajorsSearcher(headless=not login)
-    await searcher._ensure_browser()
-    print(f"YAM_MAJORS_UPDATE_PROGRESS 0 {total} 浏览器就绪", flush=True)
+    # 加载已保存的 cookies（登录后保存的）
+    cookie_file = Path.home() / ".yam" / "cookies" / "yz.chsi.com.cn.json"
+    saved_cookies = json.loads(cookie_file.read_text(encoding="utf-8")) if cookie_file.exists() else []
 
-    if login:
-        # 首次需要登录：打开可见浏览器，用第一个学科作为登录入口
+    # 检查登录态：cookies 中是否有 CASTGC
+    has_login_cookie = any(
+        c.get("name", "").upper() == "CASTGC" and c.get("value")
+        for c in saved_cookies
+    )
+
+    if login or not has_login_cookie:
+        # 首次需要登录：用 MajorsSearcher 打开可见浏览器让用户登录
+        # 登录完成后 cookies 会保存到 ~/.yam/cookies/，后续可复用
         print(f"YAM_MAJORS_UPDATE_PROGRESS 0 {total} 等待登录", flush=True)
+        searcher = MajorsSearcher(headless=False)
+        await searcher._ensure_browser()
         logged_in = await searcher.interactive_login(
             major_code_for_login=yjxkdm_list[0][0] + "00"
         )
+        await searcher.close()
         if not logged_in:
             print("YAM_MAJORS_UPDATE_ERROR 未检测到登录凭证", flush=True)
-            await searcher.close()
             return {"error": "未登录"}
+        # 重新加载 cookies
+        saved_cookies = json.loads(cookie_file.read_text(encoding="utf-8")) if cookie_file.exists() else []
         print(f"YAM_MAJORS_UPDATE_PROGRESS 0 {total} 登录成功", flush=True)
+    else:
+        print(f"YAM_MAJORS_UPDATE_PROGRESS 0 {total} 已检测到登录凭证", flush=True)
 
-    # ISSUE-023：过滤掉已完成的，分批并发处理剩余 yjxkdm
+    # 过滤掉已完成的 yjxkdm
     pending = [
         (yjxkdm, yjxkmc, mldm, mlmc)
         for (yjxkdm, yjxkmc, mldm, mlmc) in yjxkdm_list
@@ -258,170 +581,154 @@ async def update_all_majors(login: bool = False, resume: bool = False) -> dict[s
 
     total_batches = (total_pending + CONCURRENCY - 1) // CONCURRENCY
 
-    async def _process_one(
-        yjxkdm: str, yjxkmc: str, mldm: str, mlmc: str
-    ) -> dict[str, Any]:
-        """单个 yjxkdm 并发任务单元：调 search_by_yjxkdm，返回结果或错误.
-
-        同时输出 YAM_MAJORS_UPDATE_BATCH_ITEM 协议行让前端能展示批次内每个 yjxkdm 的实时状态。
-        启动前随机 sleep 0~ITEM_STAGGER_MAX 秒错开请求，避免同时打 zys.do 触发"访问太频繁"。
-        """
-        # 错开请求：随机延迟 0 ~ ITEM_STAGGER_MAX 秒
-        if ITEM_STAGGER_MAX > 0:
-            stagger = random.uniform(0, ITEM_STAGGER_MAX)
-            await asyncio.sleep(stagger)
-
-        # 通知前端：该 yjxkdm 开始处理
-        print(
-            f"YAM_MAJORS_UPDATE_BATCH_ITEM {yjxkdm} running {yjxkmc}",
-            flush=True,
-        )
+    # 启动 Playwright 单 browser，多 context 激活
+    from playwright.async_api import async_playwright
+    print(f"YAM_MAJORS_UPDATE_PROGRESS 0 {total} 启动浏览器", flush=True)
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
         try:
-            result = await searcher.search_by_yjxkdm(yjxkdm)
-        except Exception as e:
-            print(
-                f"YAM_MAJORS_UPDATE_BATCH_ITEM {yjxkdm} failed {e}",
-                flush=True,
-            )
-            return {
-                "yjxkdm": yjxkdm,
-                "yjxkmc": yjxkmc,
-                "mldm": mldm,
-                "mlmc": mlmc,
-                "error": str(e),
-            }
+            print(f"YAM_MAJORS_UPDATE_PROGRESS 0 {total} 浏览器就绪", flush=True)
 
-        # 通知前端：该 yjxkdm 完成或需要登录
-        if result.get("need_login"):
-            print(
-                f"YAM_MAJORS_UPDATE_BATCH_ITEM {yjxkdm} failed 需要登录",
-                flush=True,
-            )
-        else:
-            majors_count = len(result.get("majors", []))
-            print(
-                f"YAM_MAJORS_UPDATE_BATCH_ITEM {yjxkdm} done 拿到 {majors_count} 个专业",
-                flush=True,
-            )
-        return {
-            "yjxkdm": yjxkdm,
-            "yjxkmc": yjxkmc,
-            "mldm": mldm,
-            "mlmc": mlmc,
-            "result": result,
-        }
+            sem = asyncio.Semaphore(CONCURRENCY)
 
-    try:
-        processed = already_done
-        need_login_break = False
-
-        for batch_start in range(0, total_pending, CONCURRENCY):
-            batch = pending[batch_start : batch_start + CONCURRENCY]
-            batch_num = batch_start // CONCURRENCY + 1
-
-            # 通知前端：批次开始（含本批 yjxkdm 列表，前端展示 N 个并发项卡片）
-            batch_info = json.dumps(
-                [{"yjxkdm": y, "yjxkmc": m} for y, m, _, _ in batch],
-                ensure_ascii=False,
-            )
-            print(
-                f"YAM_MAJORS_UPDATE_BATCH_START {batch_num} {total_batches} {batch_info}",
-                flush=True,
-            )
-            print(
-                f"YAM_MAJORS_UPDATE_PROGRESS {processed} {total} "
-                f"批次 {batch_num}/{total_batches} ({len(batch)} 个学科并发)",
-                flush=True,
-            )
-
-            # 并发执行批次：单 context 多 page，每 page 独立 JSESSIONID
-            tasks = [_process_one(*item) for item in batch]
-            results = await asyncio.gather(*tasks)
-
-            for r in results:
-                processed += 1
-                yjxkdm = r["yjxkdm"]
-                yjxkmc = r["yjxkmc"]
-                mldm = r["mldm"]
-                mlmc = r["mlmc"]
-
-                if "error" in r:
+            async def _run_with_sem(item):
+                async with sem:
+                    yjxkdm, yjxkmc, mldm, mlmc = item
+                    # 通知前端：该 yjxkdm 开始处理
                     print(
-                        f"YAM_MAJORS_UPDATE_WARN {yjxkdm} 查询失败: {r['error']}",
+                        f"YAM_MAJORS_UPDATE_BATCH_ITEM {yjxkdm} running {yjxkmc}",
                         flush=True,
                     )
-                    failed.append((yjxkdm, r["error"]))
-                    continue
+                    try:
+                        result = await _process_one_yjxkdm(
+                            browser, yjxkdm, yjxkmc, mldm, mlmc, saved_cookies
+                        )
+                    except Exception as e:
+                        print(
+                            f"YAM_MAJORS_UPDATE_BATCH_ITEM {yjxkdm} failed {e}",
+                            flush=True,
+                        )
+                        result = {
+                            "yjxkdm": yjxkdm, "yjxkmc": yjxkmc,
+                            "mldm": mldm, "mlmc": mlmc,
+                            "majors": [], "error": str(e),
+                        }
 
-                result = r["result"]
-                if result.get("need_login"):
+                    # 通知前端：完成
+                    if result.get("error"):
+                        print(
+                            f"YAM_MAJORS_UPDATE_BATCH_ITEM {yjxkdm} failed {result['error']}",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            f"YAM_MAJORS_UPDATE_BATCH_ITEM {yjxkdm} done 拿到 {len(result.get('majors', []))} 个专业",
+                            flush=True,
+                        )
+                    return result
+
+            processed = already_done
+            need_login_break = False
+
+            # 分批处理
+            for batch_start in range(0, total_pending, CONCURRENCY):
+                batch = pending[batch_start : batch_start + CONCURRENCY]
+                batch_num = batch_start // CONCURRENCY + 1
+
+                batch_info = json.dumps(
+                    [{"yjxkdm": y, "yjxkmc": m} for y, m, _, _ in batch],
+                    ensure_ascii=False,
+                )
+                print(
+                    f"YAM_MAJORS_UPDATE_BATCH_START {batch_num} {total_batches} {batch_info}",
+                    flush=True,
+                )
+                print(
+                    f"YAM_MAJORS_UPDATE_PROGRESS {processed} {total} "
+                    f"批次 {batch_num}/{total_batches} ({len(batch)} 个学科并发)",
+                    flush=True,
+                )
+
+                # 并发执行批次
+                tasks = [_run_with_sem(item) for item in batch]
+                results = await asyncio.gather(*tasks)
+
+                for r in results:
+                    processed += 1
+                    yjxkdm = r["yjxkdm"]
+                    yjxkmc = r["yjxkmc"]
+                    mldm = r["mldm"]
+                    mlmc = r["mlmc"]
+
+                    if r.get("error"):
+                        # "请登录" 类错误中断整个流程
+                        if "登录" in (r["error"] or ""):
+                            print(
+                                f"YAM_MAJORS_UPDATE_ERROR 需要登录才能继续查询（在 {yjxkdm} 处中断）",
+                                flush=True,
+                            )
+                            need_login_break = True
+                            break
+                        print(
+                            f"YAM_MAJORS_UPDATE_WARN {yjxkdm} 查询失败: {r['error']}",
+                            flush=True,
+                        )
+                        failed.append((yjxkdm, r["error"]))
+                        continue
+
+                    majors = r.get("majors", [])
                     print(
-                        f"YAM_MAJORS_UPDATE_ERROR 需要登录才能继续查询（在 {yjxkdm} 处中断）",
+                        f"  [debug] {yjxkdm} {yjxkmc} 拿到 {len(majors)} 个专业",
                         flush=True,
                     )
-                    need_login_break = True
+                    if not majors:
+                        # 兜底：研招网对专业学位（0854 等）按一级学科招生，
+                        # zys.do 返回 totalCount=0 + 空 list 是真实情况，注入 yjxkdm+"00" 作为 fallback。
+                        majors = [{
+                            "zydm": yjxkdm + "00",
+                            "zymc": yjxkmc,
+                            "yjxkdm": yjxkdm,
+                            "yjxkmc": yjxkmc,
+                            "mldm": mldm,
+                            "mlmc": mlmc,
+                            "xwlx": "zy" if is_professional_degree(yjxkdm + "00") else "xs",
+                        }]
+
+                    # 聚合到 catalog
+                    if mldm not in catalog:
+                        catalog[mldm] = {"mlmc": mlmc, "disciplines": {}}
+                    if yjxkdm not in catalog[mldm]["disciplines"]:
+                        catalog[mldm]["disciplines"][yjxkdm] = {
+                            "yjxkmc": yjxkmc,
+                            "majors": [],
+                        }
+                    catalog[mldm]["disciplines"][yjxkdm]["majors"].extend(majors)
+                    completed_codes.add(yjxkdm)
+
+                    print(
+                        f"YAM_MAJORS_UPDATE_PROGRESS {processed} {total} {yjxkdm} {yjxkmc}",
+                        flush=True,
+                    )
+
+                if need_login_break:
                     break
 
-                majors = result.get("majors", [])
-                # 调试日志：打印每个 yjxkdm 拿到的专业数（普通 print，不带 YAM_ 前缀，
-                # 避免 Rust 端把 WARN 当作失败计入 failed_count）
+                # 批后增量保存
+                partial_output = _build_catalog_output(
+                    catalog,
+                    failed,
+                    total,
+                    sorted(completed_codes),
+                    is_partial=True,
+                )
+                _atomic_write_json(PARTIAL_JSON, partial_output)
                 print(
-                    f"  [debug] {yjxkdm} {yjxkmc} 拿到 {len(majors)} 个专业 "
-                    f"(total_count={result.get('total_count')}, "
-                    f"fetched={result.get('fetched_count')})",
+                    f"YAM_MAJORS_UPDATE_PROGRESS {processed} {total} "
+                    f"(批次 {batch_num} 完成，已保存 {len(completed_codes)} 个学科)",
                     flush=True,
                 )
-                if not majors:
-                    # 该学科可能按一级学科招生，用 yjxkdm + "00" 作为兜底
-                    majors = [{
-                        "zydm": yjxkdm + "00",
-                        "zymc": yjxkmc,
-                        "yjxkdm": yjxkdm,
-                        "yjxkmc": yjxkmc,
-                        "mldm": mldm,
-                        "mlmc": mlmc,
-                        "xwlx": "zy" if is_professional_degree(yjxkdm + "00") else "xs",
-                    }]
-
-                # 聚合到 catalog
-                if mldm not in catalog:
-                    catalog[mldm] = {"mlmc": mlmc, "disciplines": {}}
-                if yjxkdm not in catalog[mldm]["disciplines"]:
-                    catalog[mldm]["disciplines"][yjxkdm] = {
-                        "yjxkmc": yjxkmc,
-                        "majors": [],
-                    }
-                catalog[mldm]["disciplines"][yjxkdm]["majors"].extend(majors)
-                completed_codes.add(yjxkdm)
-
-                print(
-                    f"YAM_MAJORS_UPDATE_PROGRESS {processed} {total} {yjxkdm} {yjxkmc}",
-                    flush=True,
-                )
-
-            if need_login_break:
-                break
-
-            # 批后增量保存（每批保存一次，比原每 5 个更密集）
-            partial_output = _build_catalog_output(
-                catalog,
-                failed,
-                total,
-                sorted(completed_codes),
-                is_partial=True,
-            )
-            _atomic_write_json(PARTIAL_JSON, partial_output)
-            print(
-                f"YAM_MAJORS_UPDATE_PROGRESS {processed} {total} "
-                f"(批次 {batch_num} 完成，已保存 {len(completed_codes)} 个学科)",
-                flush=True,
-            )
-
-            # 批间 sleep 避免限流（最后一批不 sleep）
-            if batch_start + CONCURRENCY < total_pending:
-                await asyncio.sleep(BATCH_PAUSE)
-    finally:
-        await searcher.close()
+        finally:
+            await browser.close()
 
     # 构建最终输出
     output = _build_catalog_output(

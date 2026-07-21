@@ -261,8 +261,8 @@ class MajorsSearcher:
         initial_zydm = yjxkdm + "00"
         page = await self.reader.context.new_page()
         try:
-            await page.goto(f"{BASE_URL}/zsml/", wait_until="load", timeout=60000)
-            await page.wait_for_timeout(300)
+            await page.goto(f"{BASE_URL}/zsml/", wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(150)
 
             async def _first_call() -> tuple[dict[str, Any] | str, bool]:
                 """返回 (msg, is_login_required)。msg 是 dict 表示成功，str 表示错误."""
@@ -306,16 +306,17 @@ class MajorsSearcher:
                     "yjxkmc": yjxkmc,
                 }
 
-            # 如果第 1 次返回空，可能是 session 未建立。
+            # 如果第 1 次返回空或只有 fallback（total_count<=1），可能是 session 未建立。
             # 尝试 goto 详情页（用 yjxkdm+"00" 构造 URL，不依赖 sign）建立 session，然后重试。
             # 这解决了 headless 模式下 cookie 存在但 yz.chsi.com.cn 域 session 未建立的问题。
-            if not seed_major and total_count == 0:
+            # ISSUE-023: 把 total_count==0 扩展到 total_count<=1，覆盖"只有 1 个 fallback major"的场景。
+            if (not seed_major and total_count == 0) or total_count <= 1:
                 try:
                     detail_url = build_detail_url(yjxkdm + "00", yjxkmc)
-                    await page.goto(detail_url, wait_until="load", timeout=60000)
-                    await page.wait_for_timeout(1000)
-                    await page.goto(f"{BASE_URL}/zsml/", wait_until="load", timeout=60000)
+                    await page.goto(detail_url, wait_until="domcontentloaded", timeout=30000)
                     await page.wait_for_timeout(500)
+                    await page.goto(f"{BASE_URL}/zsml/", wait_until="domcontentloaded", timeout=30000)
+                    await page.wait_for_timeout(200)
                     # 重试 zys.do
                     first_resp = await self._call_zys_do(
                         page,
@@ -327,12 +328,16 @@ class MajorsSearcher:
                     )
                     first_msg = first_resp.get("msg", {})
                     if isinstance(first_msg, dict):
-                        first_list = first_msg.get("list", []) or []
-                        if first_list:
-                            seed_major = first_list[0]
-                            if not yjxkmc and seed_major.get("yjxkmc"):
-                                yjxkmc = seed_major["yjxkmc"]
-                        total_count = int(first_msg.get("totalCount", 0) or 0)
+                        new_list = first_msg.get("list", []) or []
+                        new_total = int(first_msg.get("totalCount", 0) or 0)
+                        # 只有当重试结果比原结果更好时才更新
+                        if new_total > total_count or len(new_list) > len(first_list):
+                            first_list = new_list
+                            if first_list:
+                                seed_major = first_list[0]
+                                if not yjxkmc and seed_major.get("yjxkmc"):
+                                    yjxkmc = seed_major["yjxkmc"]
+                            total_count = new_total
                     elif isinstance(first_msg, str) and "登录" in first_msg:
                         return {
                             "majors": [],
@@ -383,10 +388,10 @@ class MajorsSearcher:
             # 跳过此步骤会导致枚举 30 个 zydm 时部分调用返回空。
             try:
                 detail_url = _build_detail_url_with_sign(seed_major, study_mode="")
-                await page.goto(detail_url, wait_until="load", timeout=60000)
-                await page.wait_for_timeout(500)
-                await page.goto(f"{BASE_URL}/zsml/", wait_until="load", timeout=60000)
-                await page.wait_for_timeout(300)
+                await page.goto(detail_url, wait_until="domcontentloaded", timeout=30000)
+                await page.wait_for_timeout(200)
+                await page.goto(f"{BASE_URL}/zsml/", wait_until="domcontentloaded", timeout=30000)
+                await page.wait_for_timeout(150)
             except Exception:
                 pass
 
@@ -453,10 +458,10 @@ class MajorsSearcher:
                     if "访问太频繁" in (err or ""):
                         await asyncio.sleep(3)
                     else:
-                        # 其他错误：goto /zsml/ 重置 session + 等待 1 秒
+                        # 其他错误：goto /zsml/ 重置 session + 等待 300ms
                         try:
-                            await page.goto(f"{BASE_URL}/zsml/", wait_until="load", timeout=60000)
-                            await page.wait_for_timeout(1000)
+                            await page.goto(f"{BASE_URL}/zsml/", wait_until="domcontentloaded", timeout=30000)
+                            await page.wait_for_timeout(300)
                         except Exception:
                             pass
                     # 重试第 1 次
@@ -468,9 +473,12 @@ class MajorsSearcher:
                 return lst, total, err
 
             # 分段枚举：每段内连续 N 个真正空响应就 break，进入下一段
+            # ISSUE-023: 跳过 initial_zydm（第 1 步已调过，同 session 再调会返回"请登录"）
             for candidates, empty_threshold in segments:
                 consecutive_empty = 0
                 for zydm in candidates:
+                    if zydm == initial_zydm:
+                        continue  # 已在第 1 步调过，跳过避免"请登录"
                     lst, total, err = await call_with_retry(zydm)
                     if err:
                         # 网络错误（限流等）：跳过但不计入"连续空"
@@ -494,9 +502,8 @@ class MajorsSearcher:
                                 break
                             lst2, _, _ = await call_with_retry(zydm, **combo)
                             add_unique(lst2)
-                            await asyncio.sleep(0.1)
 
-                    await asyncio.sleep(0.1)
+                    # ISSUE-023: 去掉 sleep 0.1s——同 page 内连续 zys.do 调用不需要等待
 
             return {
                 "majors": majors,

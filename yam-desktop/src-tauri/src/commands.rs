@@ -1325,6 +1325,9 @@ fn run_update_catalog_task(
     if login {
         cmd.arg("--login");
     }
+    // ISSUE-023：默认断点续传——partial JSON 存在时跳过已完成的 yjxkdm。
+    // 脚本里 `if resume and PARTIAL_JSON.exists()` 保证不存在时等同从头开始。
+    cmd.arg("--resume");
 
     let mut child = cmd.spawn().map_err(|e| format!("启动目录更新脚本失败: {}", e))?;
 

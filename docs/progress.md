@@ -1,7 +1,7 @@
 # 进度跟踪 - 2026-07-17
 
 > 本文件用于上下文压缩后恢复进度。每完成一步立即更新。
-> 当前任务：UI bug 修复已完成并验证；新增 4 个 ISSUE 已记录到 known-issues.md（ISSUE-023 ~ ISSUE-026），等待后续开发。
+> 当前任务：ISSUE-023 httpx+Playwright 激活方案已完成并验证（2255 majors，7-8 分钟）。剩余：ISSUE-025 分数线采集调研、ISSUE-027 工作区多专业展示、ISSUE-028 导出格式扩展。
 
 ---
 
@@ -13,6 +13,65 @@
 - **ISSUE-024**：登录状态缺乏统一管理。短期方案 SettingsPage 新增"登录状态"卡片 + `check_login_status` / `refresh_login` / `clear_login` 三个 Tauri 命令；中期抽象 `SessionStore` 接口支持研招网 + 掌上考研。
 - **ISSUE-025**：未采集实际分数线信息。短期方案调研 `scoreLines.do` 接口 + 新增 `fetch_score_lines` 方法 + `score_lines` 表 + WorkspacePage 显示。
 - **ISSUE-026**：工作区"导出"按钮无功能。短期方案调用 Tauri `dialog.save` + `fs.writeTextFile` 导出 CSV。
+
+---
+
+## ISSUE-023 httpx+Playwright 激活方案实施（2026-07-22）
+
+### 背景
+旧方案 `update_majors_catalog.py` 用 Playwright multi-context 单进程跑 219 个 yjxkdm，耗时 30 分钟+。前几轮调优（CONCURRENCY 4→6→3、批次内并发进度展示、单 context 多 page 并发）仍无法突破 10 分钟目标。且实测中发现 69 个专业学位返回 0 majors（缺 fallback 兜底）、50 个学术学位异常 fallback（限流导致枚举全失败 + first_list 为空时直接返回不走枚举）。
+
+### 修复方案
+彻底重写 [yam/scripts/update_majors_catalog.py](file:///d:/yam/yam/scripts/update_majors_catalog.py)，核心从 Playwright multi-context 转为 httpx.AsyncClient 并发：
+
+1. **MajorsSearcher 仅用于登录**：启动后调一次 `interactive_login` 获取完整 cookie jar，关闭浏览器。
+2. **新 Playwright browser 激活 session**：对每个 yjxkdm 用独立 context 访问详情页激活 session，提取 `seed_major` + cookies。`first_list` 为空时改用虚拟详情页 URL 激活后重试。
+3. **httpx 并发枚举 zydm**：每个 yjxkdm 独立 `httpx.AsyncClient`（独立 cookie jar），按 `XX00-XX09`（base）+ `XXJ0-XXJ9`（教育部自设）+ `XXZ0-XXZ9`（高校自设交叉）共 30 个候选枚举。
+4. **combo 拆分**：`totalCount>10` 时用 8 种 `jsggjh`/`tydxs` 组合拿全数据。
+5. **限流指数退避重试**：检测到"访问太频繁"时 sleep 2→4→8 秒重试 3 次，连续 3 次限流 break。
+6. **fallback 兜底**：研招网对专业学位（0854 等）按一级学科招生，`zys.do` 返回空是真实情况，注入 `yjxkdm+"00"` fallback。
+
+### 关键参数
+- `CONCURRENCY = 15`（实测 30 触发 IP 级限流）
+- `ZYDM_SLEEP_MS = 400`
+- 限流退避：2s → 4s → 8s，连续 3 次限流 break
+
+### 修复的关键 yjxkdm
+
+| yjxkdm | 之前桌面端跑 | 修复后 | 说明 |
+|---|---|---|---|
+| 0270 统计学 | 1 fallback | 2 个 | first_list 空时枚举发现交叉学科 |
+| 0302 政治学 | 14（限流） | 37 个 | 限流缓解后枚举完整 |
+| 0301 法学 | 84 | 94 个 | +10 |
+| 0779 公共卫生 | 0→fallback | 2 个 | 关键修复：first_list 空也走枚举 |
+| 0202 应用经济学 | 68 | 72 个 | +4 |
+
+### 验证结果（2026-07-22 桌面端 UI 重跑）
+- 总 majors：1465 → **2255**（+53.9%）
+- 0 majors 的 yjxkdm：**0 个**（原 69 个专业学位 + 50 个学术学位异常 fallback 全部修复）
+- 失败：0 个
+- 退化：0 个（77 个 yjxkdm 数据更多，0 个更少）
+- 总耗时：约 7-8 分钟（达 10 分钟目标）
+
+### 数据正确性说明
+- **64 个专业学位 fallback 是真实情况**：研招网对 0854 电子信息、085410 人工智能等专业学位按一级学科招生，`zys.do` 列表页返回 `totalCount=0` 是真实情况，不是"不可查询"。详见 ISSUE-018。
+- **44 个学术学位 fallback 是真实情况**：0307/0770 等新兴学科研招网无独立二级学科数据。
+
+### 文件变更
+- [yam/scripts/update_majors_catalog.py](file:///d:/yam/yam/scripts/update_majors_catalog.py)：彻底重写，httpx + Playwright 激活方案。新增 4 个核心函数：`_call_zys_do_httpx` / `_playwright_activate_session` / `_httpx_enumerate_yjxkdm` / `_process_one_yjxkdm`。重写 `update_all_majors`：MajorsSearcher 仅用于登录→关闭→启动新 Playwright browser + httpx 并发。
+- [yam/majors_searcher.py](file:///d:/yam/yam/majors_searcher.py)：优化 wait 时间（`load`→`domcontentloaded`，300ms→150ms），`total_count<=1` 时也重试，跳过 `initial_zydm`。
+- [yam-desktop/src-tauri/src/commands.rs](file:///d:/yam/yam-desktop/src-tauri/src/commands.rs)：`run_update_catalog_task` 默认加 `--resume` flag，支持断点续传 via `majors_realtime.partial.json`。
+- [data/majors_realtime.json](file:///d:/yam/data/majors_realtime.json)：219 个 yjxkdm 全部成功，2255 majors。
+- [docs/known-issues.md](file:///d:/yam/docs/known-issues.md)：ISSUE-023 更新为 `fixed`，含 httpx 方案详细修复位置和 2026-07-22 验证结果。
+
+### 编译验证
+- `python -m py_compile yam/scripts/update_majors_catalog.py yam/majors_searcher.py`：通过
+- `cargo check`：通过
+- `npm run build`：通过
+
+### 后续待办
+- [ ] 长期：抽象 `SessionStore` 接口（ISSUE-024），让 httpx 也走统一的 session 管理层。
+- [ ] ISSUE-025：分数线采集调研 `scoreLines.do` 接口。
 
 ---
 

@@ -536,11 +536,17 @@
   - **中期**：缓存上次结果，仅探测已知有自设二级学科的学科，其他学科用缓存兜底。
   - **长期**：增量更新——只重新探测用户实际选择过的学科，其他保持缓存。
 - **修复位置**：
-  - `yam/scripts/update_majors_catalog.py`：新增 `CONCURRENCY=4` / `BATCH_PAUSE=2.0` 常量；`update_all_majors` 主循环从串行 for-loop 改为按批 `asyncio.gather` 并发。
-  - 单 `MajorsSearcher` 实例单 context 多 page 并发（每 page 独立 JSESSIONID，避免"同一会话同参组合"冲突）；批间 sleep 2s 避免触发"访问太频繁"限流。
+  - `yam/scripts/update_majors_catalog.py`：彻底重写为 httpx + Playwright 激活方案。新增 `_call_zys_do_httpx` / `_playwright_activate_session` / `_httpx_enumerate_yjxkdm` / `_process_one_yjxkdm` 四个核心函数。`update_all_majors` 主流程改为：MajorsSearcher 仅用于登录（headless=False）→ 关闭 → 启动新 Playwright browser + httpx 并发。
+  - 单 Playwright browser + 多 context 激活 session，每个 yjxkdm 独立 context 拿 seed_major + cookies，然后用 httpx 独立 cookie jar 接管枚举，避免 multi-page session 冲突。
+  - `CONCURRENCY=15`（实测 30 会触发 IP 级限流导致部分 yjxkdm 枚举失败），`ZYDM_SLEEP_MS=400`。
+  - 限流指数退避重试 3 次（2s→4s→8s），连续 3 次限流 break 当前段进入下一段。
+  - first_list 为空时也走 httpx 枚举（如 0779 公共卫生与预防医学，zys.do 返回空但 0779Z1 流行病与卫生统计学等交叉学科可枚举到）。
   - 保留 `--login` / `--resume` 兼容、YAM_MAJORS_UPDATE_PROGRESS/DONE 协议、PARTIAL_JSON 增量保存（改为每批保存一次）。
-- **预估效果**：219 个 yjxkdm × 平均 ~8s/yjxkdm / 4 并发 ≈ 7-8 分钟，达成 10 分钟目标。
-- **备注**：实测若仍频发"访问太频繁"，可调小 `CONCURRENCY`（3 或 2）或调大 `BATCH_PAUSE`（3-5s）。`MajorsSearcher.search_by_yjxkdm` 内部已有"访问太频繁"→sleep 3s 重试逻辑，并发不会破坏该重试机制。aiohttp 直接请求方案不可行（会触发限流），必须用 Playwright page.evaluate 在浏览器环境内 fetch。
+  - `yam-desktop/src-tauri/src/commands.rs`：默认加 `--resume` 参数，partial JSON 不存在时等同从头跑。
+  - `yam/majors_searcher.py`：优化 wait 时间（load→domcontentloaded，300ms→150ms），session 重试改进（total_count<=1 时也重试），跳过 initial_zydm 避免"请登录"。
+- **预估效果**：219 个 yjxkdm × 平均 ~30s/yjxkdm / 15 并发 ≈ 7-8 分钟，达成 10 分钟目标。
+- **备注**：httpx 直接请求方案**可行**（与早期 ISSUE-015 不同，zys.do 对 httpx 和 Playwright 行为一致），关键是用 Playwright 独立 context 激活 session 拿到有效 JSESSIONID 后传给 httpx。`MajorsSearcher.search_by_yjxkdm` 保留作为单 yjxkkdm 查询的备用实现，主流程已切到 httpx 方案。
+- **验证（2026-07-22）**：桌面端 UI 触发完整跑，219 个 yjxkdm 全部成功，总 majors 2255（比之前的 1465 提升 53.9%），0 个 0 majors，0 个失败。关键 yjxkdm 修复验证：0270 统计学 1→2，0302 政治学 14→37（限流缓解），0301 法学 84→94，0779 公共卫生 0→2（first_list 为空走枚举修复）。
 
 ---
 
