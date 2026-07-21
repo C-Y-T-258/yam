@@ -19,6 +19,7 @@ import argparse
 import asyncio
 import json
 import os
+import random
 import re
 import sys
 from pathlib import Path
@@ -31,10 +32,11 @@ PARTIAL_JSON = REPO_ROOT / "data" / "majors_realtime.partial.json"
 INCREMENTAL_SAVE_INTERVAL = 5  # 每完成 5 个 yjxkdm 保存一次（保留用于单测/兜底）
 # ISSUE-023：并发优化参数
 # 单 context 多 page 并发，每 page 各自 JSESSIONID，避免"同一会话同参组合"冲突。
-# 批间 sleep 避免触发"访问太频繁"限流。目标 30 分钟 → 5-7 分钟。
-# 实测后用户反馈仍偏慢，调高到 6 并发 + 缩短批间 sleep。
-CONCURRENCY = 6  # 每批并发数（实测若触发"访问太频繁"可降回 4 或 3）
-BATCH_PAUSE = 1.5  # 批间 sleep 秒
+# 批间 sleep 避免触发"访问太频繁"限流。
+# 实测发现 6 并发会触发限流（5 个返回空、1 个卡在重试），降到 3 并发 + 错开请求。
+CONCURRENCY = 3  # 每批并发数（zys.do 按 IP 限流，3 并发 + 错开较安全）
+BATCH_PAUSE = 3.0  # 批间 sleep 秒（让限流恢复）
+ITEM_STAGGER_MAX = 1.5  # 批内每个 yjxkdm 启动前的随机延迟上限（秒）
 
 
 def parse_yjxkdm_list_from_majors_ts() -> list[tuple[str, str, str, str]]:
@@ -262,7 +264,13 @@ async def update_all_majors(login: bool = False, resume: bool = False) -> dict[s
         """单个 yjxkdm 并发任务单元：调 search_by_yjxkdm，返回结果或错误.
 
         同时输出 YAM_MAJORS_UPDATE_BATCH_ITEM 协议行让前端能展示批次内每个 yjxkdm 的实时状态。
+        启动前随机 sleep 0~ITEM_STAGGER_MAX 秒错开请求，避免同时打 zys.do 触发"访问太频繁"。
         """
+        # 错开请求：随机延迟 0 ~ ITEM_STAGGER_MAX 秒
+        if ITEM_STAGGER_MAX > 0:
+            stagger = random.uniform(0, ITEM_STAGGER_MAX)
+            await asyncio.sleep(stagger)
+
         # 通知前端：该 yjxkdm 开始处理
         print(
             f"YAM_MAJORS_UPDATE_BATCH_ITEM {yjxkdm} running {yjxkmc}",
