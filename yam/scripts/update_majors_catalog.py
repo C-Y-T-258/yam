@@ -31,9 +31,10 @@ PARTIAL_JSON = REPO_ROOT / "data" / "majors_realtime.partial.json"
 INCREMENTAL_SAVE_INTERVAL = 5  # 每完成 5 个 yjxkdm 保存一次（保留用于单测/兜底）
 # ISSUE-023：并发优化参数
 # 单 context 多 page 并发，每 page 各自 JSESSIONID，避免"同一会话同参组合"冲突。
-# 批间 sleep 避免触发"访问太频繁"限流。目标 30 分钟 → 10 分钟。
-CONCURRENCY = 4  # 每批并发数
-BATCH_PAUSE = 2.0  # 批间 sleep 秒
+# 批间 sleep 避免触发"访问太频繁"限流。目标 30 分钟 → 5-7 分钟。
+# 实测后用户反馈仍偏慢，调高到 6 并发 + 缩短批间 sleep。
+CONCURRENCY = 6  # 每批并发数（实测若触发"访问太频繁"可降回 4 或 3）
+BATCH_PAUSE = 1.5  # 批间 sleep 秒
 
 
 def parse_yjxkdm_list_from_majors_ts() -> list[tuple[str, str, str, str]]:
