@@ -672,3 +672,41 @@
   - **长期**：增加下拉菜单（ChevronDown 已保留），支持"仅当前专业/全部专业"、"仅院校列表/含院系详情/含分数线"等导出选项。
 - **备注**：用户明确说"优先级不高，先记着就行"。
 
+---
+
+## ISSUE-029：数据采集流程串行 requests 调用，单专业 15-25 分钟
+
+- **严重程度**：high
+- **状态**：open
+- **描述**：桌面端 `CrawlingPage` 触发 `python -m yam.cli fetch --major <code> --force` 后，Python 端对每个院校串行调用 `requests.Session.post` 拉取院系详情 + `sleep(0.5s)` 间隔，271 所院校耗时 13-18 分钟。加上掌上考研分数线串行采集，单专业总耗时 15-25 分钟。ISSUE-023 已经验证 httpx + Playwright 激活 + 15 并发 + 限流指数退避方案能把类似工作从 30+ 分钟压缩到 7-8 分钟，本 ISSUE 套用同一模式优化数据采集。
+- **复现步骤**：
+  1. 桌面端选择一个新专业（如 081200 计算机科学与技术，271 所院校），种子文件已存在。
+  2. 启动采集任务，观察 `BackgroundTaskPanel` 进度。
+  3. 实际：单专业从 0% → 100% 耗时 15-25 分钟，进度推进缓慢（约每校 3-4 秒）。
+- **期望行为**：单专业数据采集在 3-5 分钟内完成（10x 提速）。
+- **实际行为**：15-25 分钟，瓶颈在串行 `fetch_departments` + `sleep(0.5s)`。
+- **根因**：
+  - `yam/crawler/yanzhao.py:125-157` `fetch_departments`：串行 `self.session.post(url, ...)` + `sleep(self.delay)` 每校，未利用 httpx 并发。
+  - `yam/crawler/dynamic.py:306+` `fetch_school_list` 4-stage：省份扫描、多筛选组合均串行 `requests` 调用（仅 dwzys.do 阶段已用 aiohttp 并发）。
+  - `ZhangShangKaoYanCrawler.fetch_score_lines`：同样是串行 requests 调用。
+- **建议修复方向**：
+  - **短期（本 ISSUE 范围）**：套用 ISSUE-023 模式重构三个核心函数：
+    1. `fetch_departments` 改 `httpx.AsyncClient` + `asyncio.gather` 限流 15 并发 + 指数退避重试（"访问太频繁" 2→4→8s）。每个院校独立 cookie jar。
+    2. `fetch_school_list` 省份扫描 + 多筛选组合改 httpx 并发（不同 ssdm 视为不同调用，研招网允许）。
+    3. `fetch_score_lines` 同样改 httpx 并发。
+    4. `cli.py fetch` 命令改 `asyncio.run(...)` 异步入口，保留 `YAM_TOTAL` / `YAM_ERROR` / `--force` / `--limit` 协议。
+    5. Rust 端 `commands.rs` `run_crawl_task` 无需改动（已经按行解析 stdout）。
+  - **预估效果**：
+    - `fetch_departments`：13-18 min → 1-2 min（10x）
+    - `fetch_score_lines`：类似 10x 提速
+    - `fetch_school_list` 种子（仅首次）：30 min → 5-8 min
+    - 整体（种子已存在）：15-25 min → 3-5 min
+  - **长期**：抽象 `SessionStore` 接口（与 ISSUE-024 联动），让 httpx 层走统一 session 管理。
+- **依赖与顺序**：
+  - **必须先于 ISSUE-025 完成**：ISSUE-025 分数线采集应在 ISSUE-029 重构的 httpx 并发层之上实现，自动受益。
+  - 与 ISSUE-024（SessionStore 抽象）有弱依赖：可先做 ISSUE-029 后做 ISSUE-024 抽象。
+- **风险**：
+  - 数据采集是核心功能，重构有回归风险。需对比重构前后的院校数 / 院系数 / 分数线数。
+  - 限流风险：研招网对 `zydws.do` 已知有 IP 级限流（ISSUE-023 实测 30 并发触发），需保持 15 并发 + 指数退避。
+- **备注**：ISSUE-023 httpx + Playwright 激活方案已在本仓库验证可行（commit 1a3fc04），技术栈和重试逻辑可直接复用。
+
