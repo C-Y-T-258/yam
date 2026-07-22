@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Building2, Calendar, X, Cloud, Loader2, AlertCircle, Database } from 'lucide-react';
+import { Building2, Calendar, X, Cloud, Loader2, AlertCircle, Database, ChevronDown, ChevronRight, Copy, Check } from 'lucide-react';
 import { useAppStore } from '../stores/appStore';
 import { TopNav } from '../components/TopNav';
 import { LoginRequiredModal } from '../components/LoginRequiredModal';
@@ -27,6 +27,38 @@ function isLoginError(message: string | null): boolean {
   return message.includes('登录') || message.toLowerCase().includes('loginrequired');
 }
 
+/// 从最新日志解析当前采集阶段（第一轮 / 第二轮 / 第三轮 / 阶段 2 分数线 / 限流冷却 / 同步中 / 完成）
+function detectStage(logs: Array<{ message: string; level?: string }> | undefined): { label: string; kind: 'idle' | 'round1' | 'round2' | 'round3' | 'cooldown' | 'scores' | 'syncing' | 'done' | 'error' } {
+  if (!logs || logs.length === 0) return { label: '准备中', kind: 'idle' };
+  // 从后往前找最近一条阶段日志
+  for (let i = logs.length - 1; i >= 0; i--) {
+    const msg = logs[i].message;
+    if (msg.includes('采集结束') || msg.includes('采集失败')) return { label: '采集完成', kind: 'done' };
+    if (msg.includes('同步数据') || msg.includes('同步完成') || msg.includes('同步失败')) return { label: '同步数据中', kind: 'syncing' };
+    if (msg.includes('阶段 2') || msg.includes('分数线')) return { label: '阶段 2/2 · 分数线采集', kind: 'scores' };
+    if (msg.includes('等待') && msg.includes('冷却')) {
+      // 区分第几轮冷却
+      if (msg.includes('第二轮')) return { label: '限流冷却 · 等待第二轮', kind: 'cooldown' };
+      if (msg.includes('第三轮')) return { label: '限流冷却 · 等待第三轮', kind: 'cooldown' };
+      return { label: '限流冷却中', kind: 'cooldown' };
+    }
+    if (msg.includes('第三轮')) return { label: '第三轮 · 1 并发兜底', kind: 'round3' };
+    if (msg.includes('第二轮')) return { label: '第二轮 · 3 并发保守', kind: 'round2' };
+    if (msg.includes('第一轮')) return { label: '第一轮 · 15 并发快速', kind: 'round1' };
+    if (msg.includes('启动采集')) return { label: '启动中', kind: 'idle' };
+  }
+  return { label: '准备中', kind: 'idle' };
+}
+
+/// 格式化耗时（秒 → M:SS 或 H:MM:SS）
+function formatElapsed(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
 export function CrawlingPage() {
   const {
     crawlingProgress,
@@ -49,6 +81,11 @@ export function CrawlingPage() {
   const lastSchoolRef = useRef<string>('');
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isLaunchingRef = useRef<boolean>(false);
+  // ISSUE-029 日志细节优化：已耗时显示 + 折叠日志面板 + 复制日志
+  const startTimeRef = useRef<number | null>(null);
+  const [elapsed, setElapsed] = useState(0);
+  const [logsCollapsed, setLogsCollapsed] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   const startCrawl = async () => {
     if (!crawlTarget) return;
@@ -58,6 +95,8 @@ export function CrawlingPage() {
       await resetCrawl();
       await runCrawl(crawlTarget.code);
       setStatus('running');
+      startTimeRef.current = Date.now();
+      setElapsed(0);
       addCrawlingLog(`启动采集任务：${crawlTarget.code}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -260,6 +299,17 @@ export function CrawlingPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [crawlTarget, status]);
 
+  // 已耗时定时器：每秒更新 elapsed（ISSUE-029 日志细节优化）
+  useEffect(() => {
+    if (status !== 'running' || !startTimeRef.current) return;
+    const timer = setInterval(() => {
+      if (startTimeRef.current) {
+        setElapsed(Math.floor((Date.now() - startTimeRef.current) / 1000));
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [status]);
+
   // Auto scroll logs
   useEffect(() => {
     if (logContainerRef.current) {
@@ -390,6 +440,47 @@ export function CrawlingPage() {
     }
   };
 
+  // 复制全部日志到剪贴板（ISSUE-029 日志细节优化，方便用户反馈错误）
+  // 优先用 navigator.clipboard，不可用时回退到 textarea + document.execCommand
+  const handleCopyLogs = async () => {
+    if (!crawlingProgress) return;
+    const text = crawlingProgress.logs
+      .map((log) => {
+        const prefix = { info: '', warn: '⚠ ', success: '✓ ', error: '✗ ' }[log.level || 'info'] || '';
+        return `[${log.time}] ${prefix}${log.message}`;
+      })
+      .join('\n');
+    let success = false;
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        success = true;
+      }
+    } catch (err) {
+      console.warn('clipboard API 复制失败，回退到 execCommand:', err);
+    }
+    if (!success) {
+      // 兜底：临时 textarea + execCommand('copy')
+      try {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        success = document.execCommand('copy');
+        document.body.removeChild(textarea);
+      } catch (err) {
+        console.warn('execCommand 复制也失败:', err);
+      }
+    }
+    if (success) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
   if (!crawlTarget) {
     // crawlTarget 为 null 且确认无活跃采集任务时，显示友好的空状态
     if (status === 'no-target') {
@@ -502,15 +593,51 @@ export function CrawlingPage() {
 
         {/* Progress Bar */}
         <div className="bg-gray-50 rounded-lg px-6 py-4 mb-6">
-          <div className="flex items-center justify-between mb-2">
-            <span className="font-medium text-gray-700">整体进度</span>
-            <span className="text-gray-600">{crawlingProgress?.percent || 0}%</span>
+          {/* 第一行：阶段标识 + 已耗时 + 整体进度百分比 */}
+          <div className="flex items-center justify-between mb-2 gap-3 flex-wrap">
+            <div className="flex items-center gap-3 flex-wrap">
+              <span className="font-medium text-gray-700">整体进度</span>
+              {/* 当前阶段徽章（ISSUE-029 日志细节优化） */}
+              {(() => {
+                const stage = detectStage(crawlingProgress?.logs);
+                const stageColors: Record<string, string> = {
+                  idle: 'bg-gray-100 text-gray-600',
+                  round1: 'bg-blue-100 text-blue-700',
+                  round2: 'bg-amber-100 text-amber-700',
+                  round3: 'bg-orange-100 text-orange-700',
+                  cooldown: 'bg-amber-100 text-amber-700',
+                  scores: 'bg-indigo-100 text-indigo-700',
+                  syncing: 'bg-purple-100 text-purple-700',
+                  done: 'bg-emerald-100 text-emerald-700',
+                  error: 'bg-red-100 text-red-700',
+                };
+                return (
+                  <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${stageColors[stage.kind] || stageColors.idle}`}>
+                    {stage.label}
+                  </span>
+                );
+              })()}
+            </div>
+            <div className="flex items-center gap-4 text-sm">
+              {/* 已耗时（ISSUE-029 日志细节优化） */}
+              {elapsed > 0 && (
+                <span className="text-gray-500 font-mono">
+                  已耗时 <span className="text-gray-700 font-medium">{formatElapsed(elapsed)}</span>
+                </span>
+              )}
+              <span className="text-gray-600 font-medium">{crawlingProgress?.percent || 0}%</span>
+            </div>
           </div>
+          {/* 进度条：限流冷却时变色提示 */}
           <div className="w-full h-3 bg-gray-200 rounded-full overflow-hidden">
             <motion.div
               animate={{ width: `${crawlingProgress?.percent || 0}%` }}
               transition={{ duration: 0.5 }}
-              className="h-full bg-[#1e3a5f] rounded-full"
+              className={`h-full rounded-full transition-colors ${
+                detectStage(crawlingProgress?.logs).kind === 'cooldown'
+                  ? 'bg-amber-400'
+                  : 'bg-[#1e3a5f]'
+              }`}
             />
           </div>
         </div>
@@ -518,41 +645,64 @@ export function CrawlingPage() {
         {/* Logs */}
         <div className="bg-gray-50 rounded-lg px-6 py-4 mb-6">
           <div className="flex items-center justify-between mb-3">
-            <span className="font-medium text-gray-700">采集日志</span>
             <button
-              onClick={handleClearLogs}
-              disabled={syncing}
-              className="text-sm text-[#1e3a5f] hover:underline disabled:opacity-50"
+              onClick={() => setLogsCollapsed((c) => !c)}
+              className="flex items-center gap-1 font-medium text-gray-700 hover:text-[#1e3a5f] transition-colors"
+              title={logsCollapsed ? '展开日志面板' : '折叠日志面板'}
             >
-              清空日志
+              {logsCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
+              采集日志
+              {crawlingProgress && crawlingProgress.logs.length > 0 && (
+                <span className="ml-1 text-xs text-gray-500 font-normal">({crawlingProgress.logs.length})</span>
+              )}
             </button>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handleCopyLogs}
+                disabled={!crawlingProgress || crawlingProgress.logs.length === 0}
+                className="flex items-center gap-1 text-sm text-[#1e3a5f] hover:underline disabled:opacity-50"
+                title="复制全部日志到剪贴板"
+              >
+                {copied ? <Check size={14} className="text-emerald-600" /> : <Copy size={14} />}
+                {copied ? '已复制' : '复制日志'}
+              </button>
+              <button
+                onClick={handleClearLogs}
+                disabled={syncing}
+                className="text-sm text-[#1e3a5f] hover:underline disabled:opacity-50"
+              >
+                清空日志
+              </button>
+            </div>
           </div>
-          <div
-            ref={logContainerRef}
-            className="h-64 overflow-y-auto font-mono text-sm bg-white rounded border border-gray-200 p-3"
-          >
-            {crawlingProgress?.logs.map((log, index) => {
-              const levelColors: Record<string, string> = {
-                info: 'text-gray-700',
-                warn: 'text-amber-600',
-                success: 'text-emerald-600',
-                error: 'text-red-600',
-              };
-              const levelPrefix: Record<string, string> = {
-                info: '',
-                warn: '⚠ ',
-                success: '✓ ',
-                error: '✗ ',
-              };
-              const lvl = log.level || 'info';
-              return (
-                <div key={index} className={`py-1 ${levelColors[lvl]}`}>
-                  <span className="text-gray-400">[{log.time}]</span>
-                  <span className="ml-2">{levelPrefix[lvl]}{log.message}</span>
-                </div>
-              );
-            })}
-          </div>
+          {!logsCollapsed && (
+            <div
+              ref={logContainerRef}
+              className="h-64 overflow-y-auto font-mono text-sm bg-white rounded border border-gray-200 p-3"
+            >
+              {crawlingProgress?.logs.map((log, index) => {
+                const levelColors: Record<string, string> = {
+                  info: 'text-gray-700',
+                  warn: 'text-amber-600',
+                  success: 'text-emerald-600',
+                  error: 'text-red-600',
+                };
+                const levelPrefix: Record<string, string> = {
+                  info: '',
+                  warn: '⚠ ',
+                  success: '✓ ',
+                  error: '✗ ',
+                };
+                const lvl = log.level || 'info';
+                return (
+                  <div key={index} className={`py-1 ${levelColors[lvl]}`}>
+                    <span className="text-gray-400">[{log.time}]</span>
+                    <span className="ml-2">{levelPrefix[lvl]}{log.message}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {/* Action Buttons */}
