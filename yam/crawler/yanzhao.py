@@ -4,9 +4,10 @@
 包括院校列表、院系所、招生人数、考试科目等。
 """
 
+import asyncio
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import requests
 
@@ -123,7 +124,11 @@ class YanZhaoCrawler(BaseCrawler):
         return "普通本科"
 
     def fetch_departments(self, school: dict[str, Any]) -> list[dict[str, Any]]:
-        """获取某院校的院系所/招生信息."""
+        """获取某院校的院系所/招生信息（同步版本，单校）.
+
+        保留作为兼容性接口；批量场景应使用 `fetch_departments_batch`（ISSUE-029）
+        走 httpx 并发，单专业采集 13-18min → 1-2min。
+        """
         self._ensure_session()
         sleep(self.delay)
 
@@ -155,6 +160,206 @@ class YanZhaoCrawler(BaseCrawler):
         for item in items:
             departments.append(self._parse_department_item(item))
         return departments
+
+    async def fetch_departments_batch(
+        self,
+        schools: list[dict[str, Any]],
+        *,
+        concurrency: int = 15,
+        request_delay: float = 0.0,
+        on_progress: "Callable[[int, int, str], None] | None" = None,
+    ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, str]]:
+        """并发获取多所院校的院系所/招生信息（ISSUE-029 httpx 并发版）.
+
+        yjfxs.do 无需登录、可高并发（参考 docs/references/yanzhao-mcp-asset-inventory.md）。
+        套用 ISSUE-023 验证可行的策略：httpx.AsyncClient + 15 并发 + 限流指数退避重试
+        （2s→4s→8s），单校失败不影响其他校。失败校由调用方做第二轮低并发重试。
+
+        Args:
+            schools: 院校列表（YAM 标准格式，含 school_id / school_code）
+            concurrency: 并发数，默认 15（实测 30 触发 IP 级限流）
+            request_delay: 每次请求前的等待秒数，默认 0（第一轮快速）；
+                           第二轮重试建议 0.3s + concurrency=5 防限流
+            on_progress: 进度回调 (current, total, school_name)，每完成 1 所触发
+
+        Returns:
+            (results, errors) 元组：
+            - results: {school_id: [dept, ...]}，仅包含成功校（flag=true）
+            - errors: {school_id: error_msg}，包含失败校及真实错误信息
+            调用方用 `school_id in results` 区分成功与失败。
+        """
+        import httpx
+
+        from yam.crawler.httpx_client import call_api_with_retry
+
+        if not schools:
+            return {}, {}
+
+        # 先用同步 session 访问一次详情页建立 cookie（JSESSIONID 等）
+        # yjfxs.do 虽然无需登录，但服务端仍要求有效 session cookie
+        try:
+            self._ensure_session()
+        except Exception:
+            pass  # 兜底：即使建立 session 失败也尝试直接并发
+
+        # 提取当前 session 的 cookies 传给 httpx
+        cookie_dict = {c.name: c.value for c in self.session.cookies}
+
+        url = f"{self.BASE_URL}/zsml/rs/yjfxs.do"
+        headers = {
+            **self._headers(),
+            "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+            "X-Requested-With": "XMLHttpRequest",
+            "Accept": "application/json, text/plain, */*",
+            "Origin": self.BASE_URL,
+        }
+
+        sem = asyncio.Semaphore(concurrency)
+        results: dict[str, list[dict[str, Any]]] = {}
+        errors: dict[str, str] = {}
+        completed = 0
+        total = len(schools)
+        lock = asyncio.Lock()
+
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            cookies=cookie_dict,
+            headers={"User-Agent": headers["User-Agent"]},
+        ) as client:
+            async def _fetch_one(school: dict[str, Any]) -> None:
+                nonlocal completed
+                async with sem:
+                    if request_delay > 0:
+                        await asyncio.sleep(request_delay)
+                    data = {
+                        "zydm": self.major_code,
+                        "zymc": "",
+                        "dwdm": school.get("school_code", ""),
+                        "xxfs": "",
+                        "dwlxs": "",
+                        "tydxs": "",
+                        "jsggjh": "",
+                        "start": "0",
+                        "pageSize": "100",
+                        "totalCount": "0",
+                    }
+                    result, err = await call_api_with_retry(
+                        client, url, data, headers, timeout=self.timeout
+                    )
+
+                    school_id = school.get("school_id", "")
+                    if not err and result and result.get("flag"):
+                        msg = result.get("msg", {})
+                        if isinstance(msg, dict):
+                            items = msg.get("list", [])
+                            depts = [self._parse_department_item(item) for item in items]
+                            results[school_id] = depts
+                    else:
+                        # 记录真实错误信息（而非泛化的"并发采集失败"）
+                        if err:
+                            errors[school_id] = err
+                        elif result:
+                            errors[school_id] = f"flag={result.get('flag')}"
+                        else:
+                            errors[school_id] = "空响应"
+
+                    async with lock:
+                        completed += 1
+                        if on_progress is not None:
+                            on_progress(completed, total, school.get("name", ""))
+
+            await asyncio.gather(*[_fetch_one(s) for s in schools])
+
+        return results, errors
+
+    async def fetch_departments_with_retries(
+        self,
+        schools: list[dict[str, Any]],
+        *,
+        on_progress: "Callable[[int, int, str], None] | None" = None,
+        on_log: "Callable[[str], None] | None" = None,
+    ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, str]]:
+        """三阶段降级并发采集院系所（ISSUE-029 增强，解决"访问太频繁"残留失败）.
+
+        背景：研招网 IP 级限流。第一轮 15 并发快速模式必然触发"访问太频繁"，
+        第二轮仅降并发到 5 + 0.3s 延迟仍会触发（实测 271 所中残留 22 所失败，
+        且失败院校集中在湖北/广东/广西省代码段，符合"省份限流窗口未冷却"特征）。
+
+        策略：
+        - 第一轮：15 并发 0s 延迟（快速，预期 ~30% 失败）
+        - 等待 30s（限流窗口冷却）
+        - 第二轮：3 并发 1.5s 延迟（保守，预期剩余 ~10 所失败）
+        - 等待 60s
+        - 第三轮：1 并发 2s 延迟（兜底，预期 0 失败）
+
+        Args:
+            schools: 待采集院校列表
+            on_progress: 进度回调，每完成 1 所触发（每轮内部独立计数）
+            on_log: 阶段日志回调（"第二轮：等待 30s 冷却..." 等）
+
+        Returns:
+            (results, errors) 元组，与 fetch_departments_batch 一致。
+            errors 仅包含真正最终失败的院校。
+        """
+        all_results: dict[str, list[dict[str, Any]]] = {}
+        all_errors: dict[str, str] = {}
+        pending = list(schools)
+
+        # (阶段名, 并发, 延迟, 冷却秒数)
+        stages: list[tuple[str, int, float, int]] = [
+            ("第一轮", 15, 0.0, 0),     # 快速
+            ("第二轮", 3, 1.5, 30),     # 30s 冷却 + 3 并发 1.5s 延迟
+            ("第三轮", 1, 2.0, 60),     # 60s 冷却 + 1 并发 2s 延迟
+        ]
+
+        for stage_name, conc, delay, cooldown in stages:
+            if not pending:
+                break
+            if cooldown > 0:
+                if on_log is not None:
+                    on_log(f"{stage_name}：等待 {cooldown}s 限流冷却...")
+                await asyncio.sleep(cooldown)
+            if on_log is not None:
+                on_log(
+                    f"{stage_name}：{len(pending)} 所院校"
+                    f"（{conc} 并发，{delay}s 延迟）..."
+                )
+
+            # 每轮独立计数 progress（避免上一轮完成数影响当前轮）
+            stage_completed = 0
+            stage_total = len(pending)
+
+            def _stage_progress(current: int, total: int, name: str) -> None:
+                # current 是 fetch_departments_batch 内部的计数
+                # 这里转发给外部 on_progress（外部不关心分轮）
+                if on_progress is not None:
+                    on_progress(current, total, name)
+
+            results, errors = await self.fetch_departments_batch(
+                pending,
+                concurrency=conc,
+                request_delay=delay,
+                on_progress=_stage_progress,
+            )
+            all_results.update(results)
+            all_errors.update(errors)
+
+            # 收集下一轮待重试院校（不在 results 中的）
+            pending = [s for s in pending if s["school_id"] not in all_results]
+
+            if on_log is not None:
+                success_n = len(results)
+                fail_n = len(pending)
+                on_log(
+                    f"{stage_name}完成：成功 {success_n}，剩余失败 {fail_n}"
+                )
+
+        # 清理：已成功的院校从 errors 中移除
+        for sid in list(all_errors.keys()):
+            if sid in all_results:
+                del all_errors[sid]
+
+        return all_results, all_errors
 
     def _parse_department_item(self, item: dict[str, Any]) -> dict[str, Any]:
         """将研招网 yjfxs.do 返回的条目解析为 YAM 标准格式."""

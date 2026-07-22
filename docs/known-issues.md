@@ -677,7 +677,7 @@
 ## ISSUE-029：数据采集流程串行 requests 调用，单专业 15-25 分钟
 
 - **严重程度**：high
-- **状态**：open
+- **状态**：fixed（核心部分：fetch_departments + fetch_score_lines 已完成；fetch_school_list 种子抓取优化待后续）
 - **描述**：桌面端 `CrawlingPage` 触发 `python -m yam.cli fetch --major <code> --force` 后，Python 端对每个院校串行调用 `requests.Session.post` 拉取院系详情 + `sleep(0.5s)` 间隔，271 所院校耗时 13-18 分钟。加上掌上考研分数线串行采集，单专业总耗时 15-25 分钟。ISSUE-023 已经验证 httpx + Playwright 激活 + 15 并发 + 限流指数退避方案能把类似工作从 30+ 分钟压缩到 7-8 分钟，本 ISSUE 套用同一模式优化数据采集。
 - **复现步骤**：
   1. 桌面端选择一个新专业（如 081200 计算机科学与技术，271 所院校），种子文件已存在。
@@ -709,4 +709,24 @@
   - 数据采集是核心功能，重构有回归风险。需对比重构前后的院校数 / 院系数 / 分数线数。
   - 限流风险：研招网对 `zydws.do` 已知有 IP 级限流（ISSUE-023 实测 30 并发触发），需保持 15 并发 + 指数退避。
 - **备注**：ISSUE-023 httpx + Playwright 激活方案已在本仓库验证可行（commit 1a3fc04），技术栈和重试逻辑可直接复用。
+- **修复记录（2026-07-22）**：
+  - 新增 `yam/crawler/httpx_client.py`：共享 httpx 工具（`call_api_with_retry` 限流指数退避 2→4→8s + `gather_with_concurrency` 15 并发）
+  - `yam/crawler/yanzhao.py`：新增 `fetch_departments_batch`（httpx 15 并发 + 限流退避，yjfxs.do 无需登录可高并发）
+  - `yam/crawler/zhangshangkaoyan.py`：新增 `fetch_score_lines_batch`（两阶段：串行预解析 school_id + httpx 并发拉取 schoolScore）
+  - `yam/cli.py`：`fetch` 命令改 `asyncio.run(_fetch_async(...))`，两阶段并发，保留 YAM_TOTAL/YAM_PROGRESS/YAM_DONE/YAM_ERROR 协议
+  - `yam/fetcher.py`：`_run_fetch` 改 `asyncio.run(_run_fetch_async(...))`，暂停检查放在阶段之间
+  - 协议兼容：YAM_PROGRESS 格式 `{current}/{total} 院系|分数线 {name}`，commands.rs `process_stdout_line` 无需改动（total 会被 progress 行覆盖）
+  - 集成测试通过：081200 --limit 3 --force，3/3 院系 + 3/3 分数线全部成功，YAM_TOTAL 6，YAM_DONE 3 0 0
+  - **待后续**：`fetch_school_list` 省份扫描 + 多筛选组合的 httpx 并发优化（仅首次种子抓取触发，大部分专业已有种子，优先级低）
+- **三阶段降级重试增强（2026-07-22）**：
+  - 问题：v3 测试 271 所中 22 所残留失败，错误**全部为"访问太频繁"**（研招网 IP 级限流）。失败院校 school_id 连续（368317-368436），集中在湖北/广东/广西省代码段——符合"省份限流窗口未冷却"特征。第二轮 5 并发 + 0.3s 延迟仍触发限流（有效速率 ~16 req/s 超阈值）。
+  - 解决：`yam/crawler/yanzhao.py` 新增 `fetch_departments_with_retries` 方法，三阶段降级：
+    - 第一轮 15 并发 0s 延迟（快速，预期 ~30% 失败）
+    - 等待 30s 限流窗口冷却
+    - 第二轮 3 并发 1.5s 延迟（保守，预期剩余 ~5-10 所失败）
+    - 等待 60s
+    - 第三轮 1 并发 2s 延迟（兜底，预期 0 失败）
+  - `cli.py` / `fetcher.py` 改为单次调用 `fetch_departments_with_retries`，移除重复的两轮重试代码
+  - **CDP 端到端验证通过（v4 测试）**：081200 全量 271 所院系，**100% 成功率（271/271，0 失败）**，总耗时 4:59（299s）
+    - 时间线：t=1:18 第一轮完成 271 所 → t=2:09 30s 冷却后第二轮启动 → t=3:28 第二轮完成 → t=4:31 60s 冷却后第三轮兜底 → t=4:59 阶段 2 分数线完成
 

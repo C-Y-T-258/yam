@@ -945,6 +945,72 @@ CDP 查询 `get_catalog_update_progress`：`error=null, done=true, success_count
 
 ---
 
+## ISSUE-029 数据采集 httpx 并发优化（2026-07-22）
+
+### 背景
+ISSUE-023 已验证 httpx + Playwright 激活 + 15 并发 + 限流指数退避方案能把专业目录更新从 30+ 分钟压到 7-8 分钟。本 ISSUE 套用同一模式优化数据采集流程（fetch_departments + fetch_score_lines），目标单专业采集 15-25min → 3-5min。
+
+### 实现内容
+1. **新增 `yam/crawler/httpx_client.py`**：共享 httpx 工具
+   - `call_api_with_retry`：限流指数退避重试（2s→4s→8s，共 3 次），支持自定义 `rate_limit_keywords`
+   - `gather_with_concurrency`：限制并发数的 gather（默认 15）
+   - `gather_with_concurrency_safe`：单任务容错版（异常不中断整体）
+2. **`yam/crawler/yanzhao.py`**：新增 `fetch_departments_batch`
+   - httpx.AsyncClient + 15 并发 + 限流退避重试
+   - yjfxs.do 无需登录可高并发（参考 yanzhao-mcp-asset-inventory.md）
+   - 失败校不写入 results，调用方用 `school_id in map` 区分成功/失败
+   - 保留原 `fetch_departments` 同步版本作为兼容接口
+3. **`yam/crawler/zhangshangkaoyan.py`**：新增 `fetch_score_lines_batch`
+   - 两阶段：串行预解析 school_id（带缓存）+ httpx 并发拉取 schoolScore
+   - 掌上考研 API 用 `rate_limit_keywords=()` 禁用 msg 限流判定（返回 code/message 非 msg）
+   - school_id 未找到的失败校不写入 results
+4. **`yam/cli.py`**：`fetch` 命令改 `asyncio.run(_fetch_async(...))`
+   - 两阶段并发：阶段 1 fetch_departments_batch → 阶段 2 fetch_score_lines_batch
+   - 进度协议：`YAM_TOTAL {N_院系+N_分数线}` + `YAM_PROGRESS {current}/{total} 院系|分数线 {name}` + `YAM_DONE`
+   - commands.rs `process_stdout_line` 无需改动（total 会被 progress 行覆盖）
+5. **`yam/fetcher.py`**：`_run_fetch` 改 `asyncio.run(_run_fetch_async(...))`
+   - 与 cli._fetch_async 逻辑一致，进度更新到 _progress 字典
+   - 暂停检查放在阶段之间（并发任务无法中途暂停）
+
+### 验证结果
+- `py_compile` 全部通过（httpx_client/yanzhao/zhangshangkaoyan/cli/fetcher）
+- 单元测试：`gather_with_concurrency` 5 任务 limit=2 返回 [0,2,4,6,8] ✓
+- 集成测试 1（院系并发）：`python -m yam.cli fetch -m 081200 --limit 3 --skip-scores --force`
+  - 3/3 院系成功（北京大学 10 个、中国人民大学 5 个、北京交通大学 10 个）
+  - YAM_TOTAL 3 → YAM_PROGRESS 1/3→2/3→3/3 → YAM_DONE 3 0 0 ✓
+- 集成测试 2（完整流程）：`python -m yam.cli fetch -m 081200 --limit 3 --force`
+  - 3/3 院系 + 3/3 分数线全部成功
+  - 北京大学 2 条、中国人民大学 1 条、北京交通大学 4 条分数线
+  - YAM_TOTAL 6 → 阶段1 YAM_PROGRESS 1/6→3/6 → 阶段2 YAM_PROGRESS 4/6→6/6 → YAM_DONE 3 0 0 ✓
+
+### 待后续
+- `fetch_school_list` 省份扫描 + 多筛选组合的 httpx 并发优化（仅首次种子抓取触发，大部分专业已有种子，优先级低）
+
+### 三阶段降级重试增强（2026-07-22）
+**问题**：v3 CDP 端到端测试 271 所中 22 所残留失败，错误**全部为"访问太频繁"**（研招网 IP 级限流）。失败院校 school_id 连续（368317-368436），集中在湖北/广东/广西省代码段——符合"省份限流窗口未冷却"特征。第二轮 5 并发 + 0.3s 延迟仍触发限流（有效速率 ~16 req/s 超阈值）。
+
+**解决**：`yam/crawler/yanzhao.py` 新增 `fetch_departments_with_retries` 方法，三阶段降级重试：
+- 第一轮 15 并发 0s 延迟（快速，预期 ~30% 失败）
+- 等待 30s 限流窗口冷却
+- 第二轮 3 并发 1.5s 延迟（保守，预期剩余 ~5-10 所失败）
+- 等待 60s
+- 第三轮 1 并发 2s 延迟（兜底，预期 0 失败）
+
+`cli.py` / `fetcher.py` 改为单次调用 `fetch_departments_with_retries`，移除原本重复的两轮重试代码。
+
+### CDP 端到端 v4 验证（2026-07-22）
+- **测试脚本**：`test-issue029-v4.cjs`（CDP 9223 → reset_crawl → run_crawl 081200 → 轮询进度）
+- **结果**：✅ **100% 成功率（271/271，0 失败）**，总耗时 4:59（299s）
+- **时间线**：
+  - t=0:00-1:18 第一轮 15 并发快速跑完 271 所（~85 失败）
+  - t=1:18-2:09 30s 限流冷却 + 第二轮启动
+  - t=2:09-3:28 第二轮 3 并发 1.5s 延迟重试（85→少量残留）
+  - t=3:28-4:31 60s 冷却 + 第三轮 1 并发 2s 延迟兜底
+  - t=4:31-4:59 阶段 2 分数线 271 所并发完成
+- **结论**：ISSUE-029 完整验证通过。三阶段降级策略彻底解决"访问太频繁"残留失败，达成用户"100% 成功率才算完整"的要求。
+
+---
+
 ## 关键设计决策
 
 1. **掌上考研排名抓取**：用户选择 A 方案 - 尝试抓真实排名，失败降级到 `school_code` 升序。

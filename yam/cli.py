@@ -119,76 +119,157 @@ def fetch(
         schools = schools[:limit]
 
     console.print(f"共 {len(schools)} 所院校待抓取")
-    total_schools = len(schools)
-    print(f"YAM_TOTAL {total_schools}", flush=True)
 
     if dry_run:
         console.print("[yellow]这是模拟运行，不写入数据库[/yellow]")
         return
+
+    # ISSUE-029：httpx 并发采集（套用 ISSUE-023 验证可行的 15 并发 + 限流退避）
+    asyncio.run(
+        _fetch_async(
+            major=major,
+            major_info=major_info,
+            schools=schools,
+            target_years=target_years,
+            skip_scores=skip_scores,
+        )
+    )
+
+
+async def _fetch_async(
+    major: str,
+    major_info: dict,
+    schools: list[dict],
+    target_years: list[int],
+    skip_scores: bool,
+) -> None:
+    """ISSUE-029 异步并发采集核心逻辑.
+
+    两阶段并发：
+    1. 阶段 1：fetch_departments_batch 并发获取所有待采集校的院系所
+    2. 阶段 2：fetch_score_lines_batch 并发获取所有待采集校的分数线
+
+    进度协议（与 commands.rs process_stdout_line 兼容）：
+    - YAM_TOTAL {total_tasks}（院系任务数 + 分数线任务数）
+    - YAM_PROGRESS {current}/{total} 院系|分数线 {name}
+    - YAM_DONE {success} {failed} {skipped}
+    """
+    crawler = YanZhaoCrawler(major, major_info["name"])
+    score_crawler = ZhangShangKaoYanCrawler(major, major_info["name"])
 
     with Database() as db:
         fetched_school_ids = _get_fetched_school_ids(db, major, "departments")
         fetched_score_ids = (
             set() if skip_scores else _get_fetched_school_ids(db, major, "score_lines")
         )
+
+        # 过滤出需要采集的学校（跳过已成功的）
+        pending_schools = [s for s in schools if s["school_id"] not in fetched_school_ids]
+        skipped_count = len(schools) - len(pending_schools)
+        score_pending = (
+            [s for s in pending_schools if s["school_id"] not in fetched_score_ids]
+            if not skip_scores else []
+        )
+
+        # 总任务数 = 院系阶段 + 分数线阶段
+        total_tasks = len(pending_schools) + len(score_pending)
+        print(f"YAM_TOTAL {total_tasks}", flush=True)
+        console.print(f"待采集院系：{len(pending_schools)} 所，跳过（已存在）：{skipped_count} 所")
+        if not skip_scores:
+            console.print(f"待采集分数线：{len(score_pending)} 所")
+
+        updated_at = now_str()
         success = 0
         failed = 0
-        skipped = 0
+        skipped = skipped_count
         score_success = 0
         score_failed = 0
-        updated_at = now_str()
 
-        for i, school in enumerate(schools):
-            school_id = school["school_id"]
-            name = school["name"]
-            print(f"YAM_PROGRESS {i + 1}/{total_schools} {name}", flush=True)
+        # ===== 阶段 1：并发获取院系所（三阶段降级重试）=====
+        if pending_schools:
+            console.print(
+                f"[bold cyan]阶段 1/2：并发获取院系所（{len(pending_schools)} 所，三阶段降级）...[/bold cyan]"
+            )
 
-            if school_id in fetched_school_ids:
-                skipped += 1
-                continue
+            def _dept_progress(current: int, total: int, name: str) -> None:
+                print(f"YAM_PROGRESS {current}/{total_tasks} 院系 {name}", flush=True)
 
-            console.print(f"[{i+1}/{len(schools)}] {name} ... ", end="")
+            def _dept_log(msg: str) -> None:
+                console.print(f"  [dim]{msg}[/dim]")
 
-            try:
-                departments = crawler.fetch_departments(school)
+            depts_map, depts_errors = await crawler.fetch_departments_with_retries(
+                pending_schools,
+                on_progress=_dept_progress,
+                on_log=_dept_log,
+            )
 
-                db.save_school(major, school, updated_at)
-                for dept in departments:
-                    db.save_department(major, school_id, dept, updated_at)
+            # 写入数据库（按原始顺序，便于日志可读）
+            for school in pending_schools:
+                school_id = school["school_id"]
+                name = school["name"]
+                if school_id not in depts_map:
+                    # 失败（HTTP 错误/限流/flag=false），记录真实错误
+                    err_msg = depts_errors.get(school_id, "未知失败")
+                    db.log_fetch(major, school_id, "departments", "failed", err_msg)
+                    failed += 1
+                    console.print(f"  [red]{name} 院系失败：{err_msg[:60]}[/red]")
+                    continue
+                depts = depts_map[school_id]
+                try:
+                    db.save_school(major, school, updated_at)
+                    for dept in depts:
+                        db.save_department(major, school_id, dept, updated_at)
+                    db.log_fetch(major, school_id, "departments", "success")
+                    success += 1
+                    console.print(f"  [green]{name} OK[/green] ({len(depts)} 个院系)")
+                except Exception as e:
+                    db.log_fetch(major, school_id, "departments", "failed", str(e))
+                    failed += 1
+                    console.print(f"  [red]{name} 写入失败：{str(e)[:50]}[/red]")
 
-                db.log_fetch(major, school_id, "departments", "success")
-                console.print(f"[green]OK[/green] ({len(departments)} 个院系)", end="")
-                success += 1
+        # ===== 阶段 2：并发获取分数线 =====
+        if score_pending:
+            console.print(
+                f"[bold cyan]阶段 2/2：并发获取分数线（{len(score_pending)} 所 × {len(target_years)} 年，15 并发）...[/bold cyan]"
+            )
 
-            except Exception as e:
-                db.log_fetch(major, school_id, "departments", "failed", str(e))
-                console.print(f"[red]失败[/red] {str(e)[:50]}")
-                failed += 1
-                continue
+            offset = len(pending_schools)
 
-            if skip_scores or school_id in fetched_score_ids:
-                console.print("")
-                continue
+            def _score_progress(current: int, total: int, name: str) -> None:
+                print(f"YAM_PROGRESS {offset + current}/{total_tasks} 分数线 {name}", flush=True)
 
-            try:
-                scores = score_crawler.fetch_score_lines(school, target_years)
-                for score in scores:
-                    db.save_score_line(
-                        major,
-                        school_id,
-                        score["department_id"],
-                        score["year"],
-                        score,
-                        score_crawler.source,
-                        updated_at,
-                    )
-                db.log_fetch(major, school_id, "score_lines", "success")
-                console.print(f" [blue]分数线 {len(scores)} 条[/blue]")
-                score_success += 1
-            except Exception as e:
-                db.log_fetch(major, school_id, "score_lines", "failed", str(e))
-                console.print(f" [yellow]分数线失败 {str(e)[:40]}[/yellow]")
-                score_failed += 1
+            scores_map = await score_crawler.fetch_score_lines_batch(
+                score_pending, target_years, on_progress=_score_progress
+            )
+
+            for school in score_pending:
+                school_id = school["school_id"]
+                name = school["name"]
+                if school_id not in scores_map:
+                    # 失败（school_id 未找到/HTTP 错误）
+                    db.log_fetch(major, school_id, "score_lines", "failed", "school_id 未找到或网络错误")
+                    score_failed += 1
+                    console.print(f"  [yellow]{name} 分数线失败[/yellow]")
+                    continue
+                scores = scores_map[school_id]
+                try:
+                    for score in scores:
+                        db.save_score_line(
+                            major,
+                            school_id,
+                            score["department_id"],
+                            score["year"],
+                            score,
+                            score_crawler.source,
+                            updated_at,
+                        )
+                    db.log_fetch(major, school_id, "score_lines", "success")
+                    score_success += 1
+                    console.print(f"  [blue]{name} 分数线 {len(scores)} 条[/blue]")
+                except Exception as e:
+                    db.log_fetch(major, school_id, "score_lines", "failed", str(e))
+                    score_failed += 1
+                    console.print(f"  [yellow]{name} 分数线写入失败：{str(e)[:40]}[/yellow]")
 
         db.save_snapshot(major, major_info["name"], school_count=success, source="yanzhao")
 

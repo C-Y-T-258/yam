@@ -6,7 +6,7 @@
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import requests
 
@@ -291,9 +291,10 @@ class ZhangShangKaoYanCrawler(BaseCrawler):
     def fetch_score_lines(
         self, school: dict[str, Any], years: list[int]
     ) -> list[dict[str, Any]]:
-        """获取某院校目标专业的历年分数线.
+        """获取某院校目标专业的历年分数线（同步版本，单校）.
 
-        返回 YAM 标准格式的分数线记录列表。
+        保留作为兼容性接口；批量场景应使用 `fetch_score_lines_batch`（ISSUE-029）
+        走 httpx 并发，多校 × 多年从串行 N×M 降到并发 15。
         """
         name = school.get("name", "")
         school_id = self._search_school_id(name)
@@ -329,6 +330,125 @@ class ZhangShangKaoYanCrawler(BaseCrawler):
                         "fetched_at": now_str(),
                     }
                 )
+
+        return results
+
+    async def fetch_score_lines_batch(
+        self,
+        schools: list[dict[str, Any]],
+        years: list[int],
+        *,
+        concurrency: int = 15,
+        on_progress: "Callable[[int, int, str], None] | None" = None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """并发获取多所院校的历年分数线（ISSUE-029 httpx 并发版）.
+
+        两阶段策略：
+        1. 串行预解析 school_id（带本地缓存，通常很快；并发会有缓存写入竞争）
+        2. httpx 并发拉取 schoolScore（每校 × 每年一个任务，15 并发）
+
+        掌上考研 API 限流策略与研招网不同（返回 code/message 而非 msg 字符串），
+        因此 `rate_limit_keywords=()` 禁用 msg 限流判定，仅对 HTTP/网络异常重试。
+
+        Args:
+            schools: 院校列表（YAM 标准格式，含 school_id / name）
+            years: 要抓取的年份列表
+            concurrency: 并发数，默认 15
+            on_progress: 进度回调 (current, total, school_name)
+
+        Returns:
+            {school_id: [score_line, ...]}，仅包含 school_id 解析成功的校；
+            未在结果中的 school_id 视为失败（school_id 未找到/HTTP 错误），
+            调用方用 `school_id in map` 区分成功与失败。
+            成功但无分数线数据的专业会返回空列表（合法情况）。
+        """
+        import asyncio
+        import httpx
+
+        from yam.crawler.httpx_client import call_api_with_retry
+
+        if not schools or not years:
+            return {}
+
+        # 第 1 步：串行预解析 school_id（带本地缓存，命中后纯本地操作）
+        school_id_map: dict[str, int | None] = {}  # school_name -> school_id
+        for school in schools:
+            name = school.get("name", "")
+            if name and name not in school_id_map:
+                try:
+                    school_id_map[name] = self._search_school_id(name)
+                except Exception:
+                    school_id_map[name] = None
+
+        # 第 2 步：并发拉取 schoolScore
+        url = f"{self.API_BASE}/school/schoolScore"
+        headers = self._headers()
+        sem = asyncio.Semaphore(concurrency)
+        results: dict[str, list[dict[str, Any]]] = {}
+        completed = 0
+        total = len(schools)
+        lock = asyncio.Lock()
+
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            headers={"User-Agent": headers["User-Agent"], "Referer": headers["Referer"]},
+        ) as client:
+            async def _fetch_one(school: dict[str, Any]) -> None:
+                nonlocal completed
+                async with sem:
+                    name = school.get("name", "")
+                    school_id = school_id_map.get(name)
+                    school_key = school.get("school_id", "")
+
+                    # school_id 未找到：失败，不写入 results
+                    if school_id is not None:
+                        all_scores: list[dict[str, Any]] = []
+                        for year in years:
+                            data = {
+                                "school_id": str(school_id),
+                                "year": str(year),
+                                "page": "1",
+                                "limit": "100",
+                            }
+                            # 掌上考研不用 msg 限流判定，仅 HTTP/网络异常重试
+                            result, err = await call_api_with_retry(
+                                client, url, data, headers, timeout=self.timeout,
+                                rate_limit_keywords=(),
+                            )
+                            if err or not result or result.get("code") != "0000":
+                                continue
+                            body_data = result.get("data")
+                            items = (
+                                body_data if isinstance(body_data, list)
+                                else (body_data or {}).get("data", [])
+                                if isinstance(body_data, dict) else []
+                            )
+                            for item in items:
+                                code = str(item.get("code", "")).strip()
+                                if code != self.major_code:
+                                    continue
+                                all_scores.append({
+                                    "department_id": str(item.get("depart_id", "")),
+                                    "department_name": item.get("depart_name", ""),
+                                    "year": year,
+                                    "total": self._parse_int(item.get("total")),
+                                    "politics": self._parse_int(item.get("politics")),
+                                    "english": self._parse_int(item.get("english")),
+                                    "special_one": self._parse_int(item.get("special_one")),
+                                    "special_two": self._parse_int(item.get("special_two")),
+                                    "note": item.get("note", ""),
+                                    "source": self.source,
+                                    "fetched_at": now_str(),
+                                })
+                        # 成功（含空列表：school_id 找到但该专业无分数线数据）
+                        results[school_key] = all_scores
+
+                    async with lock:
+                        completed += 1
+                        if on_progress is not None:
+                            on_progress(completed, total, name)
+
+            await asyncio.gather(*[_fetch_one(s) for s in schools])
 
         return results
 
