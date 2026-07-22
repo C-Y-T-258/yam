@@ -1009,6 +1009,39 @@ ISSUE-023 已验证 httpx + Playwright 激活 + 15 并发 + 限流指数退避�
   - t=4:31-4:59 阶段 2 分数线 271 所并发完成
 - **结论**：ISSUE-029 完整验证通过。三阶段降级策略彻底解决"访问太频繁"残留失败，达成用户"100% 成功率才算完整"的要求。
 
+### 日志显示优化：YAM_LOG 协议 + level 着色 + 去冗余（2026-07-22）
+**问题**：v4 验证时采集日志含 700+ 条"正在处理：院系 XXX (n/542)"冗余条目，刷屏且无法体现三阶段降级策略的执行过程。用户提出"那个日志显示是不是可以优化一下"，选择"前后端联动优化"方向。
+
+**方案**：新增 `YAM_LOG {level} {message}` 协议贯通 Python → Rust → 前端，按 level 着色 + 阶段标识 + 去冗余：
+- **Python 端**：`yam/crawler/yanzhao.py` 的 `on_log` 签名改为 `(level, msg)`，三阶段日志带 `info`/`warn`/`success` level；`yam/cli.py` 输出 `YAM_LOG {level} {msg}` 协议供 Rust 解析（同步终端彩色显示）；`yam/fetcher.py` 转发到 NiceGUI `_log`
+- **Rust 端**：`yam-desktop/src-tauri/src/commands.rs` 新增 `CrawlLogPayload { level, message }` struct，`process_stdout_line` 解析 `YAM_LOG ` 前缀并 `app_handle.emit("crawl-log", payload)` 推送到前端
+- **前端**：`yam-desktop/src/stores/appStore.ts` 的 `logs` 类型扩展 `level?` 字段，`addCrawlingLog` 接受 level 参数；`yam-desktop/src/pages/CrawlingPage.tsx` 监听 `crawl-log` 事件追加日志，去掉每院校冗余日志（原 700+ 条），按 level 着色（info 灰色、warn 琥珀色+⚠、success 翠绿色+✓、error 红色+✗）
+
+**验证结果**（CDP UI E2E，081200 触发采集）：
+- **总日志数 14 条**（原 700+ 条冗余院系日志已去除）
+- **10 条阶段日志** 全部通过 YAM_LOG 协议正确推送：
+  - `第一轮：271 所院校（15 并发，0.0s 延迟）...` (info)
+  - `第一轮完成：成功 216，剩余失败 55` (info)
+  - `⚠ 第二轮：等待 30s 限流冷却...` (warn)
+  - `第二轮：55 所院校（3 并发，1.5s 延迟）...` (info)
+  - `第二轮完成：成功 52，剩余失败 3` (info)
+  - `⚠ 第三轮：等待 60s 限流冷却...` (warn)
+  - `第三轮：3 所院校（1 并发，2.0s 延迟）...` (info)
+  - `✓ 第三轮完成：成功 3，剩余失败 0` (success)
+  - `阶段 2/2：并发获取分数线（271 所，15 并发）...` (info)
+  - `✓ 采集结束：成功 271 所，失败 0 所，跳过 0 所` (success)
+- **level 着色全部生效**：warn 2 条 + success 2 条 + error 0 条
+- **冗余院系日志 0 条**（验证标准通过）
+- **总耗时 5 分钟**（09:50:55 → 09:55:53），271/271 100% 成功
+
+**文件变更**：
+- [yam/crawler/yanzhao.py](file:///d:/yam/yam/crawler/yanzhao.py)：`fetch_departments_with_retries` 的 `on_log` 签名改为 `(level, msg)`，三阶段日志带 level
+- [yam/cli.py](file:///d:/yam/yam/cli.py)：新增 `_dept_log` 转发为 `YAM_LOG {level} {msg}` 协议 + 终端彩色显示；阶段 2 分数线也加 YAM_LOG
+- [yam/fetcher.py](file:///d:/yam/yam/fetcher.py)：NiceGUI 版本同步 `_dept_log(level, msg)`
+- [yam-desktop/src-tauri/src/commands.rs](file:///d:/yam/yam-desktop/src-tauri/src/commands.rs)：新增 `CrawlLogPayload` struct，`process_stdout_line` 加 `app_handle` 参数解析 YAM_LOG 并 emit "crawl-log" 事件
+- [yam-desktop/src/stores/appStore.ts](file:///d:/yam/yam-desktop/src/stores/appStore.ts)：`logs` 类型加 `level?`，`addCrawlingLog` 接受 level 参数
+- [yam-desktop/src/pages/CrawlingPage.tsx](file:///d:/yam/yam-desktop/src/pages/CrawlingPage.tsx)：监听 `crawl-log` 事件，去掉每院校冗余日志，按 level 着色渲染 + 图标前缀
+
 ---
 
 ## 关键设计决策

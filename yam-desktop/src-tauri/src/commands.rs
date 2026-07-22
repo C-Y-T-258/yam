@@ -220,6 +220,16 @@ pub struct CrawlSyncedPayload {
     pub sync_error: Option<String>,
 }
 
+/// `YAM_LOG` 协议解析后 emit 给前端的事件 payload。
+/// 前端 CrawlingPage 监听 `crawl-log` 事件追加到采集日志（按 level 着色）。
+#[derive(Serialize, Clone)]
+pub struct CrawlLogPayload {
+    /// 日志级别：info / warn / success / error
+    pub level: String,
+    /// 日志内容
+    pub message: String,
+}
+
 pub struct CrawlProgress {
     pub running: AtomicBool,
     pub major_code: String,
@@ -420,7 +430,7 @@ fn run_crawl_task(
                 // EOF，处理最后一行（如果有）
                 if !line_buf.is_empty() {
                     let line = String::from_utf8_lossy(&line_buf).to_string();
-                    process_stdout_line(&line, &state, &mut last_progress_time);
+                    process_stdout_line(&line, &state, &mut last_progress_time, &app_handle);
                     line_buf.clear();
                 }
                 break;
@@ -436,7 +446,7 @@ fn run_crawl_task(
                     }
                     if !single_line.is_empty() {
                         let line = String::from_utf8_lossy(&single_line).to_string();
-                        process_stdout_line(&line, &state, &mut last_progress_time);
+                        process_stdout_line(&line, &state, &mut last_progress_time, &app_handle);
                     }
                 }
             }
@@ -570,8 +580,13 @@ fn filter_python_stderr(stderr: &str) -> String {
     useful_lines.last().map(|s| s.to_string()).unwrap_or_default()
 }
 
-/// 处理 stdout 的一行，更新 state 和 last_progress_time
-fn process_stdout_line(line: &str, state: &CrawlState, last_progress_time: &mut std::time::Instant) {
+/// 处理 stdout 的一行，更新 state 和 last_progress_time，并通过 app_handle emit 日志事件
+fn process_stdout_line(
+    line: &str,
+    state: &CrawlState,
+    last_progress_time: &mut std::time::Instant,
+    app_handle: &tauri::AppHandle,
+) {
     if line.starts_with("YAM_TOTAL ") {
         if let Ok(total) = line[10..].trim().parse::<i32>() {
             let mut p = state.lock().unwrap();
@@ -613,6 +628,22 @@ fn process_stdout_line(line: &str, state: &CrawlState, last_progress_time: &mut 
         let err_msg = line[10..].trim().to_string();
         let mut p = state.lock().unwrap();
         p.error = Some(err_msg);
+    } else if let Some(rest) = line.strip_prefix("YAM_LOG ") {
+        // ISSUE-029 阶段日志协议：YAM_LOG {level} {message}
+        // level ∈ {info, warn, success, error}，message 可能含空格
+        let rest = rest.trim();
+        let space_idx = rest.find(' ').unwrap_or(rest.len());
+        let level = &rest[..space_idx];
+        let message = rest[space_idx..].trim();
+        if !message.is_empty() {
+            let _ = app_handle.emit(
+                "crawl-log",
+                CrawlLogPayload {
+                    level: level.to_string(),
+                    message: message.to_string(),
+                },
+            );
+        }
     } else if !line.is_empty() {
         // 实时显示 Python 输出到 current_name 字段
         let mut p = state.lock().unwrap();

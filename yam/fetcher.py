@@ -175,8 +175,8 @@ async def _run_fetch_async(
                 p.current = current
                 p.current_school = name
 
-            def _dept_log(msg: str) -> None:
-                _log(major_code, f"  {msg}")
+            def _dept_log(level: str, msg: str) -> None:
+                _log(major_code, f"  [{level}] {msg}")
 
             depts_map, depts_errors = await crawler.fetch_departments_with_retries(
                 pending_schools,

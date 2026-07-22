@@ -729,4 +729,11 @@
   - `cli.py` / `fetcher.py` 改为单次调用 `fetch_departments_with_retries`，移除重复的两轮重试代码
   - **CDP 端到端验证通过（v4 测试）**：081200 全量 271 所院系，**100% 成功率（271/271，0 失败）**，总耗时 4:59（299s）
     - 时间线：t=1:18 第一轮完成 271 所 → t=2:09 30s 冷却后第二轮启动 → t=3:28 第二轮完成 → t=4:31 60s 冷却后第三轮兜底 → t=4:59 阶段 2 分数线完成
+- **日志显示优化（YAM_LOG 协议 + level 着色 + 去冗余，2026-07-22）**：
+  - 问题：v4 验证时采集日志含 700+ 条"正在处理：院系 XXX (n/542)"冗余条目，刷屏且无法体现三阶段降级策略的执行过程
+  - 方案：新增 `YAM_LOG {level} {message}` 协议贯通 Python → Rust → 前端
+    - Python：`yanzhao.py` 的 `on_log` 签名改为 `(level, msg)`，三阶段日志带 `info`/`warn`/`success` level；`cli.py` 输出 `YAM_LOG {level} {msg}` 协议 + 终端彩色显示；`fetcher.py` 转发到 NiceGUI `_log`
+    - Rust：`commands.rs` 新增 `CrawlLogPayload { level, message }` struct，`process_stdout_line` 解析 `YAM_LOG ` 前缀并 `app_handle.emit("crawl-log", payload)` 推送到前端
+    - 前端：`appStore.ts` 的 `logs` 类型扩展 `level?` 字段；`CrawlingPage.tsx` 监听 `crawl-log` 事件追加日志，去掉每院校冗余日志（原 700+ 条），按 level 着色（info 灰、warn 琥珀+⚠、success 翠绿+✓、error 红+✗）
+  - CDP UI E2E 验证通过（081200 触发采集）：总日志数 14 条（原 700+ → 14），10 条阶段日志全部通过 YAM_LOG 协议正确推送，level 着色全部生效（warn 2 + success 2 + error 0），冗余院系日志 0 条，总耗时 5 分钟，271/271 100% 成功
 

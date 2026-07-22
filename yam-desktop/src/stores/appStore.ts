@@ -18,7 +18,7 @@ export interface CrawlingProgress {
   department: string;
   year: number;
   percent: number;
-  logs: Array<{ time: string; message: string }>;
+  logs: Array<{ time: string; message: string; level?: 'info' | 'warn' | 'success' | 'error' }>;
   isPaused: boolean;
 }
 
@@ -47,7 +47,7 @@ interface AppState {
   setCurrentMajor: (code: string | null) => void;
   setCrawlingProgress: (progress: CrawlingProgress | null) => void;
   updateCrawlingProgress: (updates: Partial<CrawlingProgress>) => void;
-  addCrawlingLog: (message: string) => void;
+  addCrawlingLog: (message: string, level?: 'info' | 'warn' | 'success' | 'error') => void;
   setVisibleMajorCodes: (codes: string[]) => void;
   toggleVisibleMajor: (code: string) => void;
   setCrawlTarget: (target: CrawlTarget | null) => void;
@@ -101,14 +101,14 @@ export const useAppStore = create<AppState>()(
           : null,
       })),
 
-      addCrawlingLog: (message) => set((state) => {
+      addCrawlingLog: (message, level = 'info') => set((state) => {
         if (!state.crawlingProgress) return state;
         const now = new Date();
         const time = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
         return {
           crawlingProgress: {
             ...state.crawlingProgress,
-            logs: [...state.crawlingProgress.logs, { time, message }],
+            logs: [...state.crawlingProgress.logs, { time, message, level }],
           },
         };
       }),

@@ -194,14 +194,15 @@ export function CrawlingPage() {
           percent,
         });
 
-        if (p.current_name && p.current_name !== lastSchoolRef.current) {
+        // 不再为每个院校追加日志（阶段日志由 crawl-log 事件推送，避免 700+ 条冗余）
+        // 仅跟踪 lastSchoolRef 用于"采集结束"时显示最后处理的学校
+        if (p.current_name) {
           lastSchoolRef.current = p.current_name;
-          addCrawlingLog(`正在处理：${p.current_name} (${p.current}/${p.total})`);
         }
 
         if (p.error && p.error !== error) {
           setError(p.error);
-          addCrawlingLog(`错误：${p.error}`);
+          addCrawlingLog(`错误：${p.error}`, 'error');
         }
 
         if (p.done) {
@@ -209,11 +210,12 @@ export function CrawlingPage() {
             clearInterval(intervalRef.current);
             intervalRef.current = null;
           }
-          addCrawlingLog(`采集结束：成功 ${p.success} 所，失败 ${p.failed} 所，跳过 ${p.skipped} 所`);
+          const successLevel = p.failed === 0 ? 'success' : (p.success > 0 ? 'info' : 'error');
+          addCrawlingLog(`采集结束：成功 ${p.success} 所，失败 ${p.failed} 所，跳过 ${p.skipped} 所`, successLevel);
           if (p.error) {
             setStatus('error');
             setError(p.error);
-            addCrawlingLog(`采集失败：${p.error}，专业未添加到管理列表`);
+            addCrawlingLog(`采集失败：${p.error}，专业未添加到管理列表`, 'error');
             if (isLoginError(p.error)) {
               setShowLoginModal(true);
             }
@@ -221,13 +223,13 @@ export function CrawlingPage() {
             const msg = '采集未取得任何数据，专业未添加到管理列表';
             setStatus('error');
             setError(msg);
-            addCrawlingLog(msg);
+            addCrawlingLog(msg, 'error');
           } else {
             await handleSync();
           }
         }
       } catch (err) {
-        addCrawlingLog(`获取进度失败：${err instanceof Error ? err.message : String(err)}`);
+        addCrawlingLog(`获取进度失败：${err instanceof Error ? err.message : String(err)}`, 'error');
       }
     }, 1000);
 
@@ -236,6 +238,24 @@ export function CrawlingPage() {
         clearInterval(intervalRef.current);
         intervalRef.current = null;
       }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [crawlTarget, status]);
+
+  // 监听后端 crawl-log 事件（YAM_LOG 协议推送的阶段日志，ISSUE-029）
+  useEffect(() => {
+    if (!crawlTarget || status !== 'running') return;
+    let unlisten: (() => void) | null = null;
+    (async () => {
+      const { listen } = await import('@tauri-apps/api/event');
+      unlisten = await listen<{ level: string; message: string }>('crawl-log', (event) => {
+        const { level, message } = event.payload;
+        const lvl = (['info', 'warn', 'success', 'error'].includes(level) ? level : 'info') as 'info' | 'warn' | 'success' | 'error';
+        addCrawlingLog(message, lvl);
+      });
+    })();
+    return () => {
+      unlisten?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [crawlTarget, status]);
@@ -511,12 +531,27 @@ export function CrawlingPage() {
             ref={logContainerRef}
             className="h-64 overflow-y-auto font-mono text-sm bg-white rounded border border-gray-200 p-3"
           >
-            {crawlingProgress?.logs.map((log, index) => (
-              <div key={index} className="py-1">
-                <span className="text-gray-500">[{log.time}]</span>
-                <span className="ml-2 text-gray-700">{log.message}</span>
-              </div>
-            ))}
+            {crawlingProgress?.logs.map((log, index) => {
+              const levelColors: Record<string, string> = {
+                info: 'text-gray-700',
+                warn: 'text-amber-600',
+                success: 'text-emerald-600',
+                error: 'text-red-600',
+              };
+              const levelPrefix: Record<string, string> = {
+                info: '',
+                warn: '⚠ ',
+                success: '✓ ',
+                error: '✗ ',
+              };
+              const lvl = log.level || 'info';
+              return (
+                <div key={index} className={`py-1 ${levelColors[lvl]}`}>
+                  <span className="text-gray-400">[{log.time}]</span>
+                  <span className="ml-2">{levelPrefix[lvl]}{log.message}</span>
+                </div>
+              );
+            })}
           </div>
         </div>
 

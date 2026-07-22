@@ -194,8 +194,12 @@ async def _fetch_async(
             def _dept_progress(current: int, total: int, name: str) -> None:
                 print(f"YAM_PROGRESS {current}/{total_tasks} 院系 {name}", flush=True)
 
-            def _dept_log(msg: str) -> None:
-                console.print(f"  [dim]{msg}[/dim]")
+            def _dept_log(level: str, msg: str) -> None:
+                # 转发为 YAM_LOG 协议供 Rust 端解析并 emit 给前端
+                print(f"YAM_LOG {level} {msg}", flush=True)
+                # 同时在终端彩色显示
+                style = {"info": "dim", "warn": "yellow", "success": "green"}.get(level, "dim")
+                console.print(f"  [{style}]{msg}[/{style}]")
 
             depts_map, depts_errors = await crawler.fetch_departments_with_retries(
                 pending_schools,
@@ -232,6 +236,7 @@ async def _fetch_async(
             console.print(
                 f"[bold cyan]阶段 2/2：并发获取分数线（{len(score_pending)} 所 × {len(target_years)} 年，15 并发）...[/bold cyan]"
             )
+            print(f"YAM_LOG info 阶段 2/2：并发获取分数线（{len(score_pending)} 所，15 并发）...", flush=True)
 
             offset = len(pending_schools)
 

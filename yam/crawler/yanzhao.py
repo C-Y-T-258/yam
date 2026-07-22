@@ -277,7 +277,7 @@ class YanZhaoCrawler(BaseCrawler):
         schools: list[dict[str, Any]],
         *,
         on_progress: "Callable[[int, int, str], None] | None" = None,
-        on_log: "Callable[[str], None] | None" = None,
+        on_log: "Callable[[str, str], None] | None" = None,
     ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, str]]:
         """三阶段降级并发采集院系所（ISSUE-029 增强，解决"访问太频繁"残留失败）.
 
@@ -295,7 +295,8 @@ class YanZhaoCrawler(BaseCrawler):
         Args:
             schools: 待采集院校列表
             on_progress: 进度回调，每完成 1 所触发（每轮内部独立计数）
-            on_log: 阶段日志回调（"第二轮：等待 30s 冷却..." 等）
+            on_log: 阶段日志回调 (level, msg)，level ∈ {"info","warn","success"}。
+                调用方可转发为 YAM_LOG 协议或写入本地日志。
 
         Returns:
             (results, errors) 元组，与 fetch_departments_batch 一致。
@@ -317,12 +318,13 @@ class YanZhaoCrawler(BaseCrawler):
                 break
             if cooldown > 0:
                 if on_log is not None:
-                    on_log(f"{stage_name}：等待 {cooldown}s 限流冷却...")
+                    on_log("warn", f"{stage_name}：等待 {cooldown}s 限流冷却...")
                 await asyncio.sleep(cooldown)
             if on_log is not None:
                 on_log(
+                    "info",
                     f"{stage_name}：{len(pending)} 所院校"
-                    f"（{conc} 并发，{delay}s 延迟）..."
+                    f"（{conc} 并发，{delay}s 延迟）...",
                 )
 
             # 每轮独立计数 progress（避免上一轮完成数影响当前轮）
@@ -350,8 +352,10 @@ class YanZhaoCrawler(BaseCrawler):
             if on_log is not None:
                 success_n = len(results)
                 fail_n = len(pending)
+                level = "success" if fail_n == 0 else "info"
                 on_log(
-                    f"{stage_name}完成：成功 {success_n}，剩余失败 {fail_n}"
+                    level,
+                    f"{stage_name}完成：成功 {success_n}，剩余失败 {fail_n}",
                 )
 
         # 清理：已成功的院校从 errors 中移除
