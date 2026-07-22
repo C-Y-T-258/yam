@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Building2, Calendar, X, Cloud, Loader2, AlertCircle } from 'lucide-react';
+import { Building2, Calendar, X, Cloud, Loader2, AlertCircle, Database } from 'lucide-react';
 import { useAppStore } from '../stores/appStore';
 import { TopNav } from '../components/TopNav';
 import { LoginRequiredModal } from '../components/LoginRequiredModal';
@@ -15,7 +15,7 @@ import {
   type CrawlProgress,
 } from '../lib/db';
 
-type CrawlStatus = 'idle' | 'checking' | 'running' | 'done' | 'error' | 'cancelled';
+type CrawlStatus = 'idle' | 'checking' | 'running' | 'done' | 'error' | 'cancelled' | 'no-target';
 
 function getNowTime(): string {
   const now = new Date();
@@ -72,7 +72,23 @@ export function CrawlingPage() {
   // Initialize: check backend state and start crawling atomically
   useEffect(() => {
     if (!crawlTarget) {
-      setPage('major-management');
+      // crawlTarget 为 null 时，检查后端是否有正在进行的采集任务
+      // 如果有，从 crawledMajors 恢复 crawlTarget 并继续显示进度
+      // 如果没有，显示友好的空状态页面（而非静默重定向）
+      getCrawlProgress()
+        .then((p) => {
+          if (p.running && p.major_code) {
+            const major = crawledMajors.find((m) => m.code === p.major_code);
+            if (major) {
+              setCrawlTarget({ code: major.code, name: major.name });
+              return; // crawlTarget 更新后 useEffect 会重新执行
+            }
+          }
+          setStatus('no-target');
+        })
+        .catch(() => {
+          setStatus('no-target');
+        });
       return;
     }
 
@@ -145,7 +161,7 @@ export function CrawlingPage() {
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [crawlTarget]);
 
   // Poll progress when running
   useEffect(() => {
@@ -355,7 +371,47 @@ export function CrawlingPage() {
   };
 
   if (!crawlTarget) {
-    return null;
+    // crawlTarget 为 null 且确认无活跃采集任务时，显示友好的空状态
+    if (status === 'no-target') {
+      return (
+        <div className="min-h-screen bg-white">
+          <TopNav activeTab="crawling" />
+          <div className="max-w-4xl mx-auto px-6 py-8">
+            <div className="flex flex-col items-center justify-center py-20 text-center">
+              <Database size={48} className="text-gray-300 mb-4" />
+              <h2 className="text-xl text-gray-700 mb-2">请先选择要采集的专业</h2>
+              <p className="text-sm text-gray-500 mb-6">
+                数据采集需要先指定目标专业。请前往专业管理页面选择已有专业进行更新，或添加新专业。
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setPage('major-management')}
+                  className="px-4 py-2 bg-[#1e3a5f] text-white text-sm font-medium rounded-lg hover:bg-[#152d4a] transition-colors"
+                >
+                  去专业管理
+                </button>
+                <button
+                  onClick={() => setPage('major-select')}
+                  className="px-4 py-2 border border-[#1e3a5f] text-[#1e3a5f] text-sm font-medium rounded-lg hover:bg-blue-50 transition-colors"
+                >
+                  添加新专业
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    // 正在检查后端是否有活跃采集任务
+    return (
+      <div className="min-h-screen bg-white">
+        <TopNav activeTab="crawling" />
+        <div className="max-w-4xl mx-auto px-6 py-8 flex items-center justify-center py-20">
+          <Loader2 size={24} className="animate-spin text-[#1e3a5f]" />
+          <span className="ml-2 text-gray-500">正在检查采集状态...</span>
+        </div>
+      </div>
+    );
   }
 
   return (
