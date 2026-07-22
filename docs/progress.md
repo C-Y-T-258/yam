@@ -479,6 +479,21 @@ ISSUE-023 已验证 httpx + Playwright 激活 + 15 并发 + 限流指数退避�
 
 ---
 
+## 参考文档索引（历史研究记录，勿轻易删除）
+
+以下文档含独特经验数据，对后续开发有直接参考价值。日常维护以 `known-issues.md` 和 `progress.md` 为准，这些研究文档作为深度参考保留：
+
+| 文档 | 关联 ISSUE | 参考价值 |
+|---|---|---|
+| [docs/issue-015-research.md](file:///d:/yam/docs/issue-015-research.md) | ISSUE-015（fixed） | dwzys.do 限流机制实测数据（12 个子测试、参数定型）、四阶段方案从 94.5% 到 100% 的完整调优过程。对后续新专业采集、ISSUE-017 验证有参考价值。 |
+| [docs/issue-023-research.md](file:///d:/yam/docs/issue-023-research.md) | ISSUE-023（fixed） | httpx+Playwright 混合架构研究过程、独立 cookie jar 模拟独立 session 方案验证。对 ISSUE-029 后续优化有参考价值。 |
+| [docs/data-collection-handoff-prompt.md](file:///d:/yam/docs/data-collection-handoff-prompt.md) | ISSUE-004~016 | 数据采集踩坑记录（"修复后不要再重复踩坑"），含根因分析和修复位置。 |
+| [scripts/test_httpx_full_219.py](file:///d:/yam/scripts/test_httpx_full_219.py) | ISSUE-023 | E2-G 完整 219 个 yjxkdm 验证脚本，可复用于回归测试。 |
+| [scripts/test_httpx_hybrid.py](file:///d:/yam/scripts/test_httpx_hybrid.py) | ISSUE-023 | E2-A3 Playwright 激活 + httpx 接管验证脚本。 |
+| [scripts/test_issue025_cdp.cjs](file:///d:/yam/scripts/test_issue025_cdp.cjs) | ISSUE-025 | CDP 端到端验证脚本（sync_workspace_data + fetch_workspace_data + UI 渲染检查）。 |
+
+---
+
 ## ISSUE-025 分数线同步修复（2026-07-22）
 
 ### 问题根因
