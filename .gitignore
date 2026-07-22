@@ -60,3 +60,6 @@ kaoyan_majors_raw.json
 /login-test-err.txt
 /test-login-state.json
 /find_login_url.py
+
+# CDP verification screenshots (2026-07-22)
+/scripts/screenshots/
