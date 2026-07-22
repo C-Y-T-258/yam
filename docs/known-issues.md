@@ -9,6 +9,46 @@
 
 ---
 
+## ISSUE 状态汇总（2026-07-23）
+
+| ISSUE | 严重程度 | 状态 | 简述 |
+|---|---|---|---|
+| ISSUE-001 | high | fixed | 桌面端"同步"概念不符合用户直觉 |
+| ISSUE-002 | medium | fixed | 网页端 Workspace 页面快照超时 |
+| ISSUE-003 | high | fixed | Tauri v2 环境判断错误 |
+| ISSUE-004 | high | fixed | 选择专业后采集数据为空或提前添加专业 |
+| ISSUE-005 | medium | fixed | 专业学位选择左侧栏动画不平滑 |
+| ISSUE-006 | high | fixed | 取消采集按钮无法停止后端任务导致死锁 |
+| ISSUE-007 | medium | fixed | 从"后台运行"返回采集页会错误重启采集任务 |
+| ISSUE-008 | medium | fixed | 专业删光后显示默认模板数据 |
+| ISSUE-009 | medium | fixed | 离开采集页面后无法看到后台采集任务进度 |
+| ISSUE-010 | low | fixed | 采集进度显示不直观，total=0 时只显示"准备中..." |
+| ISSUE-011 | high | fixed | 采集失败/取消仍创建无数据的空专业 |
+| ISSUE-012 | medium | fixed | BackgroundTaskPanel 显示信息不够直观 |
+| ISSUE-013 | high | fixed | Python CLI 错误信息无法传递到 Tauri 前端 |
+| ISSUE-014 | high | fixed | 工作区院校层级 985/211 标签缺失 |
+| ISSUE-015 | high | fixed | 研招网 zydws.do 翻页接口偶发返回"请登录"（四阶段方案 100% 覆盖） |
+| ISSUE-016 | medium | fixed | 采集错误时 CrawlingPage 错误横幅显示完整 Python traceback |
+| ISSUE-017 | medium | open | 桌面端采集 90 秒超时对无种子专业过短（已有自适应超时，需验证） |
+| ISSUE-018 | medium | fixed | 085400 电子信息 seed 完整但 zys.do 返回 totalCount=0（真实情况） |
+| ISSUE-019 | high | partial-fixed | 专业选择页面可供选择的专业不全（已改为实时查询，2255 majors） |
+| ISSUE-020 | medium | fixed | BackgroundTaskPanel 用时计时器不会重置 |
+| ISSUE-021 | medium | fixed | 切出数据采集页面再切回误报"已有采集任务在运行" |
+| ISSUE-022 | medium | open | 选择 disabled=true 的专业后采集卡住（需重新定义方向） |
+| ISSUE-023 | high | fixed | 专业目录更新流程耗时过长（httpx 方案 7-8 分钟） |
+| ISSUE-024 | high | fixed | 登录状态缺乏统一管理 |
+| ISSUE-025 | medium | fixed | 分数线数据未同步到工作区（分级匹配 98.5% 覆盖率） |
+| ISSUE-026 | medium | fixed | 工作区"导出"按钮无任何功能（CSV 导出） |
+| ISSUE-027 | medium | open | 工作区只显示单个专业数据，与"多专业批量采集"语义不一致 |
+| ISSUE-028 | low | open | 导出格式仅支持 CSV，未支持 Excel/JSON |
+| ISSUE-029 | medium | fixed | 数据采集流程串行 requests 调用（httpx 并发 5 分钟 100% 成功） |
+
+**统计**：共 29 个 ISSUE，24 个 fixed，1 个 partial-fixed，4 个 open。
+
+**下一步优先级**：ISSUE-027（工作区多专业展示）> ISSUE-028（导出格式扩展）> ISSUE-017（超时验证）> ISSUE-022（重新定义方向）
+
+---
+
 ## ISSUE-001：桌面端“同步”概念不符合用户直觉
 
 - **严重程度**：high
