@@ -310,26 +310,44 @@ class ZhangShangKaoYanCrawler(BaseCrawler):
             )
             items = data if isinstance(data, list) else data.get("data", [])
 
+            # 分级匹配：6位精确 > 4位一级学科 > 2位门类（与 batch 版一致）
+            matched_by_level: dict[int, list[dict[str, Any]]] = {6: [], 4: [], 2: []}
             for item in items:
                 code = str(item.get("code", "")).strip()
-                if code != self.major_code:
-                    continue
+                if code == self.major_code:
+                    matched_by_level[6].append(item)
+                elif len(code) == 4 and self.major_code.startswith(code):
+                    matched_by_level[4].append(item)
+                elif len(code) == 2 and self.major_code.startswith(code):
+                    matched_by_level[2].append(item)
 
-                results.append(
-                    {
-                        "department_id": str(item.get("depart_id", "")),
-                        "department_name": item.get("depart_name", ""),
-                        "year": year,
-                        "total": self._parse_int(item.get("total")),
-                        "politics": self._parse_int(item.get("politics")),
-                        "english": self._parse_int(item.get("english")),
-                        "special_one": self._parse_int(item.get("special_one")),
-                        "special_two": self._parse_int(item.get("special_two")),
-                        "note": item.get("note", ""),
-                        "source": self.source,
-                        "fetched_at": now_str(),
-                    }
-                )
+            for level in (6, 4, 2):
+                if not matched_by_level[level]:
+                    continue
+                for item in matched_by_level[level]:
+                    raw_note = item.get("note", "")
+                    if level == 4:
+                        note = f"一级学科参考线（code={item.get('code', '')}）" + (f" | {raw_note}" if raw_note else "")
+                    elif level == 2:
+                        note = f"门类级参考线（code={item.get('code', '')}）" + (f" | {raw_note}" if raw_note else "")
+                    else:
+                        note = raw_note
+                    results.append(
+                        {
+                            "department_id": str(item.get("depart_id", "")),
+                            "department_name": item.get("depart_name", ""),
+                            "year": year,
+                            "total": self._parse_int(item.get("total")),
+                            "politics": self._parse_int(item.get("politics")),
+                            "english": self._parse_int(item.get("english")),
+                            "special_one": self._parse_int(item.get("special_one")),
+                            "special_two": self._parse_int(item.get("special_two")),
+                            "note": note,
+                            "source": self.source,
+                            "fetched_at": now_str(),
+                        }
+                    )
+                break  # 只取最高优先级的匹配
 
         return results
 
@@ -423,23 +441,47 @@ class ZhangShangKaoYanCrawler(BaseCrawler):
                                 else (body_data or {}).get("data", [])
                                 if isinstance(body_data, dict) else []
                             )
+                            # 分级匹配：6位精确 > 4位一级学科 > 2位门类
+                            # 掌上考研对不同学校返回的 code 粒度不同：
+                            #   - 6位（081200）：专业级分数线（最精确）
+                            #   - 4位（0812）：一级学科级分数线
+                            #   - 2位（08）：门类级分数线（985自划线院校常见）
+                            # 每年只取最高优先级的匹配，避免混合不同粒度的数据
+                            matched_by_level: dict[int, list[dict[str, Any]]] = {6: [], 4: [], 2: []}
                             for item in items:
                                 code = str(item.get("code", "")).strip()
-                                if code != self.major_code:
+                                if code == self.major_code:
+                                    matched_by_level[6].append(item)
+                                elif len(code) == 4 and self.major_code.startswith(code):
+                                    matched_by_level[4].append(item)
+                                elif len(code) == 2 and self.major_code.startswith(code):
+                                    matched_by_level[2].append(item)
+
+                            for level in (6, 4, 2):
+                                if not matched_by_level[level]:
                                     continue
-                                all_scores.append({
-                                    "department_id": str(item.get("depart_id", "")),
-                                    "department_name": item.get("depart_name", ""),
-                                    "year": year,
-                                    "total": self._parse_int(item.get("total")),
-                                    "politics": self._parse_int(item.get("politics")),
-                                    "english": self._parse_int(item.get("english")),
-                                    "special_one": self._parse_int(item.get("special_one")),
-                                    "special_two": self._parse_int(item.get("special_two")),
-                                    "note": item.get("note", ""),
-                                    "source": self.source,
-                                    "fetched_at": now_str(),
-                                })
+                                for item in matched_by_level[level]:
+                                    raw_note = item.get("note", "")
+                                    if level == 4:
+                                        note = f"一级学科参考线（code={item.get('code', '')}）" + (f" | {raw_note}" if raw_note else "")
+                                    elif level == 2:
+                                        note = f"门类级参考线（code={item.get('code', '')}）" + (f" | {raw_note}" if raw_note else "")
+                                    else:
+                                        note = raw_note
+                                    all_scores.append({
+                                        "department_id": str(item.get("depart_id", "")),
+                                        "department_name": item.get("depart_name", ""),
+                                        "year": year,
+                                        "total": self._parse_int(item.get("total")),
+                                        "politics": self._parse_int(item.get("politics")),
+                                        "english": self._parse_int(item.get("english")),
+                                        "special_one": self._parse_int(item.get("special_one")),
+                                        "special_two": self._parse_int(item.get("special_two")),
+                                        "note": note,
+                                        "source": self.source,
+                                        "fetched_at": now_str(),
+                                    })
+                                break  # 只取最高优先级的匹配
                         # 成功（含空列表：school_id 找到但该专业无分数线数据）
                         results[school_key] = all_scores
 

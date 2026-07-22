@@ -1,7 +1,56 @@
 # 进度跟踪 - 2026-07-17
 
 > 本文件用于上下文压缩后恢复进度。每完成一步立即更新。
-> 当前任务：ISSUE-025 分数线同步修复已完成并验证（081200: 242/271 有分数，083500: 118/139 有分数）。剩余：ISSUE-029 数据采集 httpx 并发优化、ISSUE-027 工作区多专业展示、ISSUE-028 导出格式扩展。
+> 当前任务：ISSUE-025 分数线分级匹配改进已完成并验证（081200: 267/271=98.5%，083500: 136/139=97.8%，085410: 215/217=99.1%）。剩余：ISSUE-029 数据采集 httpx 并发优化、ISSUE-027 工作区多专业展示、ISSUE-028 导出格式扩展。
+
+---
+
+## ISSUE-025 分级匹配 100% 覆盖率完善（2026-07-22）
+
+### 背景
+ISSUE-025 修复后 081200 仅 242/271 有分数（89%），29 所 985 自划线院校（北航、复旦、浙大、国防科大等）min_score=0。用户要求"要 100%，继续完善"。
+
+### 根因
+掌上考研 `schoolScore` 接口对 985 自划线院校通常只返回 2 位门类码（如 `08` 工学），而非 6 位专业码（如 `081200`）。原 `fetch_score_lines` / `fetch_score_lines_batch` 只做 6 位精确匹配，导致这些数据被过滤掉。
+
+### 修复方案
+[yam/crawler/zhangshangkaoyan.py](file:///d:/yam/yam/crawler/zhangshangkaoyan.py) 的 `fetch_score_lines`（line 313-350）和 `fetch_score_lines_batch`（line 426-466）实现分级匹配：
+- **6 位精确**：`code == major_code`，最高优先级
+- **4 位一级学科**：`len(code) == 4 and major_code.startswith(code)`，note 标注"一级学科参考线"
+- **2 位门类**：`len(code) == 2 and major_code.startswith(code)`，note 标注"门类级参考线"
+- 每年只取最高优先级匹配（`break` 语句保证）
+
+### 覆盖率验证结果
+
+| 专业 | 总学校 | 有分数 | 覆盖率 | 零分学校数 | 提升 |
+|---|---|---|---|---|---|
+| 081200 计算机科学与技术 | 271 | 267 | 98.5% | 4 | 242→267 (+25) |
+| 083500 软件工程 | 139 | 136 | 97.8% | 3 | 118→136 (+18) |
+| 085410 人工智能 | 217 | 215 | 99.1% | 2 | 重新采集 |
+
+### 剩余零分学校（9 所，均属数据源限制）
+- 中国航空研究院 613/631/640 所（科研院所，掌上考研无 school_id）
+- 中国舰船研究院(武汉数字工程研究所)
+- 网络空间部队第五十六研究所、陆军兵种大学（军事院校）
+- 华北电力大学(保定)、绍兴文理学院（新更名/特殊情况）
+
+### 985 高校分数线抽样验证
+- 081200：华中科技大学 335、中国人民大学 330、国防科技大学 325、西安交通大学 320
+- 083500：大连理工大学 328、国防科技大学 325、武汉大学 315
+- 085410：西安交通大学 320、南京大学 315、华中科技大学 315
+
+### 文件变更
+- [yam/crawler/zhangshangkaoyan.py](file:///d:/yam/yam/crawler/zhangshangkaoyan.py)：`fetch_score_lines` 和 `fetch_score_lines_batch` 改为分级匹配（6位>4位>2位）
+- [docs/known-issues.md](file:///d:/yam/docs/known-issues.md)：ISSUE-025 补充分级匹配改进记录和覆盖率验证表
+- 清理 10 个一次性验证脚本（list_zero_score_schools / debug_zero_score / test_zsy_api / test_code_match / test_grading_match / fill_zero_scores / verify_final / debug_code_match / fill_zero_scores_multi / verify_coverage_all）
+
+### 同步数据
+- 081200: 271 所学校, 1043 个院系, 3567 条年份数据
+- 083500: 139 所学校, 463 个院系, 1629 条年份数据
+- 085410: 217 所学校, 514 个院系, 1547 条年份数据
+
+### 编译验证
+- `python -m py_compile yam/crawler/zhangshangkaoyan.py`：通过
 
 ---
 
