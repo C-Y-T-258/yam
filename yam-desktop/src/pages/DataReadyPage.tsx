@@ -11,13 +11,13 @@ const MAJOR_ICONS: Record<string, string> = {
 };
 
 export function DataReadyPage() {
-  const { setPage, crawledMajors, setCurrentMajor } = useAppStore();
+  const { setPage, crawledMajors, setSelectedMajorCodes } = useAppStore();
 
   const handleEnterWorkspace = (code?: string) => {
     if (code) {
-      setCurrentMajor(code);
+      setSelectedMajorCodes([code]);
     } else if (crawledMajors.length > 0) {
-      setCurrentMajor(crawledMajors[0].code);
+      setSelectedMajorCodes([crawledMajors[0].code]);
     }
     setPage('workspace');
   };

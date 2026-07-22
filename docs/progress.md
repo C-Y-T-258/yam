@@ -2,14 +2,171 @@
 
 > 本文件用于上下文压缩后恢复进度。每完成一步立即更新。
 >
-> **已完成**：ISSUE-025 分数线分级匹配（98.5% 覆盖率）、ISSUE-029 httpx 并发优化（271/271 100% 成功，5 分钟）、ISSUE-023 目录更新 httpx 方案（7-8 分钟）、ISSUE-026 导出 CSV。
+> **已完成**：ISSUE-025 分数线分级匹配（98.5% 覆盖率）、ISSUE-029 httpx 并发优化（271/271 100% 成功，5 分钟）、ISSUE-023 目录更新 httpx 方案（7-8 分钟）、ISSUE-026 导出 CSV、ISSUE-027 阶段 1 工作区多专业合并展示 + 双视图切换、ISSUE-027 多专业 Tab 多选支持 + syncedMajorsRef 优化、ISSUE-027 阶段 2 招生计划视图、ISSUE-017 300s 自适应超时 + 种子抓取心跳（运行时验证通过）、ISSUE-019 专业选择页不全（确认 realtime 数据源已彻底解决，标记 fixed）。
 >
 > **剩余 open ISSUE**（按优先级）：
-> - ISSUE-027（medium）：工作区只显示单专业数据，与"多专业批量采集"语义不一致
 > - ISSUE-028（low）：导出格式仅支持 CSV，未支持 Excel/JSON
-> - ISSUE-017（medium）：桌面端采集 90 秒超时对无种子专业过短（已有自适应超时，需验证）
-> - ISSUE-019（partial-fixed）：专业选择页面可供选择的专业不全（已改为实时查询，2255 majors）
-> - ISSUE-022（open）：选择 disabled=true 的专业后采集卡住（需重新定义方向）
+> - ISSUE-022（open，需重新定义方向）：选择 disabled=true 的专业后采集卡住——数据层已不可达（majors.yaml 0 个 disabled，realtime 无 enabled 字段），但本质诉求仍在：要消灭 disabled 的专业，要让专业可见即可查
+
+---
+
+## ISSUE-017 300s 自适应超时 + 种子抓取心跳（2026-07-23）
+
+### 背景
+桌面端无种子专业采集时，`run_crawl_task` 固定 90s 超时会误杀种子抓取（29 省扫描耗时 >90s）。已改为自适应超时（初始 300s，收到 YAM_TOTAL 后降 90s）。但运行时验证发现 300s 仍不够（030100 法学种子抓取 >300s），且种子抓取阶段 dynamic.py 只发 `[INFO]` 不发 YAM_ 协议，Rust 端 `last_progress_time` 不刷新，300s 从采集开始死计时。
+
+### 改动文件
+- [yam/crawler/yanzhao.py](file:///d:/yam/yam/crawler/yanzhao.py)：`fetch_schools` 调 `fetch_and_save` 期间启动后台心跳线程，每 30s 输出 `YAM_PROGRESS 0/0 正在获取 {code} {name} 种子数据（...心跳 N）...`，刷新 Rust 端 `last_progress_time`。仅桌面端（`YAM_DESKTOP=1`）发协议行。顶部加 `import os` / `import threading`。
+- [docs/known-issues.md](file:///d:/yam/docs/known-issues.md)：ISSUE-017 状态表 open→fixed，统计 26 fixed/1 partial/2 open，详情补心跳修复 + 运行时验证记录。
+
+### 关键实现点
+- 心跳线程 `daemon=True`，`heartbeat_stop.wait(30)` 每 30s 返回 False 触发一次 print，`finally: heartbeat_stop.set()` 确保所有退出路径停止心跳
+- `YAM_PROGRESS 0/0` 不改变 `p.total`（保持 0），所以 `timeout_secs` 保持 300s 不降级（正确：种子阶段 total 未知）；但刷新 `last_progress_time` 使 300s 不触发
+- `current_name` 被 YAM_PROGRESS 覆盖更新（L688），解决之前种子阶段 current_name 卡在首行的问题
+
+### 运行时验证（030100 法学无种子实测，CDP 端口 9223）
+| 阶段 | t=90s | t=300s | t=376s | 结论 |
+|---|---|---|---|---|
+| 仅 300s 超时（无心跳） | running ✅ | t≈301s 被杀 ⚠️ | - | 旧 90s bug 已修，但 300s 不够 |
+| 补心跳后 | running ✅ | running ✅ | running ✅ | 12 个心跳持续刷新，不再被误杀 |
+
+- 心跳每 30s 一个（t=30s 心跳1 → t=360s 心跳12），current_name 实时更新
+- 验证脚本已清理（test_issue017_timeout.cjs / test_issue017_heartbeat.cjs / cancel_crawl.cjs）
+
+---
+
+## ISSUE-027 阶段 2 招生计划视图（2026-07-23）
+
+### 背景
+阶段 1 顶部视图切换按钮的"招生计划视图"置灰占位。阶段 2 实现：每行 = (院校, 专业, 院系, 方向, 考试科目, 最新年份分数线)，纯扁平表格，支持强筛选/排序/分页，行可展开看多年分数。导出跟随当前视图。
+
+### 设计决策（用户已拍板）
+- 纯扁平表格：每行一个招生计划，同院校行不特殊聚合，靠背景色区分
+- 分数线列：默认最新年份 min_score + 招生人数；行展开看多年分数（数据已加载低成本附带）
+- 复用现有 WorkspaceFilterPanel 筛选；排序映射到 plan 级字段；客户端分页 pageSize=20
+- 导出：viewMode==='plan' 时导出 plan 行，文件名加 `_招生计划` 后缀
+
+### 改动文件
+- [db.rs](file:///d:/yam/yam-desktop/src-tauri/src/db.rs)：新增 `WorkspacePlanRow` 结构体 + `get_workspace_plans` 函数（JOIN workspace_schools + workspace_departments，EXISTS 子查询查 workspace_department_years 单科筛选，batch_get_department_years 批量查 years 避免 N+1，Rust 侧排序）；`WorkspaceYear` 加 `Clone`
+- [commands.rs](file:///d:/yam/yam-desktop/src-tauri/src/commands.rs)：新增 `fetch_workspace_plans` 命令（参数同 fetch_workspace_data 但无 school_id）
+- [main.rs](file:///d:/yam/yam-desktop/src-tauri/src/main.rs)：注册 `fetch_workspace_plans`
+- [db.ts](file:///d:/yam/yam-desktop/src/lib/db.ts)：新增 `WorkspacePlanRow` 接口 + `fetchWorkspacePlans` 函数 + mock 数据
+- [WorkspacePage.tsx](file:///d:/yam/yam-desktop/src/pages/WorkspacePage.tsx)：启用 plan 按钮（移除 disabled）+ plans/planPageNum/planPageSize/expandedPlanId state + plan 加载 effect（viewMode/activeMajorCodesKey/filters 依赖）+ plan 表格渲染（9 列 grid + 行展开多年分数表）+ plan 分页 + handleExport plan 分支（15 列 + `_招生计划` 文件名）+ 导出按钮 disabled 适配 plan 视图 + resultCount 适配
+
+### 关键实现点
+- `get_workspace_plans`：JOIN schools+departments，单科分数筛选用 EXISTS 子查询（非 LEFT JOIN+DISTINCT）避免行重复
+- `batch_get_department_years`：一次 IN 查询所有 dept 的 years，HashMap 分组，每组 year DESC，years[0]=最新年份
+- Rust 侧排序：sort_by latest_min_score/latest_enroll_count/school_name/display_order/school_code（800 行 <1ms）
+- min_score 筛选语义：作用于 s.min_score（院校专业级聚合），与院校视图一致；plan 行 latest_min_score 仅供展示
+- plan 视图不触发 sync（sync 由院校视图 autoSync effect 负责）
+- 院校视图表格用 `viewMode === 'school' && (<>...</>)` 包裹（table+pagination 两元素需 fragment）
+
+### 验证结果
+- `cargo check` ✅ 通过（1 个无害 warning：最后 idx+=1 未读取）
+- `npm run build` ✅ 通过（839ms）
+- CDP（端口 9223）AI 自测 ✅（7 场景全过）：
+  - 后端 fetch_workspace_plans(['081200']) 返回 1043 行，字段完整（school/dept/direction/subjects/latest_year/years）
+  - 多专业查询 ['081200','083500'] 返回 1506 行
+  - 招生计划视图按钮已启用，表格加载 21 行（20 数据 + 表头）
+  - 第一行：华中科技大学/计算机科学与技术/计算机科学与技术学院/人工智能方向/考试科目/2026/360
+  - 行展开：历年分数表显示（tableCount=1）
+  - 分页：共 1043 条，有页大小选择器
+  - 切回院校视图正常
+
+### 待桌面手动测试
+- 多专业模式 + 招生计划视图 + 筛选 + 排序 + 分页 + 导出 CSV
+- 行展开多年分数表
+- 切换专业 Tab 时 plan 数据刷新
+
+---
+
+## ISSUE-027 阶段 1 工作区多专业合并展示 + 双视图切换（2026-07-23）
+
+### 背景
+工作区 `WorkspacePage` store 有 `visibleMajorCodes`（多专业列表），但实际数据加载只用单个 `majorCode`，导致选 4 个专业只显示一个的数据。底层数据库 `workspace_schools` 主键 `(school_id, major_code)` 天然多专业。
+
+### 设计决策（用户拍板，已持久化 project_memory.md）
+- 双视图切换：院校视图（默认）+ 招生计划视图（阶段 2）
+- 顶部专业 Tab："全部" + 各专业单选聚焦；复用 `currentMajor`（null=全部）
+- 院校视图：同院校多专业聚合一行，展开按专业分组
+- 导出：跟随当前专业范围，加专业列
+
+### 改动文件
+- [db.rs](file:///d:/yam/yam-desktop/src-tauri/src/db.rs)：3 函数 `major_code: &str` → `&[&str]` + SQL `IN(...)` + `major_in_clause` helper
+- [commands.rs](file:///d:/yam/yam-desktop/src-tauri/src/commands.rs)：`fetch_workspace_data` + `fetch_workspace_filter_options` 改 `Vec<String>`
+- [db.ts](file:///d:/yam/yam-desktop/src/lib/db.ts)：`fetchWorkspaceData(schoolId, majorCodes[], filters)` + `fetchWorkspaceFilterOptions(majorCodes[])` + mock 补 081200 样例
+- [appStore.ts](file:///d:/yam/yam-desktop/src/stores/appStore.ts)：加 `viewMode: 'school'|'plan'` + `setViewMode` + partialize 持久化
+- [WorkspacePage.tsx](file:///d:/yam/yam-desktop/src/pages/WorkspacePage.tsx)：activeMajorCodes + fallback 改造 + 专业 Tab + 视图切换置灰 + aggregatedSchools 聚合（MIN/SUM/OR）+ 展开按专业分组（departmentsByMajor + flatDepts）+ 收藏复合键批量 toggle + 导出加专业列
+
+### 关键实现点
+- `activeMajorCodes`：currentMajor=null→全部 visibleMajors，非空→单专业。`activeMajorCodesKey=join(',')` 作 useEffect 稳定依赖
+- fallback 改造：仅 currentMajor 非 null 且非法时回 null（保护"null=全部"语义）
+- 聚合：`aggregatedSchools` 按 school_id 分组，min_score=MIN/enroll_count=SUM/display_order=MIN/布尔=OR，保留 `_raw[]`
+- 展开分组：`departmentsByMajor` 按 major_code 分组，`flatDepts` 扁平化，`expandedDeptIndex` 跨专业连续编号
+- 收藏：`favorites` Set 改存 `${school_id}|${major_code}` 复合键，聚合行批量 toggle
+- 导出：`_raw.flatMap` 每个 (school,major) 一行，表头加专业代码/专业名称
+
+### 验证结果
+- `npm run build` ✅ 通过（无 TS 错误）
+- `cargo check` ✅ 通过（任务 1-3 阶段）
+- CDP（端口 9223）AI 自测 ✅：
+  - 后端多专业查询：fetch_workspace_data(['081200','083500']) 返回 410 条/306 校/104 所跨专业
+  - 专业 Tab：全部 + 计算机科学与技术/软件工程/电子信息/人工智能
+  - 视图切换：院校视图高亮、招生计划视图置灰
+  - 聚合徽标：南京航空航天大学"(4 个专业)"
+  - 展开分组：计算机科学与技术（10 个院系）/软件工程（6 个院系）/电子信息（8 个院系）/人工智能（6 个院系）
+  - Store 持久化：viewMode="school" 生效
+
+### 待桌面手动测试
+- 收藏批量 toggle（聚合行点击→多专业都收藏/取消）
+- 导出 CSV（全部模式含专业列、每 (school,major) 一行）
+- 单专业 Tab 切换数据加载
+
+---
+
+## ISSUE-027 多专业 Tab 多选支持 + syncedMajorsRef 优化（2026-07-23 续）
+
+### 背景
+阶段 1 的专业 Tab 是"全部"+各专业单选聚焦（复用 `currentMajor: string | null`），用户反馈"不支持同时显示不全选的多个专业"——想选 2-3 个但非全部专业做对比。同时阶段 1 遗留的 syncedMajorsRef 修复（解决 Tab 切换慢）未跑 npm run build 验证。
+
+### 设计决策
+- 状态模型：`currentMajor: string | null` → `selectedMajorCodes: string[]`（空=全部 / 非空=选中的那些 / 单元素=单专业聚焦）
+- Tab 交互：纯点击 toggle（不用 Ctrl/Shift），"全部"按钮=清空，全选自动清空避免歧义
+- 不持久化（与 currentMajor 一一致），启动默认聚焦第一个专业（App.tsx 设置）
+- 多选提示：`selectedMajorCodes.length >= 2 && < visibleMajors.length` 时显示"已选 N 个"（单选/全部不显示）
+- App.tsx / DataReadyPage 行为不变（启动 + 进工作区默认仍聚焦第一个专业）
+
+### 改动文件
+- [appStore.ts](file:///d:/yam/yam-desktop/src/stores/appStore.ts)：移除 `currentMajor`/`setCurrentMajor`，新增 `selectedMajorCodes: string[]` + `setSelectedMajorCodes`（不持久化）
+- [WorkspacePage.tsx](file:///d:/yam/yam-desktop/src/pages/WorkspacePage.tsx)：activeMajorCodes 派生改基于 selectedMajorCodes + fallback cleanup（过滤 stale code）+ handleToggleMajor（全选自动清空）+ Tab 渲染（toggle + 高亮 includes + "已选 N 个"提示）
+- [DataReadyPage.tsx](file:///d:/yam/yam-desktop/src/pages/DataReadyPage.tsx)：`setCurrentMajor` → `setSelectedMajorCodes([code])`（行为不变）
+- [App.tsx](file:///d:/yam/yam-desktop/src/App.tsx)：`setCurrentMajor` → `setSelectedMajorCodes([first])`（行为不变）
+
+### syncedMajorsRef 优化（阶段 1 遗留，本次验证通过）
+- [WorkspacePage.tsx](file:///d:/yam/yam-desktop/src/pages/WorkspacePage.tsx) L302-346：`syncedMajorsRef = useRef<Set<string>>(new Set())`，Effect 1 只 sync 未在 ref 里的专业，已 sync 的专业 Tab 切换只查 DB（毫秒级）。用户点"刷新数据"按钮（handleSync）强制重新 sync 不受此 ref 限制
+- 解决阶段 1 用户反馈"点击专业 tag 切换得很慢"（每次切换都跑 Python sync_to_tauri.py 1-2 秒/专业）
+
+### 关键实现点
+- `activeMajorCodes` 派生：`selectedMajorCodes.length === 0 ? visibleMajors : filter(合法)`，stale code 兜底过滤
+- `handleToggleMajor(code)`：toggle in/out，`next.length === visibleMajors.length` 时 set []（全选自动清空）
+- fallback cleanup effect：selectedMajorCodes 里不在 visibleMajors 的清理掉（ManageMajorsModal 删专业后残留处理）
+- 下游消费（收藏复合键/导出 _raw.flatMap/展开 departmentsByMajor/syncedMajorsRef）基于 activeMajorCodes 数组，自动适配无需改
+
+### 验证结果
+- `npm run build` ✅ 通过（760-914ms，无 TS 错误）
+- CDP（端口 9223）AI 自测 ✅（8 场景全过）：
+  - 初始单选聚焦（App.tsx 设第一个专业），无提示
+  - 多选 toggle：点第二个专业 → 2 个高亮 + "已选 2 个"
+  - "全部"按钮清空 → "全部"高亮其他不高亮
+  - toggle off 最后一个 → 自动回"全部"模式
+  - 全选自动清空：逐个选到第 4 个 → 触发"全部"模式（高亮=0, 全部active=true）
+  - 后端多专业查询：fetch_workspace_data([081200,083500]) 返回 410 条/306 校
+- 4 个已同步专业：081200(271校)/083500(139校)/085400(228校)/085410(217校)
+
+### 待桌面手动测试
+- 多选 toggle 交互（点 2-3 个专业对比）
+- 全选自动清空行为是否符合直觉
+- 多选模式下收藏/导出/展开分组正常
 
 ---
 

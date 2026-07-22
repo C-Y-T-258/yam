@@ -35,6 +35,7 @@ fn main() {
             commands::fetch_schools,
             commands::fetch_score_lines,
             commands::fetch_workspace_data,
+            commands::fetch_workspace_plans,
             commands::fetch_workspace_filter_options,
             commands::fetch_available_majors,
             commands::fetch_favorites,

@@ -56,7 +56,7 @@ pub struct WorkspaceDepartment {
     pub years: Vec<WorkspaceYear>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WorkspaceYear {
     pub year: i32,
     pub enroll_count: i32,
@@ -65,6 +65,39 @@ pub struct WorkspaceYear {
     pub english: i32,
     pub math: i32,
     pub specialized: i32,
+}
+
+// ISSUE-027 阶段 2：招生计划视图扁平行。每行 = (院校, 专业, 院系, 方向, 考试科目, 最新年份分数线)。
+#[derive(Serialize, Deserialize, Debug)]
+pub struct WorkspacePlanRow {
+    // 院校级
+    pub school_id: String,
+    pub school_code: String,
+    pub school_name: String,
+    pub province: String,
+    pub level: String,
+    pub is_985: bool,
+    pub is_211: bool,
+    pub double_first_class: bool,
+    pub self_scoring: bool,
+    pub doctoral_program: bool,
+    pub display_order: i32,
+    // 专业级
+    pub major_code: String,
+    // 院系级
+    pub department_id: i64,
+    pub department_name: String,
+    pub research_direction: String,
+    pub exam_subjects: Vec<String>,
+    pub study_mode: String,
+    pub exam_type: String,
+    pub special_plans: Vec<String>,
+    // 最新年份分数（years[0]，years 按 year DESC 排序）
+    pub latest_year: i32,
+    pub latest_min_score: i32,
+    pub latest_enroll_count: i32,
+    // 多年分数（供展开用）
+    pub years: Vec<WorkspaceYear>,
 }
 
 pub fn init_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -470,9 +503,12 @@ pub struct WorkspaceFilterParams<'a> {
 
 pub fn get_workspace_schools(
     conn: &Connection,
-    major_code: &str,
+    major_codes: &[&str],
     params: WorkspaceFilterParams,
 ) -> Vec<WorkspaceSchool> {
+    if major_codes.is_empty() {
+        return Vec::new();
+    }
     let order_field = match params.sort_by.unwrap_or("min_score") {
         "enroll_count" => "s.enroll_count",
         "name" => "s.name",
@@ -491,9 +527,26 @@ pub fn get_workspace_schools(
     };
 
     // Build dynamic SQL and owned parameter values.
-    let mut conditions: Vec<String> = vec!["s.major_code = ?1".to_string()];
-    let mut values: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Text(major_code.to_string())];
-    let mut idx: usize = 2;
+    // ISSUE-027: major_code 从单值改为多值，WHERE 用 IN (?, ?, ...)。
+    let mut conditions: Vec<String> = Vec::new();
+    let mut values: Vec<rusqlite::types::Value> = Vec::new();
+    let mut idx: usize = 1;
+    {
+        let placeholders: Vec<String> = major_codes
+            .iter()
+            .map(|_| {
+                let p = format!("?{}", idx);
+                idx += 1;
+                p
+            })
+            .collect();
+        conditions.push(format!("s.major_code IN ({})", placeholders.join(",")));
+        values.extend(
+            major_codes
+                .iter()
+                .map(|c| rusqlite::types::Value::Text((*c).to_string())),
+        );
+    }
 
     fn push_opt(
         conditions: &mut Vec<String>,
@@ -744,19 +797,42 @@ pub fn get_available_majors(conn: &Connection) -> Vec<AvailableMajor> {
     rows.filter_map(|r| r.ok()).collect()
 }
 
-pub fn get_workspace_filter_options(conn: &Connection, major_code: &str) -> FilterOptions {
+/// ISSUE-027: 构建 `major_code IN (?, ?, ...)` 子句和对应参数值，供多专业查询复用。
+fn major_in_clause(major_codes: &[&str]) -> (String, Vec<rusqlite::types::Value>) {
+    let placeholders: Vec<String> = major_codes.iter().map(|_| "?".to_string()).collect();
+    let in_sql = format!("({})", placeholders.join(","));
+    let values: Vec<rusqlite::types::Value> = major_codes
+        .iter()
+        .map(|c| rusqlite::types::Value::Text((*c).to_string()))
+        .collect();
+    (in_sql, values)
+}
+
+pub fn get_workspace_filter_options(conn: &Connection, major_codes: &[&str]) -> FilterOptions {
+    if major_codes.is_empty() {
+        return FilterOptions {
+            provinces: Vec::new(), region_groups: Vec::new(), levels: Vec::new(),
+            level_tags: Vec::new(), study_modes: Vec::new(), exam_types: Vec::new(),
+            special_plans: Vec::new(), foreign_subjects: Vec::new(),
+            business_one_subjects: Vec::new(), business_two_subjects: Vec::new(),
+            has_self_scoring: false, has_doctoral: false, has_double_first_class: false,
+            has_self_scoring_tag: false, has_research_institute: false,
+        };
+    }
+    // ISSUE-027: major_code 从单值改为多值，所有子查询统一用 IN (?, ?, ...)。
+    let (in_sql, in_values) = major_in_clause(major_codes);
     // 省份按研招网顺序排序（未在常量中的省份排末尾）
     let provinces: Vec<String> = {
-        let mut stmt = conn
-            .prepare(
-                "SELECT DISTINCT province
-                 FROM workspace_schools
-                 WHERE major_code = ?1 AND province <> ''
-                 ORDER BY province"
-            )
-            .unwrap();
+        let sql = format!(
+            "SELECT DISTINCT province
+             FROM workspace_schools
+             WHERE major_code IN {} AND province <> ''
+             ORDER BY province",
+            in_sql
+        );
+        let mut stmt = conn.prepare(&sql).unwrap();
         let rows = stmt
-            .query_map([major_code], |row| row.get::<_, String>(0))
+            .query_map(rusqlite::params_from_iter(in_values.iter()), |row| row.get::<_, String>(0))
             .unwrap();
         let mut raw: Vec<String> = rows.filter_map(|r| r.ok()).collect();
         raw.sort_by_key(|p| {
@@ -788,15 +864,15 @@ pub fn get_workspace_filter_options(conn: &Connection, major_code: &str) -> Filt
 
     // 实际数据中存在的层次组合（用于 levels 字段）
     let school_levels: Vec<(String, bool, String, bool, bool)> = {
-        let mut stmt = conn
-            .prepare(
-                "SELECT DISTINCT level, self_scoring, name, doctoral_program, double_first_class
-                 FROM workspace_schools
-                 WHERE major_code = ?1 AND level <> ''"
-            )
-            .unwrap();
+        let sql = format!(
+            "SELECT DISTINCT level, self_scoring, name, doctoral_program, double_first_class
+             FROM workspace_schools
+             WHERE major_code IN {} AND level <> ''",
+            in_sql
+        );
+        let mut stmt = conn.prepare(&sql).unwrap();
         let rows = stmt
-            .query_map([major_code], |row| {
+            .query_map(rusqlite::params_from_iter(in_values.iter()), |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, i32>(1)? != 0,
@@ -813,15 +889,15 @@ pub fn get_workspace_filter_options(conn: &Connection, major_code: &str) -> Filt
     let has_research_institute = school_levels.iter().any(|(_, _, n, _, _)| is_research_institute(n));
 
     let study_modes: Vec<String> = {
-        let mut stmt = conn
-            .prepare(
-                "SELECT DISTINCT study_mode
-                 FROM workspace_departments
-                 WHERE major_code = ?1 AND study_mode <> ''"
-            )
-            .unwrap();
+        let sql = format!(
+            "SELECT DISTINCT study_mode
+             FROM workspace_departments
+             WHERE major_code IN {} AND study_mode <> ''",
+            in_sql
+        );
+        let mut stmt = conn.prepare(&sql).unwrap();
         let rows = stmt
-            .query_map([major_code], |row| row.get::<_, String>(0))
+            .query_map(rusqlite::params_from_iter(in_values.iter()), |row| row.get::<_, String>(0))
             .unwrap();
         let mut modes: Vec<String> = Vec::new();
         for row in rows.filter_map(|r| r.ok()) {
@@ -837,30 +913,30 @@ pub fn get_workspace_filter_options(conn: &Connection, major_code: &str) -> Filt
     };
 
     let exam_types: Vec<String> = {
-        let mut stmt = conn
-            .prepare(
-                "SELECT DISTINCT exam_type
-                 FROM workspace_departments
-                 WHERE major_code = ?1 AND exam_type <> ''
-                 ORDER BY exam_type"
-            )
-            .unwrap();
+        let sql = format!(
+            "SELECT DISTINCT exam_type
+             FROM workspace_departments
+             WHERE major_code IN {} AND exam_type <> ''
+             ORDER BY exam_type",
+            in_sql
+        );
+        let mut stmt = conn.prepare(&sql).unwrap();
         let rows = stmt
-            .query_map([major_code], |row| row.get::<_, String>(0))
+            .query_map(rusqlite::params_from_iter(in_values.iter()), |row| row.get::<_, String>(0))
             .unwrap();
         rows.filter_map(|r| r.ok()).collect()
     };
 
     let special_plans: Vec<String> = {
-        let mut stmt = conn
-            .prepare(
-                "SELECT DISTINCT special_plans
-                 FROM workspace_departments
-                 WHERE major_code = ?1 AND special_plans <> '[]' AND special_plans <> ''"
-            )
-            .unwrap();
+        let sql = format!(
+            "SELECT DISTINCT special_plans
+             FROM workspace_departments
+             WHERE major_code IN {} AND special_plans <> '[]' AND special_plans <> ''",
+            in_sql
+        );
+        let mut stmt = conn.prepare(&sql).unwrap();
         let rows = stmt
-            .query_map([major_code], |row| row.get::<_, String>(0))
+            .query_map(rusqlite::params_from_iter(in_values.iter()), |row| row.get::<_, String>(0))
             .unwrap();
         let mut plans: Vec<String> = Vec::new();
         for row in rows.filter_map(|r| r.ok()) {
@@ -877,15 +953,15 @@ pub fn get_workspace_filter_options(conn: &Connection, major_code: &str) -> Filt
     };
 
     let classified_subjects = {
-        let mut stmt = conn
-            .prepare(
-                "SELECT DISTINCT exam_subjects
-                 FROM workspace_departments
-                 WHERE major_code = ?1 AND exam_subjects <> ''"
-            )
-            .unwrap();
+        let sql = format!(
+            "SELECT DISTINCT exam_subjects
+             FROM workspace_departments
+             WHERE major_code IN {} AND exam_subjects <> ''",
+            in_sql
+        );
+        let mut stmt = conn.prepare(&sql).unwrap();
         let rows = stmt
-            .query_map([major_code], |row| row.get::<_, String>(0))
+            .query_map(rusqlite::params_from_iter(in_values.iter()), |row| row.get::<_, String>(0))
             .unwrap();
         let mut all: Vec<String> = Vec::new();
         for row in rows.filter_map(|r| r.ok()) {
@@ -900,15 +976,15 @@ pub fn get_workspace_filter_options(conn: &Connection, major_code: &str) -> Filt
     };
 
     let (has_self_scoring, has_doctoral, has_double_first_class) = {
-        let mut stmt = conn
-            .prepare(
-                "SELECT MAX(self_scoring), MAX(doctoral_program), MAX(double_first_class)
-                 FROM workspace_schools
-                 WHERE major_code = ?1"
-            )
-            .unwrap();
+        let sql = format!(
+            "SELECT MAX(self_scoring), MAX(doctoral_program), MAX(double_first_class)
+             FROM workspace_schools
+             WHERE major_code IN {}",
+            in_sql
+        );
+        let mut stmt = conn.prepare(&sql).unwrap();
         stmt
-            .query_row([major_code], |row| {
+            .query_row(rusqlite::params_from_iter(in_values.iter()), |row| {
                 Ok((
                     row.get::<_, i32>(0).unwrap_or(0) > 0,
                     row.get::<_, i32>(1).unwrap_or(0) > 0,
@@ -937,18 +1013,31 @@ pub fn get_workspace_filter_options(conn: &Connection, major_code: &str) -> Filt
     }
 }
 
-pub fn get_workspace_departments(conn: &Connection, school_id: &str, major_code: &str) -> Vec<WorkspaceDepartment> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT department_id, school_id, major_code, name, research_direction, exam_subjects,
-                    study_mode, exam_type, special_plans
-             FROM workspace_departments
-             WHERE school_id = ?1 AND major_code = ?2
-             ORDER BY department_id"
-        )
-        .unwrap();
+pub fn get_workspace_departments(conn: &Connection, school_id: &str, major_codes: &[&str]) -> Vec<WorkspaceDepartment> {
+    if major_codes.is_empty() {
+        return Vec::new();
+    }
+    // ISSUE-027: major_code 从单值改为多值，WHERE 用 IN (?, ?, ...)；ORDER BY 加 major_code 便于前端按专业分组。
+    let placeholders: Vec<String> = major_codes
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("?{}", i + 2))
+        .collect();
+    let sql = format!(
+        "SELECT department_id, school_id, major_code, name, research_direction, exam_subjects,
+                study_mode, exam_type, special_plans
+         FROM workspace_departments
+         WHERE school_id = ?1 AND major_code IN ({})
+         ORDER BY major_code, department_id",
+        placeholders.join(",")
+    );
+    let mut stmt = conn.prepare(&sql).unwrap();
+    let mut params: Vec<&dyn rusqlite::ToSql> = vec![&school_id];
+    for c in major_codes {
+        params.push(c);
+    }
     let rows = stmt
-        .query_map([school_id, major_code], |row| {
+        .query_map(params.as_slice(), |row| {
             let department_id: i64 = row.get(0)?;
             let exam_subjects_str: String = row.get(5)?;
             let special_plans_str: String = row.get(8)?;
@@ -994,6 +1083,374 @@ fn get_department_years(conn: &Connection, department_id: i64) -> Vec<WorkspaceY
         })
         .unwrap();
     rows.filter_map(|r| r.ok()).collect()
+}
+
+// ISSUE-027 阶段 2：招生计划视图。JOIN workspace_schools + workspace_departments 返回扁平行。
+// 筛选条件复用 get_workspace_schools 的逻辑；单科分数筛选用 EXISTS 子查询避免行重复。
+// years 批量查询避免 N+1；排序在 Rust 侧做（latest_min_score/latest_enroll_count 需 years[0]）。
+pub fn get_workspace_plans(
+    conn: &Connection,
+    major_codes: &[&str],
+    params: WorkspaceFilterParams,
+) -> Vec<WorkspacePlanRow> {
+    if major_codes.is_empty() {
+        return Vec::new();
+    }
+
+    let mut conditions: Vec<String> = Vec::new();
+    let mut values: Vec<rusqlite::types::Value> = Vec::new();
+    let mut idx: usize = 1;
+
+    // major_code IN (...)
+    {
+        let placeholders: Vec<String> = major_codes
+            .iter()
+            .map(|_| {
+                let p = format!("?{}", idx);
+                idx += 1;
+                p
+            })
+            .collect();
+        conditions.push(format!("s.major_code IN ({})", placeholders.join(",")));
+        values.extend(
+            major_codes
+                .iter()
+                .map(|c| rusqlite::types::Value::Text((*c).to_string())),
+        );
+    }
+
+    fn push_opt(
+        conditions: &mut Vec<String>,
+        values: &mut Vec<rusqlite::types::Value>,
+        idx: &mut usize,
+        cond: &str,
+        value: Option<rusqlite::types::Value>,
+    ) {
+        if let Some(v) = value {
+            conditions.push(cond.replace("__IDX__", &idx.to_string()));
+            values.push(v);
+            *idx += 1;
+        }
+    }
+
+    // 省份筛选：显式列表优先，其次单省，最后区域分组
+    let selected_provinces: Vec<&str> = if let Some(list) = params.provinces {
+        list.to_vec()
+    } else if let Some(region) = params.region_group {
+        region_provinces(region).to_vec()
+    } else if let Some(p) = params.province {
+        vec![p]
+    } else {
+        vec![]
+    };
+    if !selected_provinces.is_empty() {
+        let placeholders: Vec<String> = selected_provinces
+            .iter()
+            .map(|_| {
+                let p = format!("?{}", idx);
+                idx += 1;
+                p
+            })
+            .collect();
+        conditions.push(format!("s.province IN ({})", placeholders.join(",")));
+        values.extend(
+            selected_provinces
+                .iter()
+                .map(|p| rusqlite::types::Value::Text((*p).to_string())),
+        );
+    }
+
+    // 层次标签筛选
+    if let Some(levels) = params.levels {
+        if !levels.is_empty() {
+            let mut or_conditions: Vec<String> = Vec::new();
+            for level in levels {
+                match *level {
+                    "自划线" => or_conditions.push("s.self_scoring = 1".to_string()),
+                    "科研院所" => or_conditions.push(
+                        "(s.name LIKE '%研究院%' OR s.name LIKE '%研究所%' OR s.name LIKE '%科学院%' OR s.name LIKE '%研究生院%')"
+                            .to_string(),
+                    ),
+                    "博士点" => or_conditions.push("s.doctoral_program = 1".to_string()),
+                    "985" => or_conditions.push("s.is_985 = 1".to_string()),
+                    "211" => or_conditions.push("s.is_211 = 1".to_string()),
+                    "双一流" => or_conditions.push("s.double_first_class = 1".to_string()),
+                    _ => {
+                        or_conditions.push(format!("s.level LIKE ?{}", idx));
+                        values.push(rusqlite::types::Value::Text(format!("%{}%", level)));
+                        idx += 1;
+                    }
+                }
+            }
+            conditions.push(format!("({})", or_conditions.join(" OR ")));
+        }
+    }
+
+    // 院校级分数/人数范围（作用于 s.min_score / s.enroll_count 聚合值，与院校视图语义一致）
+    push_opt(&mut conditions, &mut values, &mut idx, "s.min_score >= ?__IDX__", params.min_score_min.map(Into::into));
+    push_opt(&mut conditions, &mut values, &mut idx, "s.min_score <= ?__IDX__", params.min_score_max.map(Into::into));
+    push_opt(&mut conditions, &mut values, &mut idx, "s.enroll_count >= ?__IDX__", params.enroll_count_min.map(Into::into));
+    push_opt(&mut conditions, &mut values, &mut idx, "s.enroll_count <= ?__IDX__", params.enroll_count_max.map(Into::into));
+
+    // 院系名称筛选
+    if let Some(name) = params.department_name {
+        conditions.push(format!("d.name LIKE '%' || ?{} || '%'", idx));
+        values.push(rusqlite::types::Value::Text(name.to_string()));
+        idx += 1;
+    }
+
+    // 院校特征
+    if params.self_scoring == Some(true) {
+        conditions.push("s.self_scoring = 1".to_string());
+    }
+    if params.doctoral_program == Some(true) {
+        conditions.push("s.doctoral_program = 1".to_string());
+    }
+    if params.double_first_class == Some(true) {
+        conditions.push("s.double_first_class = 1".to_string());
+    }
+
+    // 院系级筛选：学习方式/考试方式/专项计划（LIKE 支持逗号分隔多值）
+    if let Some(modes) = params.study_modes {
+        if !modes.is_empty() {
+            let mut or_conditions: Vec<String> = Vec::new();
+            for mode in modes {
+                or_conditions.push(format!(
+                    "(',' || COALESCE(d.study_mode,'') || ',') LIKE '%{},%'",
+                    mode.replace('\'', "''")
+                ));
+            }
+            conditions.push(format!("({})", or_conditions.join(" OR ")));
+        }
+    }
+    if let Some(types) = params.exam_types {
+        if !types.is_empty() {
+            let mut or_conditions: Vec<String> = Vec::new();
+            for t in types {
+                or_conditions.push(format!(
+                    "(',' || COALESCE(d.exam_type,'') || ',') LIKE '%{},%'",
+                    t.replace('\'', "''")
+                ));
+            }
+            conditions.push(format!("({})", or_conditions.join(" OR ")));
+        }
+    }
+    if let Some(plans) = params.special_plans {
+        if !plans.is_empty() {
+            let mut or_conditions: Vec<String> = Vec::new();
+            for plan in plans {
+                or_conditions.push(format!(
+                    "d.special_plans LIKE '%{}%'",
+                    plan.replace('\'', "''")
+                ));
+            }
+            conditions.push(format!("({})", or_conditions.join(" OR ")));
+        }
+    }
+
+    // 考试科目筛选（多选，任一匹配）
+    if let Some(subjects) = params.foreign_subjects {
+        if !subjects.is_empty() {
+            let mut or_conditions: Vec<String> = Vec::new();
+            for subject in subjects {
+                or_conditions.push(format!("d.exam_subjects LIKE ?{}", idx));
+                values.push(rusqlite::types::Value::Text(format!("%{}%", subject)));
+                idx += 1;
+            }
+            conditions.push(format!("({})", or_conditions.join(" OR ")));
+        }
+    }
+    if let Some(subjects) = params.business_one_subjects {
+        if !subjects.is_empty() {
+            let mut or_conditions: Vec<String> = Vec::new();
+            for subject in subjects {
+                or_conditions.push(format!("d.exam_subjects LIKE ?{}", idx));
+                values.push(rusqlite::types::Value::Text(format!("%{}%", subject)));
+                idx += 1;
+            }
+            conditions.push(format!("({})", or_conditions.join(" OR ")));
+        }
+    }
+    if let Some(subjects) = params.business_two_subjects {
+        if !subjects.is_empty() {
+            let mut or_conditions: Vec<String> = Vec::new();
+            for subject in subjects {
+                or_conditions.push(format!("d.exam_subjects LIKE ?{}", idx));
+                values.push(rusqlite::types::Value::Text(format!("%{}%", subject)));
+                idx += 1;
+            }
+            conditions.push(format!("({})", or_conditions.join(" OR ")));
+        }
+    }
+
+    // 单科分数筛选：EXISTS 子查询查 workspace_department_years（任一年份匹配即保留该院系，避免行重复）
+    if let Some(v) = params.english_min {
+        conditions.push(format!("EXISTS(SELECT 1 FROM workspace_department_years y WHERE y.department_id = d.department_id AND y.english >= ?{})", idx));
+        values.push(rusqlite::types::Value::Integer(v as i64));
+        idx += 1;
+    }
+    if let Some(v) = params.english_max {
+        conditions.push(format!("EXISTS(SELECT 1 FROM workspace_department_years y WHERE y.department_id = d.department_id AND y.english <= ?{})", idx));
+        values.push(rusqlite::types::Value::Integer(v as i64));
+        idx += 1;
+    }
+    if let Some(v) = params.business_one_min {
+        conditions.push(format!("EXISTS(SELECT 1 FROM workspace_department_years y WHERE y.department_id = d.department_id AND y.math >= ?{})", idx));
+        values.push(rusqlite::types::Value::Integer(v as i64));
+        idx += 1;
+    }
+    if let Some(v) = params.business_one_max {
+        conditions.push(format!("EXISTS(SELECT 1 FROM workspace_department_years y WHERE y.department_id = d.department_id AND y.math <= ?{})", idx));
+        values.push(rusqlite::types::Value::Integer(v as i64));
+        idx += 1;
+    }
+    if let Some(v) = params.business_two_min {
+        conditions.push(format!("EXISTS(SELECT 1 FROM workspace_department_years y WHERE y.department_id = d.department_id AND y.specialized >= ?{})", idx));
+        values.push(rusqlite::types::Value::Integer(v as i64));
+        idx += 1;
+    }
+    if let Some(v) = params.business_two_max {
+        conditions.push(format!("EXISTS(SELECT 1 FROM workspace_department_years y WHERE y.department_id = d.department_id AND y.specialized <= ?{})", idx));
+        values.push(rusqlite::types::Value::Integer(v as i64));
+        idx += 1;
+    }
+
+    let where_sql = if conditions.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", conditions.join(" AND "))
+    };
+    let sql = format!(
+        "SELECT s.school_id, s.school_code, s.name, s.province, s.level, s.is_985, s.is_211,
+                s.double_first_class, s.self_scoring, s.doctoral_program, s.display_order,
+                s.major_code,
+                d.department_id, d.name, d.research_direction, d.exam_subjects, d.study_mode,
+                d.exam_type, d.special_plans
+         FROM workspace_schools s
+         JOIN workspace_departments d ON d.school_id = s.school_id AND d.major_code = s.major_code
+         {}",
+        where_sql
+    );
+
+    let mut stmt = conn.prepare(&sql).unwrap();
+    let mut plan_rows: Vec<WorkspacePlanRow> = stmt
+        .query_map(rusqlite::params_from_iter(values.iter()), |row| {
+            let exam_subjects_str: String = row.get(15)?;
+            let special_plans_str: String = row.get(18)?;
+            let special_plans: Vec<String> =
+                serde_json::from_str(&special_plans_str).unwrap_or_default();
+            Ok(WorkspacePlanRow {
+                school_id: row.get(0)?,
+                school_code: row.get(1)?,
+                school_name: row.get(2)?,
+                province: row.get(3)?,
+                level: row.get(4)?,
+                is_985: row.get::<_, i32>(5)? != 0,
+                is_211: row.get::<_, i32>(6)? != 0,
+                double_first_class: row.get::<_, i32>(7)? != 0,
+                self_scoring: row.get::<_, i32>(8)? != 0,
+                doctoral_program: row.get::<_, i32>(9)? != 0,
+                display_order: row.get(10)?,
+                major_code: row.get(11)?,
+                department_id: row.get(12)?,
+                department_name: row.get(13)?,
+                research_direction: row.get(14)?,
+                exam_subjects: exam_subjects_str
+                    .split(',')
+                    .map(|s| s.to_string())
+                    .collect(),
+                study_mode: row.get(16)?,
+                exam_type: row.get(17)?,
+                special_plans,
+                latest_year: 0,
+                latest_min_score: 0,
+                latest_enroll_count: 0,
+                years: Vec::new(),
+            })
+        })
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect();
+
+    if plan_rows.is_empty() {
+        return plan_rows;
+    }
+
+    // 批量查 years：一次 IN 查询，按 department_id 分组，每组 year DESC 排序
+    let dept_ids: Vec<i64> = plan_rows.iter().map(|p| p.department_id).collect();
+    let years_map = batch_get_department_years(conn, &dept_ids);
+
+    for p in plan_rows.iter_mut() {
+        if let Some(years) = years_map.get(&p.department_id) {
+            if let Some(latest) = years.first() {
+                p.latest_year = latest.year;
+                p.latest_min_score = latest.min_score;
+                p.latest_enroll_count = latest.enroll_count;
+            }
+            p.years = years.clone();
+        }
+    }
+
+    // Rust 侧排序
+    let sort_by = params.sort_by.unwrap_or("min_score");
+    let sort_asc = params.sort_order.unwrap_or("desc") == "asc";
+    plan_rows.sort_by(|a, b| {
+        let cmp = match sort_by {
+            "enroll_count" => a.latest_enroll_count.cmp(&b.latest_enroll_count),
+            "name" => a.school_name.cmp(&b.school_name),
+            "school_code" => a.school_code.cmp(&b.school_code),
+            "default" => a.display_order.cmp(&b.display_order),
+            _ => a.latest_min_score.cmp(&b.latest_min_score),
+        };
+        if sort_asc {
+            cmp
+        } else {
+            cmp.reverse()
+        }
+    });
+
+    plan_rows
+}
+
+// 批量查询多个 department_id 的 years，按 department_id 分组，每组 year DESC 排序。
+fn batch_get_department_years(conn: &Connection, dept_ids: &[i64]) -> std::collections::HashMap<i64, Vec<WorkspaceYear>> {
+    let mut map: std::collections::HashMap<i64, Vec<WorkspaceYear>> = std::collections::HashMap::new();
+    if dept_ids.is_empty() {
+        return map;
+    }
+    let placeholders: Vec<String> = (0..dept_ids.len()).map(|i| format!("?{}", i + 1)).collect();
+    let sql = format!(
+        "SELECT department_id, year, enroll_count, min_score, politics, english, math, specialized
+         FROM workspace_department_years
+         WHERE department_id IN ({})
+         ORDER BY department_id, year DESC",
+        placeholders.join(",")
+    );
+    let params: Vec<&dyn rusqlite::ToSql> = dept_ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return map,
+    };
+    let rows = stmt
+        .query_map(params.as_slice(), |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                WorkspaceYear {
+                    year: row.get(1)?,
+                    enroll_count: row.get(2)?,
+                    min_score: row.get(3)?,
+                    politics: row.get(4)?,
+                    english: row.get(5)?,
+                    math: row.get(6)?,
+                    specialized: row.get(7)?,
+                },
+            ))
+        })
+        .unwrap();
+    for r in rows.filter_map(|r| r.ok()) {
+        map.entry(r.0).or_default().push(r.1);
+    }
+    map
 }
 
 #[derive(Serialize, Debug)]

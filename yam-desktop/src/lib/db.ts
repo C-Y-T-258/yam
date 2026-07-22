@@ -63,6 +63,38 @@ export interface WorkspaceData {
   departments: WorkspaceDepartment[];
 }
 
+// ISSUE-027 阶段 2：招生计划视图扁平行。每行 = (院校, 专业, 院系, 方向, 考试科目, 最新年份分数线)。
+export interface WorkspacePlanRow {
+  // 院校级
+  school_id: string;
+  school_code: string;
+  school_name: string;
+  province: string;
+  level: string;
+  is_985: boolean;
+  is_211: boolean;
+  double_first_class: boolean;
+  self_scoring: boolean;
+  doctoral_program: boolean;
+  display_order: number;
+  // 专业级
+  major_code: string;
+  // 院系级
+  department_id: number;
+  department_name: string;
+  research_direction: string;
+  exam_subjects: string[];
+  study_mode: string;
+  exam_type: string;
+  special_plans: string[];
+  // 最新年份分数
+  latest_year: number;
+  latest_min_score: number;
+  latest_enroll_count: number;
+  // 多年（展开用）
+  years: WorkspaceYear[];
+}
+
 export interface FilterOptions {
   provinces: string[];
   region_groups: string[];
@@ -424,14 +456,14 @@ export function applyWorkspaceFilters<T extends FilterableFavorite>(
 
 export async function fetchWorkspaceData(
   schoolId: string,
-  majorCode: string,
+  majorCodes: string[],
   filters: WorkspaceFilters = {}
 ): Promise<WorkspaceData> {
   if (isTauri) {
     const { invoke } = await import('@tauri-apps/api/core');
     return invoke('fetch_workspace_data', {
       schoolId,
-      majorCode,
+      majorCodes,
       province: filters.province ?? null,
       provinces: filters.provinces ?? null,
       regionGroup: filters.regionGroup ?? null,
@@ -465,19 +497,107 @@ export async function fetchWorkspaceData(
 }
 
 export async function fetchWorkspaceFilterOptions(
-  majorCode: string
+  majorCodes: string[]
 ): Promise<FilterOptions> {
   if (isTauri) {
     const { invoke } = await import('@tauri-apps/api/core');
-    return invoke('fetch_workspace_filter_options', { majorCode });
+    return invoke('fetch_workspace_filter_options', { majorCodes });
   }
   // Mock options for browser testing
   return getMockFilterOptions();
 }
 
+// ISSUE-027 阶段 2：招生计划视图。返回扁平行 (院校, 专业, 院系, 方向, 考试科目, 最新年份分数线)。
+// 筛选参数同 fetchWorkspaceData，但不需要 schoolId（返回全量 plan 行）。
+export async function fetchWorkspacePlans(
+  majorCodes: string[],
+  filters: WorkspaceFilters = {}
+): Promise<WorkspacePlanRow[]> {
+  if (isTauri) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke('fetch_workspace_plans', {
+      majorCodes,
+      province: filters.province ?? null,
+      provinces: filters.provinces ?? null,
+      regionGroup: filters.regionGroup ?? null,
+      levels: filters.levels ?? null,
+      sortBy: filters.sortBy ?? null,
+      sortOrder: filters.sortOrder ?? null,
+      minScoreMin: filters.minScoreMin ?? null,
+      minScoreMax: filters.minScoreMax ?? null,
+      enrollCountMin: filters.enrollCountMin ?? null,
+      enrollCountMax: filters.enrollCountMax ?? null,
+      departmentName: filters.departmentName ?? null,
+      studyModes: filters.studyModes ?? null,
+      examTypes: filters.examTypes ?? null,
+      selfScoring: filters.selfScoring ?? null,
+      doctoralProgram: filters.doctoralProgram ?? null,
+      doubleFirstClass: filters.doubleFirstClass ?? null,
+      specialPlans: filters.specialPlans ?? null,
+      englishMin: filters.englishMin ?? null,
+      englishMax: filters.englishMax ?? null,
+      businessOneMin: filters.businessOneMin ?? null,
+      businessOneMax: filters.businessOneMax ?? null,
+      businessTwoMin: filters.businessTwoMin ?? null,
+      businessTwoMax: filters.businessTwoMax ?? null,
+      foreignSubjects: filters.foreignSubjects ?? null,
+      businessOneSubjects: filters.businessOneSubjects ?? null,
+      businessTwoSubjects: filters.businessTwoSubjects ?? null,
+    });
+  }
+  // Mock data for browser testing
+  return getMockWorkspacePlans();
+}
+
+function getMockWorkspacePlans(): WorkspacePlanRow[] {
+  return [
+    {
+      school_id: '1', school_code: '10003', school_name: '清华大学', province: '北京',
+      level: '985 / 211 / 双一流', is_985: true, is_211: true, double_first_class: true,
+      self_scoring: true, doctoral_program: true, display_order: 0,
+      major_code: '081200', department_id: 1, department_name: '计算机科学与技术（学术学位）',
+      research_direction: '机器学习与智能系统、计算机视觉与模式识别、自然语言处理、数据挖掘与推荐系统等。',
+      exam_subjects: ['① 101 思想政治理论', '② 201 英语（一）', '③ 301 数学（一）', '④ 408 计算机学科专业基础'],
+      study_mode: '全日制', exam_type: '统考', special_plans: [],
+      latest_year: 2026, latest_min_score: 681, latest_enroll_count: 28,
+      years: [
+        { year: 2026, enroll_count: 28, min_score: 681, politics: 70, english: 70, math: 110, specialized: 120 },
+        { year: 2025, enroll_count: 26, min_score: 672, politics: 68, english: 68, math: 105, specialized: 115 },
+      ],
+    },
+    {
+      school_id: '1', school_code: '10003', school_name: '清华大学', province: '北京',
+      level: '985 / 211 / 双一流', is_985: true, is_211: true, double_first_class: true,
+      self_scoring: true, doctoral_program: true, display_order: 0,
+      major_code: '081200', department_id: 2, department_name: '人工智能（专业学位）',
+      research_direction: '机器学习、深度学习、计算机视觉、自然语言处理等。',
+      exam_subjects: ['① 101 思想政治理论', '② 204 英语（二）', '③ 302 数学（二）', '④ 408 计算机学科专业基础'],
+      study_mode: '全日制', exam_type: '统考', special_plans: [],
+      latest_year: 2026, latest_min_score: 670, latest_enroll_count: 45,
+      years: [
+        { year: 2026, enroll_count: 45, min_score: 670, politics: 68, english: 68, math: 105, specialized: 115 },
+      ],
+    },
+    {
+      school_id: '2', school_code: '10001', school_name: '北京大学', province: '北京',
+      level: '985 / 211 / 双一流', is_985: true, is_211: true, double_first_class: true,
+      self_scoring: true, doctoral_program: true, display_order: 1,
+      major_code: '081200', department_id: 3, department_name: '计算机科学与技术（学术学位）',
+      research_direction: '计算机系统结构、计算机网络、软件工程等。',
+      exam_subjects: ['① 101 思想政治理论', '② 201 英语（一）', '③ 301 数学（一）', '④ 408 计算机学科专业基础'],
+      study_mode: '全日制', exam_type: '统考', special_plans: [],
+      latest_year: 2026, latest_min_score: 675, latest_enroll_count: 30,
+      years: [
+        { year: 2026, enroll_count: 30, min_score: 675, politics: 70, english: 70, math: 110, specialized: 118 },
+      ],
+    },
+  ];
+}
+
 function getMockWorkspaceData(filters: WorkspaceFilters = {}): WorkspaceData {
   let schools: WorkspaceSchool[] = [
     { school_id: '1', major_code: '085400', name: '清华大学', province: '北京', level: '985 / 211 / 双一流', min_score: 672, enroll_count: 45, self_scoring: true, doctoral_program: true, double_first_class: true, school_code: '10003', province_code: '11', is_985: true, is_211: true, display_order: 0 },
+    { school_id: '1', major_code: '081200', name: '清华大学', province: '北京', level: '985 / 211 / 双一流', min_score: 665, enroll_count: 30, self_scoring: true, doctoral_program: true, double_first_class: true, school_code: '10003', province_code: '11', is_985: true, is_211: true, display_order: 0 },
     { school_id: '2', major_code: '085400', name: '北京大学', province: '北京', level: '985 / 211 / 双一流', min_score: 669, enroll_count: 40, self_scoring: true, doctoral_program: true, double_first_class: true, school_code: '10001', province_code: '11', is_985: true, is_211: true, display_order: 1 },
     { school_id: '3', major_code: '085400', name: '上海交通大学', province: '上海', level: '985 / 211 / 双一流', min_score: 660, enroll_count: 50, self_scoring: true, doctoral_program: true, double_first_class: true, school_code: '10248', province_code: '31', is_985: true, is_211: true, display_order: 2 },
     { school_id: '4', major_code: '085400', name: '浙江大学', province: '浙江', level: '985 / 211 / 双一流', min_score: 657, enroll_count: 48, self_scoring: true, doctoral_program: true, double_first_class: true, school_code: '10335', province_code: '33', is_985: true, is_211: true, display_order: 3 },

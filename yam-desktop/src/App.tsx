@@ -55,7 +55,7 @@ const MOCK_COMPARE_SCHOOLS = [
 ];
 
 export default function App() {
-  const { currentPage, setPage, crawledMajors, currentMajor, addMajor, setCurrentMajor } = useAppStore();
+  const { currentPage, setPage, crawledMajors, selectedMajorCodes, addMajor, setSelectedMajorCodes } = useAppStore();
   const [isManageMajorsOpen, setIsManageMajorsOpen] = useState(false);
   const [isCompareOpen, setIsCompareOpen] = useState(false);
   const [initialized, setInitialized] = useState(false);
@@ -83,14 +83,14 @@ export default function App() {
               dbSize: '-',
             });
           });
-          if (!currentMajor) {
-            setCurrentMajor(majors[0].major_code);
+          if (selectedMajorCodes.length === 0) {
+            setSelectedMajorCodes([majors[0].major_code]);
           }
         }
       })
       .catch((err) => console.error('加载已同步专业失败:', err))
       .finally(() => setInitialized(true));
-  }, [initialized, crawledMajors, currentMajor, addMajor, setCurrentMajor]);
+  }, [initialized, crawledMajors, selectedMajorCodes, addMajor, setSelectedMajorCodes]);
 
   // URL hash navigation for testing
   useEffect(() => {

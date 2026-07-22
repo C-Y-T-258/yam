@@ -6,6 +6,8 @@
 
 import asyncio
 import json
+import os
+import threading
 from pathlib import Path
 from typing import Any, Callable
 
@@ -69,7 +71,28 @@ class YanZhaoCrawler(BaseCrawler):
                 dynamic = DynamicYanZhaoCrawler(self.major_code, self.major_name)
                 import asyncio
 
-                result = asyncio.run(dynamic.fetch_and_save())
+                # ISSUE-017: 种子抓取（29 省扫描）可能耗时 >300s，远超 Rust 端 300s 超时。
+                # 后台心跳线程每 30s 发 YAM_PROGRESS 0/0，刷新 commands.rs 的 last_progress_time，
+                # 避免种子抓取中途被误判"300 秒无进度更新"而终止。
+                # 仅桌面端（YAM_DESKTOP=1）发协议行；独立 CLI `yam fetch-seeds` 不发避免噪声。
+                heartbeat_stop = threading.Event()
+                if os.environ.get("YAM_DESKTOP"):
+                    def _seed_heartbeat() -> None:
+                        n = 0
+                        while not heartbeat_stop.wait(30):
+                            n += 1
+                            print(
+                                f"YAM_PROGRESS 0/0 正在获取 {self.major_code} "
+                                f"{self.major_name} 种子数据（按省份扫描院校列表，心跳 {n}）...",
+                                flush=True,
+                            )
+
+                    threading.Thread(target=_seed_heartbeat, daemon=True).start()
+
+                try:
+                    result = asyncio.run(dynamic.fetch_and_save())
+                finally:
+                    heartbeat_stop.set()
                 print(f"已自动抓取 {self.major_code} 种子数据：{result['school_count']} 所院校")
             except LoginRequiredError:
                 raise

@@ -29,23 +29,23 @@
 | ISSUE-014 | high | fixed | 工作区院校层级 985/211 标签缺失 |
 | ISSUE-015 | high | fixed | 研招网 zydws.do 翻页接口偶发返回"请登录"（四阶段方案 100% 覆盖） |
 | ISSUE-016 | medium | fixed | 采集错误时 CrawlingPage 错误横幅显示完整 Python traceback |
-| ISSUE-017 | medium | open | 桌面端采集 90 秒超时对无种子专业过短（已有自适应超时，需验证） |
+| ISSUE-017 | high | fixed | 桌面端采集超时对无种子专业过短（300s 自适应 + 种子抓取心跳） |
 | ISSUE-018 | medium | fixed | 085400 电子信息 seed 完整但 zys.do 返回 totalCount=0（真实情况） |
-| ISSUE-019 | high | partial-fixed | 专业选择页面可供选择的专业不全（已改为实时查询，2255 majors） |
+| ISSUE-019 | high | fixed | 专业选择页面可供选择的专业不全（实时查询 majors_realtime.json，2255 majors，无 enabled 字段） |
 | ISSUE-020 | medium | fixed | BackgroundTaskPanel 用时计时器不会重置 |
 | ISSUE-021 | medium | fixed | 切出数据采集页面再切回误报"已有采集任务在运行" |
-| ISSUE-022 | medium | open | 选择 disabled=true 的专业后采集卡住（需重新定义方向） |
+| ISSUE-022 | medium | open | 选择 disabled=true 的专业后采集卡住（需重新定义方向：要消灭 disabled 的专业，要让专业可见即可查） |
 | ISSUE-023 | high | fixed | 专业目录更新流程耗时过长（httpx 方案 7-8 分钟） |
 | ISSUE-024 | high | fixed | 登录状态缺乏统一管理 |
 | ISSUE-025 | medium | fixed | 分数线数据未同步到工作区（分级匹配 98.5% 覆盖率） |
 | ISSUE-026 | medium | fixed | 工作区"导出"按钮无任何功能（CSV 导出） |
-| ISSUE-027 | medium | open | 工作区只显示单个专业数据，与"多专业批量采集"语义不一致 |
+| ISSUE-027 | medium | fixed | 工作区多专业合并展示 + 双视图切换（院校视图/招生计划视图） |
 | ISSUE-028 | low | open | 导出格式仅支持 CSV，未支持 Excel/JSON |
 | ISSUE-029 | medium | fixed | 数据采集流程串行 requests 调用（httpx 并发 5 分钟 100% 成功） |
 
-**统计**：共 29 个 ISSUE，24 个 fixed，1 个 partial-fixed，4 个 open。
+**统计**：共 29 个 ISSUE，27 个 fixed，0 个 partial-fixed，2 个 open。
 
-**下一步优先级**：ISSUE-027（工作区多专业展示）> ISSUE-028（导出格式扩展）> ISSUE-017（超时验证）> ISSUE-022（重新定义方向）
+**下一步优先级**：ISSUE-028（导出格式扩展）> ISSUE-022（重新定义方向：要消灭 disabled 的专业，要让专业可见即可查）
 
 ---
 
@@ -403,12 +403,16 @@
 - **实际行为**：固定 90 秒超时，无种子专业无法完成自动种子抓取。
 - **修复位置**：
   - `yam-desktop/src-tauri/src/commands.rs`：`run_crawl_task` 中 `timeout_secs` 改为自适应：初始 300 秒，一旦收到 `YAM_TOTAL`（`total > 0`）即恢复为 90 秒。
+  - `yam/crawler/yanzhao.py`：`fetch_schools` 调用 `fetch_and_save` 期间启动后台心跳线程，每 30s 输出 `YAM_PROGRESS 0/0 正在获取 {code} {name} 种子数据（...心跳 N）...`，刷新 Rust 端 `last_progress_time`，避免种子抓取中途被误判"300 秒无进度更新"而终止。仅桌面端（`YAM_DESKTOP=1`）发协议行，独立 CLI `yam fetch-seeds` 不发避免噪声。
 - **验证结果**：
   - 预抓取 `083500` 种子（139 所）后，桌面端 `run_crawl` 成功完成 139/139 所采集与同步，`workspace_schools` 表确认 139 条记录。
   - 修复后桌面端在种子就绪场景下可正常完成多专业采集。
+  - **运行时验证（2026-07-23，030100 法学无种子实测）**：
+    - 仅 300s 自适应超时（无心跳）：t=90s 存活（旧 90s bug 已修 ✅），但 t≈301s 被杀"采集超时（300 秒无进度更新）"——种子抓取（29 省扫描）耗时 >300s，300s 仍不够 ⚠️。
+    - 补心跳后复测：t=300/315/330/345/361/376s 全部存活（12 个心跳持续刷新计时器），不再被误杀 ✅。current_name 实时显示"心跳 N"（解决之前卡在首行的问题）。
 - **建议修复方向**：
-  - **短期**：上述自适应超时，确保无种子专业有足够时间完成种子抓取。
-  - **中期**：`yanzhao.py` / `dynamic.py` 在种子抓取期间定期输出 `YAM_PROGRESS 0/0 正在获取种子...` 心跳，保持超时计时器刷新。
+  - **短期**（已完成）：上述自适应超时，确保无种子专业有足够时间完成种子抓取。
+  - **中期**（已完成）：`yanzhao.py` 在种子抓取期间定期输出 `YAM_PROGRESS 0/0` 心跳，保持超时计时器刷新。
   - **长期**：桌面端选择专业后先独立调用 `fetch-seeds` 并显示"正在获取院校列表"进度，种子就绪后再启动 `fetch` 抓取院系详情，两个阶段进度分开呈现。
 
 ---
@@ -461,7 +465,7 @@
 ## ISSUE-019：专业选择页面可供选择的专业不全
 
 - **严重程度**：high
-- **状态**：partial-fixed
+- **状态**：fixed
 - **描述**：专业选择页面（MajorSelectPage）可供选择的专业不全，用户想采集"非织造材料与工程"（只有一个学校开设）等专业时找不到，还有许多其他专业在研招网目录中存在但前端无法选择。
 - **根因**：前端只从 `data/majors.yaml` 加载专业列表。该 yaml 是一份不完整的静态目录：
   - 总共收录 752 个专业
@@ -500,7 +504,13 @@
   - 教育部 PDF 是 2024 年数据，且研招网 2026 招生目录与教育部备案名单并不完全重合；按名称搜索只能拿到 totalCount ≤ 10 的结果，热门名称（如"人工智能"）仍可能漏掉部分代码。
   - 要彻底补全，需要登录研招网后翻页抓取（`fetch_majors_with_login.py`），或使用实时查询接口替代静态 yaml。
 - **长期方案**：MajorSelectPage 改为直接从研招网实时查询专业目录（如 `zys.do` 接口），不再依赖本地 yaml；用户可输入任意专业代码或名称直接采集。
-- **备注**：与 ISSUE-022（disabled 专业仍能被选择）相互关联——根本原因都是前端依赖 yaml 静态列表。建议合并解决：扩充 yaml 并统一过滤逻辑。
+- **本次确认（2026-07-23，标记为 fixed）**：
+  - 数据模型已彻底切换：`MajorSelectPage` 通过 Rust 命令 `read_majors_catalog` 加载 `data/majors_realtime.json`（ISSUE-023 httpx 方案产出），不再依赖 `data/majors.yaml` 静态列表。
+  - `majors_realtime.json` 含 2255 个叶子专业（2191 学术学位 + 64 专业学位），14 个学术门类、155 个一级学科、14 个专业学位类别；文件中**无 `enabled` 字段**（`'enabled' in file == False`）。
+  - `MajorSelectPage.tsx` 全文仅 1 处 "enabled" 提及（L547 布局注释），**无任何 enabled 过滤逻辑**。
+  - `data/majors.yaml` 中 `enabled: false` 数量为 0（零个 disabled），但已不再是前端数据源，仅作历史兼容保留。
+  - 原长期方案（实时查询 zys.do）已通过 ISSUE-023 的 `majors_realtime.json` 机制落地：更新目录流程产出的实时数据直接供前端使用，无需登录研招网翻页。
+- **备注**：与 ISSUE-022（disabled 专业仍能被选择）相互关联——根本原因都是前端依赖 yaml 静态列表。ISSUE-019 已通过切换到 realtime 数据源解决；ISSUE-022 的 disabled 分支在数据层已不可达，但需重新定义方向（见 ISSUE-022）。
 
 ---
 
@@ -558,6 +568,10 @@
 - **建议修复方向**：
   - **短期**：`yam-desktop/src/pages/MajorSelectPage.tsx` 渲染专业列表时过滤 `enabled === false` 的条目。
   - **长期**：在 `yam-desktop/src/data/majors.ts`（或对应的数据加载模块）层统一过滤 disabled 专业，避免每个组件各自处理。同时在采集启动前增加 `enabled` 校验作为兜底。
+- **重新定义方向（2026-07-23）**：
+  - 原描述的"disabled 专业卡住"在数据层已不可达：`majors_realtime.json`（前端实际数据源）无 `enabled` 字段，`data/majors.yaml` 中 `enabled: false` 数量为 0，`cli.py` 的 enabled 检查分支（原 YAM_ERROR "未启用" 来源）已永远不会触发。
+  - 但 ISSUE 本质诉求仍在：**要消灭 disabled 的专业，要让专业可见即可查**。即不应存在"可见但不可采集"的专业——凡是出现在专业选择页的专业，都必须能正常进入采集流程。
+  - 后续推进方向：(1) 确认 `cli.py` L67-73 的 enabled 检查是否应直接移除（已无数据支撑该分支）；(2) 确认 `data/majors.yaml` 是否可彻底废弃或仅作 fallback；(3) 若未来重新引入"暂不支持采集"的专业，应在前端选择阶段就置灰并提示原因，而非让用户选了之后才卡住。
 
 ---
 
@@ -688,7 +702,7 @@
 ## ISSUE-027：工作区只显示单个专业数据，与"多专业批量采集"语义不一致
 
 - **严重程度**：medium
-- **状态**：open
+- **状态**：fixed
 - **描述**：用户在桌面端选择了 4 个不同的专业（如 083500 + 085400 + 085410 + 081200），但工作区只显示其中一个专业的院校数据，导出（ISSUE-026）的也只是当前显示专业的数据。与"多专业批量采集"的设计语义不一致——用户期望看到所有已选专业的合并视图，或至少能切换查看。
 - **复现步骤**：
   1. 桌面端 → 添加专业 → 选 4 个不同专业。
@@ -701,6 +715,11 @@
   - **中期**：合并显示所有已选专业的院校，加"专业代码"和"专业名称"列；筛选区加专业多选；导出包含所有已选专业。
   - **长期**：与 ISSUE-025（分数线采集）合并解决——分数线需要按专业+院校组合展示，多专业视图自然适配。
 - **备注**：用户建议与 ISSUE-025 一起修，避免重复改动 WorkspacePage。优先级 medium，不阻塞当前任务推进。
+- **本次修复（2026-07-23，分三阶段完成）**：
+  - **阶段 1 工作区多专业合并展示 + 双视图切换**：用户拍板双视图（院校视图默认 + 招生计划视图）。`db.rs` 3 函数 `major_code: &str` → `&[&str]` + SQL `IN(...)`；`commands.rs` 改 `Vec<String>`；`db.ts` `fetchWorkspaceData(schoolId, majorCodes[], filters)`；`appStore.ts` 加 `viewMode: 'school'|'plan'` + `setViewMode`；`WorkspacePage.tsx` activeMajorCodes 派生 + 专业 Tab + 视图切换 + aggregatedSchools 聚合（MIN/SUM/OR）+ 展开按专业分组 + 收藏复合键 `${school_id}|${major_code}` + 导出加专业列。
+  - **阶段 1 续 多专业 Tab 多选支持 + syncedMajorsRef 优化**：`currentMajor: string|null` → `selectedMajorCodes: string[]`（空=全部 / 非空=选中那些）；纯点击 toggle（全选自动清空避免歧义）；`syncedMajorsRef` ref 记录已 sync 专业，Tab 切换只查 DB（毫秒级），解决"切专业卡顿"反馈。
+  - **阶段 2 招生计划视图**：每行 = (院校, 专业, 院系, 方向, 考试科目, 最新年份分数线)，纯扁平表格。`db.rs` 新增 `WorkspacePlanRow` + `get_workspace_plans`（JOIN schools+departments，单科分数筛选用 EXISTS 子查询避免行重复，`batch_get_department_years` 批量查 years 避免 N+1，Rust 侧排序）；`commands.rs` 新增 `fetch_workspace_plans`；`db.ts` 新增 `WorkspacePlanRow` + `fetchWorkspacePlans`；`WorkspacePage.tsx` 启用 plan 按钮 + plan state + 9 列 grid 表格 + 行展开多年分数表 + 客户端分页 + 导出 15 列带 `_招生计划` 后缀。设计决策：纯扁平（每行一个招生计划）/ 最新年份分数列（min_score + 招生人数）/ 复用现有筛选 / 导出跟随当前视图。
+  - **验证**：`cargo check` ✅、`npm run build` ✅、CDP 自测 ✅（7 场景全过：后端单专业 1043 行/多专业 1506 行、表格加载、行展开、分页、视图切换）。详见 [docs/progress.md](file:///d:/yam/docs/progress.md) ISSUE-027 阶段 2 章节。
 
 ---
 

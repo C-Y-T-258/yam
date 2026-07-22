@@ -1,9 +1,9 @@
 use crate::db::{
     add_favorite, add_recent_view, clear_recent_views, get_available_majors, get_favorites,
     get_recent_views, get_score_lines, get_schools, get_workspace_departments,
-    get_workspace_filter_options, get_workspace_schools, remove_favorite, AvailableMajor, DbConn,
-    Favorite, FilterOptions, RecentView, ScoreLine, School, WorkspaceDepartment, WorkspaceFilterParams,
-    WorkspaceSchool,
+    get_workspace_filter_options, get_workspace_plans, get_workspace_schools, remove_favorite,
+    AvailableMajor, DbConn, Favorite, FilterOptions, RecentView, ScoreLine, School, WorkspaceDepartment,
+    WorkspaceFilterParams, WorkspacePlanRow, WorkspaceSchool,
 };
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -37,7 +37,7 @@ pub struct WorkspaceData {
 pub fn fetch_workspace_data(
     state: State<'_, DbConn>,
     school_id: String,
-    major_code: String,
+    major_codes: Vec<String>,
     province: Option<String>,
     provinces: Option<Vec<String>>,
     region_group: Option<String>,
@@ -67,6 +67,7 @@ pub fn fetch_workspace_data(
 ) -> WorkspaceData {
     let conn = state.0.lock().unwrap();
 
+    let major_codes_ref: Vec<&str> = major_codes.iter().map(|s| s.as_str()).collect();
     let provinces_ref: Option<Vec<&str>> = provinces.as_ref().map(|v| v.iter().map(|s| s.as_str()).collect());
     let study_modes_ref: Option<Vec<&str>> = study_modes.as_ref().map(|v| v.iter().map(|s| s.as_str()).collect());
     let exam_types_ref: Option<Vec<&str>> = exam_types.as_ref().map(|v| v.iter().map(|s| s.as_str()).collect());
@@ -78,7 +79,7 @@ pub fn fetch_workspace_data(
 
     let schools = get_workspace_schools(
         &conn,
-        &major_code,
+        &major_codes_ref,
         WorkspaceFilterParams {
             province: province.as_deref(),
             provinces: provinces_ref.as_deref(),
@@ -111,19 +112,99 @@ pub fn fetch_workspace_data(
     let departments = if school_id.is_empty() {
         Vec::new()
     } else {
-        get_workspace_departments(&conn, &school_id, &major_code)
+        get_workspace_departments(&conn, &school_id, &major_codes_ref)
     };
 
     WorkspaceData { schools, departments }
 }
 
+// ISSUE-027 阶段 2：招生计划视图。返回扁平行 (院校, 专业, 院系, 方向, 考试科目, 最新年份分数线)。
+// 筛选参数同 fetch_workspace_data，但不需要 school_id（返回全量 plan 行）。
+#[tauri::command]
+pub fn fetch_workspace_plans(
+    state: State<'_, DbConn>,
+    major_codes: Vec<String>,
+    province: Option<String>,
+    provinces: Option<Vec<String>>,
+    region_group: Option<String>,
+    levels: Option<Vec<String>>,
+    sort_by: Option<String>,
+    sort_order: Option<String>,
+    min_score_min: Option<i32>,
+    min_score_max: Option<i32>,
+    enroll_count_min: Option<i32>,
+    enroll_count_max: Option<i32>,
+    department_name: Option<String>,
+    study_modes: Option<Vec<String>>,
+    exam_types: Option<Vec<String>>,
+    self_scoring: Option<bool>,
+    doctoral_program: Option<bool>,
+    double_first_class: Option<bool>,
+    special_plans: Option<Vec<String>>,
+    english_min: Option<i32>,
+    english_max: Option<i32>,
+    business_one_min: Option<i32>,
+    business_one_max: Option<i32>,
+    business_two_min: Option<i32>,
+    business_two_max: Option<i32>,
+    foreign_subjects: Option<Vec<String>>,
+    business_one_subjects: Option<Vec<String>>,
+    business_two_subjects: Option<Vec<String>>,
+) -> Vec<WorkspacePlanRow> {
+    let conn = state.0.lock().unwrap();
+
+    let major_codes_ref: Vec<&str> = major_codes.iter().map(|s| s.as_str()).collect();
+    let provinces_ref: Option<Vec<&str>> = provinces.as_ref().map(|v| v.iter().map(|s| s.as_str()).collect());
+    let study_modes_ref: Option<Vec<&str>> = study_modes.as_ref().map(|v| v.iter().map(|s| s.as_str()).collect());
+    let exam_types_ref: Option<Vec<&str>> = exam_types.as_ref().map(|v| v.iter().map(|s| s.as_str()).collect());
+    let special_plans_ref: Option<Vec<&str>> = special_plans.as_ref().map(|v| v.iter().map(|s| s.as_str()).collect());
+    let levels_ref: Option<Vec<&str>> = levels.as_ref().map(|v| v.iter().map(|s| s.as_str()).collect());
+    let foreign_subjects_ref: Option<Vec<&str>> = foreign_subjects.as_ref().map(|v| v.iter().map(|s| s.as_str()).collect());
+    let business_one_subjects_ref: Option<Vec<&str>> = business_one_subjects.as_ref().map(|v| v.iter().map(|s| s.as_str()).collect());
+    let business_two_subjects_ref: Option<Vec<&str>> = business_two_subjects.as_ref().map(|v| v.iter().map(|s| s.as_str()).collect());
+
+    get_workspace_plans(
+        &conn,
+        &major_codes_ref,
+        WorkspaceFilterParams {
+            province: province.as_deref(),
+            provinces: provinces_ref.as_deref(),
+            region_group: region_group.as_deref(),
+            levels: levels_ref.as_deref(),
+            sort_by: sort_by.as_deref(),
+            sort_order: sort_order.as_deref(),
+            min_score_min,
+            min_score_max,
+            enroll_count_min,
+            enroll_count_max,
+            department_name: department_name.as_deref(),
+            study_modes: study_modes_ref.as_deref(),
+            exam_types: exam_types_ref.as_deref(),
+            self_scoring,
+            doctoral_program,
+            double_first_class,
+            special_plans: special_plans_ref.as_deref(),
+            english_min,
+            english_max,
+            business_one_min,
+            business_one_max,
+            business_two_min,
+            business_two_max,
+            foreign_subjects: foreign_subjects_ref.as_deref(),
+            business_one_subjects: business_one_subjects_ref.as_deref(),
+            business_two_subjects: business_two_subjects_ref.as_deref(),
+        },
+    )
+}
+
 #[tauri::command]
 pub fn fetch_workspace_filter_options(
     state: State<'_, DbConn>,
-    major_code: String,
+    major_codes: Vec<String>,
 ) -> FilterOptions {
     let conn = state.0.lock().unwrap();
-    get_workspace_filter_options(&conn, &major_code)
+    let major_codes_ref: Vec<&str> = major_codes.iter().map(|s| s.as_str()).collect();
+    get_workspace_filter_options(&conn, &major_codes_ref)
 }
 
 #[tauri::command]

@@ -3,6 +3,9 @@ import { persist } from 'zustand/middleware';
 
 export type Page = 'welcome' | 'major-management' | 'major-select' | 'crawling' | 'data-ready' | 'workspace' | 'favorites' | 'recent' | 'settings';
 
+/// ISSUE-027：工作区视图模式。'school' = 院校视图（默认），'plan' = 招生计划视图（阶段 2 启用）。
+export type WorkspaceViewMode = 'school' | 'plan';
+
 export interface CrawledMajor {
   code: string;
   name: string;
@@ -30,11 +33,16 @@ export interface CrawlTarget {
 interface AppState {
   currentPage: Page;
   crawledMajors: CrawledMajor[];
-  currentMajor: string | null;
+  /// ISSUE-027 多选：工作区顶部专业 Tab 选中的专业代码列表。
+  /// 空 [] = "全部"模式（加载所有 visibleMajors）；非空 = 选中的那些专业（多选/单选聚焦）。
+  /// 不持久化（与原 currentMajor 一致），每次启动默认聚焦第一个专业（由 App.tsx 设置）。
+  selectedMajorCodes: string[];
   crawlingProgress: CrawlingProgress | null;
   visibleMajorCodes: string[];
   crawlTarget: CrawlTarget | null;
   enableProfessionalThreeLevelMenu: boolean;
+  /// ISSUE-027：工作区视图模式，持久化到 localStorage。
+  viewMode: WorkspaceViewMode;
   /// 新采集完成但用户还没在专业管理/管理显示专业 Modal 中"看过"的专业 major_code 列表。
   /// 由 App.tsx 监听 `crawl-synced` 事件后调用 `markMajorAsNew` 添加；
   /// MajorManagementPage 卸载或 ManageMajorsModal 关闭时调用 `clearAllNewMajors` 清空。
@@ -44,7 +52,7 @@ interface AppState {
   setPage: (page: Page) => void;
   addMajor: (major: CrawledMajor) => void;
   removeMajor: (code: string) => void;
-  setCurrentMajor: (code: string | null) => void;
+  setSelectedMajorCodes: (codes: string[]) => void;
   setCrawlingProgress: (progress: CrawlingProgress | null) => void;
   updateCrawlingProgress: (updates: Partial<CrawlingProgress>) => void;
   addCrawlingLog: (message: string, level?: 'info' | 'warn' | 'success' | 'error') => void;
@@ -52,6 +60,7 @@ interface AppState {
   toggleVisibleMajor: (code: string) => void;
   setCrawlTarget: (target: CrawlTarget | null) => void;
   setEnableProfessionalThreeLevelMenu: (enabled: boolean) => void;
+  setViewMode: (mode: WorkspaceViewMode) => void;
   updateMajor: (code: string, updates: Partial<CrawledMajor>) => void;
   markMajorAsNew: (code: string) => void;
   clearNewMajor: (code: string) => void;
@@ -67,11 +76,12 @@ export const useAppStore = create<AppState>()(
     (set) => ({
       currentPage: 'welcome',
       crawledMajors: [],
-      currentMajor: null,
+      selectedMajorCodes: [],
       crawlingProgress: null,
       visibleMajorCodes: [],
       crawlTarget: null,
       enableProfessionalThreeLevelMenu: false,
+      viewMode: 'school',
       newlyAddedMajors: [],
 
       setPage: (page) => set({ currentPage: page }),
@@ -91,7 +101,7 @@ export const useAppStore = create<AppState>()(
         visibleMajorCodes: state.visibleMajorCodes.filter((c) => c !== code),
       })),
 
-      setCurrentMajor: (code) => set({ currentMajor: code }),
+      setSelectedMajorCodes: (codes) => set({ selectedMajorCodes: codes }),
 
       setCrawlingProgress: (progress) => set({ crawlingProgress: progress }),
 
@@ -126,6 +136,7 @@ export const useAppStore = create<AppState>()(
 
       setCrawlTarget: (target) => set({ crawlTarget: target }),
       setEnableProfessionalThreeLevelMenu: (enabled) => set({ enableProfessionalThreeLevelMenu: enabled }),
+      setViewMode: (mode) => set({ viewMode: mode }),
 
       updateMajor: (code, updates) => set((state) => ({
         crawledMajors: state.crawledMajors.map((m) =>
@@ -149,6 +160,7 @@ export const useAppStore = create<AppState>()(
       partialize: (state) => ({
         visibleMajorCodes: state.visibleMajorCodes,
         enableProfessionalThreeLevelMenu: state.enableProfessionalThreeLevelMenu,
+        viewMode: state.viewMode,
       }),
       storage: isClient()
         ? {
