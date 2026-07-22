@@ -583,25 +583,23 @@
 
 ---
 
-## ISSUE-025：未采集实际分数线信息
+## ISSUE-025：分数线数据未同步到工作区
 
 - **严重程度**：medium
-- **状态**：open
-- **描述**：当前采集流程只抓取院校 + 院系 + 招生计划信息（`schools` / `departments` 表），未采集历年分数线（国家线/院校线/专业线）。用户在工作区只能看到院校列表，无法比较分数线，限制了实际使用价值。
+- **状态**：fixed
+- **描述**：分数线采集（`zhangshangkaoyan.py` 的 `fetch_score_lines_batch`）、`score_lines` 表、`get_score_lines` 查询、前端 `WorkspacePage` 分数线显示代码均已存在，但 `sync_to_tauri.py` 的 `load_score_lines` 函数通过 `admission_plans` 表做 `department_name → department_id` 映射，而 `admission_plans` 只在早期采集 085410 时写入，导致 081200/083500 等专业的分数线无法同步到 `workspace_department_years` 表，前端"最低分"列全部显示 0。
 - **复现步骤**：
-  1. 桌面端采集任意专业（如 081200）。
-  2. 工作区只显示院校名称、院系、招生人数等，无任何分数线信息。
-- **期望行为**：工作区能显示每个院校该专业的历年分数线（至少近 3 年），支持按分数筛选和排序。
-- **实际行为**：完全没有分数线数据。
-- **建议修复方向**：
-  - **短期**：
-    1. 调研研招网 `scoreLines.do` 或类似接口（旧项目 yanzhao-mcp 中可能有线索）。
-    2. `yam/crawler/yanzhao.py` 新增 `fetch_score_lines(school_id, major_code)` 方法，复用现有 session。
-    3. SQLite 新增 `score_lines` 表（school_id, major_code, year, score_type, score, region, subject, ...）。
-    4. `yam-desktop/src-tauri/src/db.rs` 新增 `get_score_lines` 查询。
-    5. `WorkspacePage` 表格新增"分数线"列，筛选区新增"分数区间"过滤。
-  - **中期**：采集流程在抓完院校后自动追加分数线抓取阶段（可单独配置开关）。
-  - **长期**：支持掌上考研分数线数据交叉验证，补充研招网缺失的年份。
+  1. 桌面端采集 081200 或 083500。
+  2. 工作区"最低分"列全部显示 0，展开院系详情无年份数据。
+- **期望行为**：工作区正确显示每个院校该专业的历年最低分，展开院系详情显示 4 年分数线数据。
+- **实际行为**：修复前 min_score 全为 0；修复后 081200 有 242/271 所学校有分数，083500 有 118/139 所学校有分数。
+- **修复内容**（2026-07-22）：
+  1. `yam/scripts/sync_to_tauri.py` 的 `load_score_lines` 移除 `admission_plans` 依赖，直接用 `school_id + major_code` 查询 `score_lines` 表。
+  2. 按 `year` 分组取 `MIN(total)` 聚合，解决同一校同年多院系分数重复问题（`score_lines.department_id` 是掌上考研院系编号，与研招网 `departments.department_id` 是两套不同体系，无法直接关联）。
+  3. 重新同步 081200（3146 条年份数据）、083500（1348 条），0 重复。
+  4. CDP 验证：华中科技大学 min_score=335，展开详情 4 年数据（2026:360, 2025:335, 2024:370, 2023:345）。
+- **已知限制**：29 所 081200 学校（北航、北理、天大、复旦等 985）min_score=0，因掌上考研无这些学校分数线数据，属数据源限制非 bug。
+- **后续优化方向**：`score_lines` 表增加 `department_name` 列，实现院系级别精确匹配（当前是学校+专业级别取最低分）。
 
 ---
 

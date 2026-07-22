@@ -308,27 +308,34 @@ def load_departments(conn: sqlite3.Connection, school_id: str, major_code: str) 
 def load_score_lines(
     conn: sqlite3.Connection, school_id: str, department_name: str, major_code: str
 ) -> list[dict[str, Any]]:
-    """加载院系历年分数线.
+    """加载该校该专业历年分数线（按年聚合取最低分）.
 
-    score_lines.department_id 来自掌上考研 API，与 departments.department_id
-    （研招网院系所代码）不是同一套编码，因此通过 admission_plans 中的
-    department_name 建立映射关系。
+    ISSUE-025 修复：
+    - 原实现通过 admission_plans 表做 department_name → department_id 映射，但
+      admission_plans 只在早期采集 085410 时写入，导致 081200/083500 等专业的
+      分数线无法同步。
+    - score_lines 表的 department_id 字段是掌上考研院系编号，与研招网 departments
+      表的 department_id（研招网院系编号）是两套不同体系，无法直接关联。
+    - 同一校同年可能有多个院系的分数线（不同 total），因此按 year 分组取 MIN(total)
+      作为该专业该年的最低录取分。同年同专业的公共课线（politics/english 等）通常
+      相同（国家线），取 MIN 不影响准确性。
+
+    后续优化方向：score_lines 表增加 department_name 列，实现院系级别精确匹配。
     """
     cur = conn.execute(
         """
-        SELECT DISTINCT sl.year, sl.total, sl.politics, sl.english, sl.special_one, sl.special_two
+        SELECT sl.year,
+               MIN(sl.total) as total,
+               MIN(sl.politics) as politics,
+               MIN(sl.english) as english,
+               MIN(sl.special_one) as special_one,
+               MIN(sl.special_two) as special_two
         FROM score_lines sl
         WHERE sl.school_id = ? AND sl.major_code = ?
-          AND sl.department_id IN (
-              SELECT ap.department_id
-              FROM admission_plans ap
-              WHERE ap.school_id = sl.school_id
-                AND ap.major_code = sl.major_code
-                AND ap.department_name = ?
-          )
+        GROUP BY sl.year
         ORDER BY sl.year DESC
         """,
-        (school_id, major_code, department_name),
+        (school_id, major_code),
     )
     return [dict(r) for r in cur.fetchall()]
 
