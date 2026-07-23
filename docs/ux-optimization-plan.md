@@ -53,11 +53,18 @@
 - **实现方式**：`WorkspacePage.tsx` 已引入 `persistExpanded`、`restoreExpanded`、`EXPANDED_KEY`，通过 `localStorage` 持久化展开状态。
 - **涉及文件**：`yam-desktop/src/pages/WorkspacePage.tsx`
 
-#### 4.2 趋势图增加 hover tooltip
+#### 4.2 趋势图增加 hover tooltip 并优化视觉
 - **状态**：已完成
-- **问题描述**：`TrendChart` 中数据点文字仅 8px-10px，多个点密集时难以看清具体数值；当前无悬停提示。
-- **实现方式**：`WorkspacePage.tsx` 的 `TrendChart` 增加透明命中区（r=10）+ 悬停放大高亮点（r=5、fill `#1e3a5f`）+ HTML tooltip（年份·最低分/招生人数 值）。viewBox 坐标按百分比定位以跟随 `preserveAspectRatio="none"` 非等比缩放，首末点 clamp 到 [15%,85%] 防溢出。
-- **验证结果**：CDP 自测 5/5 通过（`scripts/test_ux_cdp.cjs`）。
+- **问题描述**：`TrendChart` 中 Y 轴范围传参错误（`baseMin={600} baseMax={720}`）导致实际数据 335-370 全部挤在底部；数据标签常驻显示杂乱；图表尺寸小、字体小、无面积填充，整体视觉差。
+- **实现方式**：`WorkspacePage.tsx` 的 `TrendChart` 重构：
+  - 移除错误的 `baseMin/baseMax`，改为按实际数据自动计算 Y 轴范围并加 12% padding；
+  - 数据全部相同时显示「无变化」标签并构造对称区间让点居中；
+  - 移除常驻数据标签，改为 hover 显示 tooltip；
+  - 增加面积填充 + 蓝色渐变；
+  - 折线改用平滑贝塞尔曲线；
+  - 图表尺寸从 128px 加高到 192px，字体从 8-10px 放大到 11-12px；
+  - 数据点改为白底蓝边，hover 放大高亮。
+- **验证结果**：`npm run build` 通过；CDP 截图确认最低分趋势图 345→370→335→360 变化清晰，招生人数趋势图显示「无变化」。
 - **涉及文件**：`yam-desktop/src/pages/WorkspacePage.tsx`
 
 #### 4.3 招生计划视图行信息密度优化

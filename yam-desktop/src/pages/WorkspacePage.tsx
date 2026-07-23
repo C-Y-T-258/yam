@@ -63,54 +63,88 @@ interface TrendChartProps {
   years: YearData[];
   dataKey: 'min_score' | 'enroll_count';
   title: string;
-  baseMin?: number;
-  baseMax?: number;
 }
 
-function TrendChart({ years, dataKey, title, baseMin, baseMax }: TrendChartProps) {
+function TrendChart({ years, dataKey, title }: TrendChartProps) {
   const data = [...years].reverse();
-  // UX-4.2：hover tooltip。悬停数据点时显示年份+数值，并放大该点高亮。
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  const valueLabel = dataKey === 'min_score' ? '最低分' : '招生人数';
+
+  // 无数据或只有 1 条数据时给出占位提示
+  if (data.length === 0) {
+    return (
+      <div className="border border-gray-200 rounded-lg p-4 h-48 flex items-center justify-center text-sm text-gray-400">
+        暂无{valueLabel}数据
+      </div>
+    );
+  }
+
   const values = data.map((d) => d[dataKey]);
-  const minValue = values.length > 0 ? Math.min(...values) : baseMin ?? 0;
-  const maxValue = values.length > 0 ? Math.max(...values) : baseMax ?? 100;
-  const minScale = baseMin !== undefined ? Math.min(baseMin, minValue) : minValue;
-  const maxScale = baseMax !== undefined ? Math.max(baseMax, maxValue) : maxValue;
+  const minValue = Math.min(...values);
+  const maxValue = Math.max(...values);
+  const isFlat = minValue === maxValue;
+
+  // Y 轴范围：按实际数据加 12% padding，避免折线贴边；
+  // 若数据完全相同，则构造一个对称区间让点居中显示。
+  const padding = isFlat ? Math.max(1, Math.abs(minValue) * 0.25) : (maxValue - minValue) * 0.12;
+  const minScale = isFlat ? minValue - padding : minValue - padding;
+  const maxScale = isFlat ? maxValue + padding : maxValue + padding;
   const range = maxScale - minScale || 1;
 
-  const width = 160;
-  const height = 80;
-  const padLeft = 12;
+  const width = 240;
+  const height = 120;
+  const padLeft = 36;
   const padRight = 12;
-  const padTop = 18;
-  const padBottom = 4;
+  const padTop = 20;
+  const padBottom = 20;
   const drawWidth = width - padLeft - padRight;
   const drawHeight = height - padTop - padBottom;
 
   const getX = (i: number) =>
-    data.length <= 1 ? width / 2 : padLeft + (i / (data.length - 1)) * drawWidth;
+    data.length <= 1 ? padLeft + drawWidth / 2 : padLeft + (i / (data.length - 1)) * drawWidth;
   const getY = (value: number) => padTop + drawHeight - ((value - minScale) / range) * drawHeight;
 
-  const ticks = [0, 0.25, 0.5, 0.75, 1].map((p) => Math.round(maxScale - p * range));
+  // 生成 4 条水平网格线对应的刻度值
+  const tickCount = 4;
+  const ticks = Array.from({ length: tickCount + 1 }, (_, i) =>
+    Math.round(maxScale - (i / tickCount) * range)
+  );
 
-  const pathD = data.map((d, i) => `${i === 0 ? 'M' : 'L'} ${getX(i)} ${getY(d[dataKey])}`).join(' ');
+  // 折线路径：使用平滑贝塞尔曲线
+  const points = data.map((d, i) => ({ x: getX(i), y: getY(d[dataKey]) }));
+  const linePath =
+    data.length === 1
+      ? `M ${points[0].x} ${points[0].y}`
+      : points.reduce((acc, p, i, arr) => {
+          if (i === 0) return `M ${p.x} ${p.y}`;
+          const prev = arr[i - 1];
+          const cp1x = prev.x + (p.x - prev.x) / 3;
+          const cp1y = prev.y;
+          const cp2x = p.x - (p.x - prev.x) / 3;
+          const cp2y = p.y;
+          return `${acc} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p.x} ${p.y}`;
+        }, '');
+  const areaPath = `${linePath} L ${points[points.length - 1].x} ${height - padBottom} L ${points[0].x} ${height - padBottom} Z`;
   const chartKey = `${dataKey}-${data.map((d) => d.year).join('-')}`;
 
-  // UX-4.2：viewBox 坐标 → 容器百分比。SVG 用 preserveAspectRatio="none"，
-  // 容器宽高与 viewBox 比例不同，按百分比定位 HTML tooltip 才能跟随缩放。
   const xPercent = (x: number) => (x / width) * 100;
   const yPercent = (y: number) => (y / height) * 100;
   const hovered = hoverIdx !== null ? data[hoverIdx] : null;
-  // 边缘 clamp，避免首末点 tooltip 超出容器
-  const hoveredX = hoverIdx !== null ? Math.min(85, Math.max(15, xPercent(getX(hoverIdx)))) : 0;
+  const hoveredX = hoverIdx !== null ? Math.min(88, Math.max(12, xPercent(getX(hoverIdx)))) : 0;
   const hoveredY = hoverIdx !== null ? yPercent(getY(data[hoverIdx][dataKey])) : 0;
-  const valueLabel = dataKey === 'min_score' ? '最低分' : '招生人数';
 
   return (
-    <div className="border border-gray-200 rounded-lg p-3">
-      <h4 className="text-xs font-medium text-gray-600 mb-3">{title}</h4>
-      <div className="flex h-32">
-        <div className="w-8 flex flex-col justify-between text-[10px] text-gray-500 pr-1">
+    <div className="border border-gray-200 rounded-lg p-4 bg-white">
+      <div className="flex items-center justify-between mb-2">
+        <h4 className="text-sm font-medium text-gray-700">{title}</h4>
+        {isFlat && (
+          <span className="text-xs text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">
+            无变化
+          </span>
+        )}
+      </div>
+      <div className="flex h-48">
+        <div className="w-10 flex flex-col justify-between text-[11px] text-gray-500 pr-2 text-right">
           {ticks.map((t, i) => (
             <span key={i}>{t}</span>
           ))}
@@ -119,44 +153,61 @@ function TrendChart({ years, dataKey, title, baseMin, baseMax }: TrendChartProps
           className="flex-1 relative"
           onMouseLeave={() => setHoverIdx(null)}
         >
-          <svg className="w-full h-full" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
-            {[0, 0.25, 0.5, 0.75, 1].map((p) => {
-              const y = padTop + p * drawHeight;
+          <svg className="w-full h-full overflow-visible" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
+            {/* 水平网格线 */}
+            {ticks.map((_, i) => {
+              const y = padTop + (i / tickCount) * drawHeight;
               return (
                 <line
-                  key={`grid-${p}`}
+                  key={`grid-${i}`}
                   x1={padLeft}
                   y1={y}
                   x2={width - padRight}
                   y2={y}
-                  stroke="#e5e7eb"
-                  strokeWidth="0.5"
+                  stroke="#f3f4f6"
+                  strokeWidth="1"
                 />
               );
             })}
+            {/* 面积填充 */}
+            <motion.path
+              key={`area-${chartKey}`}
+              d={areaPath}
+              fill="url(#areaGradient)"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.6, ease: 'easeInOut' }}
+            />
+            <defs>
+              <linearGradient id="areaGradient" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.18" />
+                <stop offset="100%" stopColor="#3b82f6" stopOpacity="0.02" />
+              </linearGradient>
+            </defs>
+            {/* 折线 */}
             <motion.path
               key={`path-${chartKey}`}
-              d={pathD}
+              d={linePath}
               fill="none"
-              stroke="#3b82f6"
-              strokeWidth="2"
+              stroke="#2563eb"
+              strokeWidth="2.5"
               strokeLinecap="round"
               strokeLinejoin="round"
               initial={{ pathLength: 0, opacity: 0 }}
               animate={{ pathLength: 1, opacity: 1 }}
               transition={{ duration: 0.8, ease: 'easeInOut' }}
             />
+            {/* 数据点 */}
             {data.map((d, i) => {
               const x = getX(i);
               const y = getY(d[dataKey]);
               const isHovered = hoverIdx === i;
               return (
                 <g key={d.year}>
-                  {/* UX-4.2：透明命中区扩大悬停范围，便于精准 hover */}
                   <circle
                     cx={x}
                     cy={y}
-                    r="10"
+                    r="14"
                     fill="transparent"
                     style={{ cursor: 'pointer' }}
                     onMouseEnter={() => setHoverIdx(i)}
@@ -164,48 +215,35 @@ function TrendChart({ years, dataKey, title, baseMin, baseMax }: TrendChartProps
                   <motion.circle
                     cx={x}
                     cy={y}
-                    r={isHovered ? 5 : 4}
-                    fill="#3b82f6"
-                    stroke="#ffffff"
-                    strokeWidth="1"
+                    r={isHovered ? 6 : 5}
+                    fill="#ffffff"
+                    stroke={isHovered ? '#1e3a5f' : '#2563eb'}
+                    strokeWidth="2.5"
                     initial={{ scale: 0, opacity: 0 }}
                     animate={{ scale: 1, opacity: 1 }}
-                    transition={{ delay: 0.3 + i * 0.1, duration: 0.3, type: 'spring', stiffness: 300 }}
+                    transition={{ delay: 0.2 + i * 0.08, duration: 0.25, type: 'spring', stiffness: 300 }}
                     style={{ pointerEvents: 'none' }}
                   />
-                  <motion.text
-                    x={x}
-                    y={y - 8}
-                    textAnchor="middle"
-                    className="text-[8px]"
-                    fill={isHovered ? '#1e3a5f' : '#3b82f6'}
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    transition={{ delay: 0.4 + i * 0.1, duration: 0.3 }}
-                    style={{ pointerEvents: 'none' }}
-                  >
-                    {d[dataKey]}
-                  </motion.text>
                 </g>
               );
             })}
           </svg>
-          {/* UX-4.2：hover tooltip（HTML 浮层，百分比定位跟随缩放） */}
           {hovered && (
             <div
-              className="absolute z-10 pointer-events-none bg-gray-900 text-white text-[10px] rounded px-2 py-1 shadow-lg whitespace-nowrap"
+              className="absolute z-10 pointer-events-none bg-gray-900 text-white text-xs rounded-lg px-2.5 py-1.5 shadow-xl whitespace-nowrap"
               style={{
                 left: `${hoveredX}%`,
                 top: `${hoveredY}%`,
-                transform: 'translate(-50%, calc(-100% - 6px))',
+                transform: 'translate(-50%, calc(-100% - 8px))',
               }}
             >
-              {hovered.year}年 · {valueLabel} {hovered[dataKey]}
+              <div className="font-medium">{hovered.year}年</div>
+              <div className="text-gray-300">{valueLabel} {hovered[dataKey]}</div>
             </div>
           )}
         </div>
       </div>
-      <div className="flex justify-between text-[10px] text-gray-500 ml-8 mt-1">
+      <div className="flex justify-between text-xs text-gray-500 ml-10 mt-2">
         {data.map((d) => (
           <span key={d.year}>{d.year}</span>
         ))}
@@ -1625,14 +1663,11 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                                             years={dept.years}
                                             dataKey="min_score"
                                             title="最低分趋势"
-                                            baseMin={600}
-                                            baseMax={720}
                                           />
                                           <TrendChart
                                             years={dept.years}
                                             dataKey="enroll_count"
                                             title="招生人数趋势"
-                                            baseMax={40}
                                           />
                                         </div>
                                       </motion.div>
