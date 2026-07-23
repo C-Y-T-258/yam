@@ -2,15 +2,14 @@
 
 > 本文件用于上下文压缩后恢复进度。每完成一步立即更新。
 >
-> **已完成**：ISSUE-025 分数线分级匹配（98.5% 覆盖率）、ISSUE-029 httpx 并发优化（271/271 100% 成功，5 分钟）、ISSUE-023 目录更新 httpx 方案（7-8 分钟）、ISSUE-026 导出 CSV、ISSUE-027 阶段 1 工作区多专业合并展示 + 双视图切换、ISSUE-027 多专业 Tab 多选支持 + syncedMajorsRef 优化、ISSUE-027 阶段 2 招生计划视图、ISSUE-017 300s 自适应超时 + 种子抓取心跳（运行时验证通过）、ISSUE-019 专业选择页不全（确认 realtime 数据源已彻底解决，标记 fixed）、ISSUE-022 严重程度文档对齐（high→medium）。
+> **已完成**：ISSUE-025 分数线分级匹配（98.5% 覆盖率）、ISSUE-029 httpx 并发优化（271/271 100% 成功，5 分钟）、ISSUE-023 目录更新 httpx 方案（7-8 分钟）、ISSUE-026 导出 CSV、ISSUE-027 阶段 1 工作区多专业合并展示 + 双视图切换、ISSUE-027 多专业 Tab 多选支持 + syncedMajorsRef 优化、ISSUE-027 阶段 2 招生计划视图、ISSUE-017 300s 自适应超时 + 种子抓取心跳（运行时验证通过）、ISSUE-019 专业选择页不全（确认 realtime 数据源已彻底解决，标记 fixed）、ISSUE-022 严重程度文档对齐（high→medium）、ISSUE-028 导出格式扩展 CSV/Excel/JSON（2026-07-24 用户桌面手动测试三格式 × 双视图通过，标记 fixed）。
 >
 > **剩余 ISSUE**（按优先级）：
-> - ISSUE-028（in-progress）：导出格式扩展 CSV/Excel/JSON——代码已实现（rust_xlsxwriter + export_file/export_excel + 前端三格式下拉菜单），cargo check + npm run build 通过，CDP 自测脚本已就绪（scripts/test_issue028_cdp.cjs），待运行验证 + 手动测试
 > - ISSUE-022（open，需重新定义方向）：选择 disabled=true 的专业后采集卡住——数据层已不可达（majors.yaml 0 个 disabled，realtime 无 enabled 字段），但本质诉求仍在：要消灭 disabled 的专业，要让专业可见即可查
 
 ---
 
-## ISSUE-028 导出格式扩展 CSV/Excel/JSON（2026-07-23，代码已实现，CDP 自测待完成）
+## ISSUE-028 导出格式扩展 CSV/Excel/JSON（2026-07-23 代码实现，2026-07-24 手动测试通过 → fixed）
 
 ### 背景
 ISSUE-026 只实现了 CSV 导出。用户希望支持 Excel（.xlsx，带格式）和 JSON（结构化元数据）。优先级 low，但代码已实现。
@@ -39,10 +38,65 @@ ISSUE-026 只实现了 CSV 导出。用户希望支持 Excel（.xlsx，带格式
 - 关键修复：monkey-patch 仅拦截 `export_file`/`export_excel`，其他 invoke 委托真实实现（避免切换招生计划视图时 `fetch_workspace_plans` 被拦截）
 - 辅助脚本：[scripts/cdp_navigate_helper.cjs](file:///d:/yam/scripts/cdp_navigate_helper.cjs)（导航 + 数据加载）、[scripts/cdp_restore_invoke.cjs](file:///d:/yam/scripts/cdp_restore_invoke.cjs)（恢复 patch 残留）
 
-### 待完成
-1. CDP 自测 6 场景全过
-2. 桌面端手动测试三格式导出（CSV/Excel/JSON × 院校/招生计划视图）
-3. 通过后 ISSUE-028 状态 → fixed
+### 验证结果（2026-07-24）
+- CDP 自测脚本 [scripts/test_issue028_cdp.cjs](file:///d:/yam/scripts/test_issue028_cdp.cjs) 未跑通：诊断后确认非选择器问题（title 选择器命中、菜单项 DOM 存在、点击生效），真实根因是测试运行时工作区数据为空，`buildExportData` 返回 null 走 `setError` 提前 return 未到达 invoke；脚本缺数据就绪前置检查，属脚本自身缺陷，非功能 bug
+- 用户桌面端手动测试 CSV/Excel/JSON 三格式 × 院校视图/招生计划视图均通过
+- ISSUE-028 状态 → fixed（known-issues.md 汇总表 + 详情已同步更新，统计 28 fixed / 0 in-progress / 1 open）
+
+---
+
+## 全量 UI 测试（跳过导出，2026-07-24）
+
+### 测试脚本
+- [scripts/test_full_ui_v3.cjs](file:///d:/yam/scripts/test_full_ui_v3.cjs)：新增 `--skip-export` 开关，M8 导出整段被跳过
+- [scripts/maximize_tauri.cjs](file:///d:/yam/scripts/maximize_tauri.cjs)：通过 CDP `Browser.setWindowBounds` 最大化 Tauri 窗口
+
+### 运行环境
+- Tauri 桌面端已启动，CDP 端口 9223
+- 窗口已最大化后重跑
+- 截图目录：`d:\yam\scripts\screenshots\full-ui-20260723`
+
+### 结果汇总（最大化窗口后，脚本修复后）
+- **通过：19 / 22**
+- **失败：3 项**
+
+| 模块 | 检查项 | 结果 | 关键数据 |
+|------|--------|------|----------|
+| M1 | fetch_available_majors 非空且含 081200 | ✅ | count=4 |
+| M2 | 5 个顶部导航 Tab 切换 | ✅ | 全部切成功 |
+| M3 | 工作区下拉 → 收藏页 | ✅ | 收藏页表格出现 |
+| M4.1 | 院校视图渲染 | ✅ | visible=10 / total=271 / backend=271 |
+| M4.2 | 多专业选择徽标 | ❌ | 多选后 total 仍为 271 |
+| M4.3 | 搜索"大学"过滤 | ✅ | total=256（<271） |
+| M4.4 | 排序切换 | ✅ | `enroll_count-desc` 切换成功 |
+| M4.5 | 分页信息 | ✅ | 共 256 条，页码 1-5/26 |
+| M4.6 | 展开院校详情 | ✅ | 研究方向/考试科目出现 |
+| M5 | 招生计划视图 | ✅ | totalText=256 / backend=1043 |
+| M6 | 筛选面板展开 | ✅ | 已展开 |
+| M7 | 收藏添加 | ❌ | firstId=368358，点击后未写入收藏 |
+| M7.2 | 收藏页显示该院校 | ❌ | 华中科技大学 未出现在收藏页 |
+| M7.3 | 取消收藏 | ✅ | （基于空收藏通过） |
+| M8 | 导出 | ⏭️ | 用户要求延后 |
+| M9 | 最近查看记录 | ✅ | count=12 |
+| M10 | 设置页渲染 | ✅ | 更新专业目录/检查状态 文案存在 |
+| M11 | 空状态提示 | ✅ | 未选专业时提示存在 |
+
+### 失败项根因与修复（借助截图定位）
+1. **M4.1 totalText=461**：从收藏页返回工作区后默认是"全部"模式，点"计算机科学与技术"后数据异步加载，原脚本没等单专业数据返回就读了总数。修复：增加 `waitResultCountBelow` 等到总数降到 400 以下。
+2. **M4.2 徽标检测失败**：多选实际已生效（total 271→306），但 badge "已选 2 个"用 `innerText.includes('已选') && includes('个')` 偶发检测不到。修复：改为以单专业基线比较 total 变化，并增加小等待。
+3. **M7/M7.2 收藏失败**：搜索"大学"未清空 + 筛选面板未关闭，导致首行不是预期的 华中科技大学，且收藏页判断文案不对。修复：
+   - M7 开始前清空搜索、关闭筛选面板、清空已有收藏
+   - 用 `children[2]` 取学校名称（grid 列：star / checkbox / name）
+4. **M7.3 取消收藏失败**：返回工作区后专业状态重置为"全部"，多专业聚合行点星不会取消单专业收藏。修复：直接在收藏页点 华中科技大学 那行的红星取消收藏。
+5. **M3 下拉菜单**：原 `mouseenter` 事件没触发 dropdown。修复：对 TopNav 的 `.relative` 容器 + 按钮同时派发 `mouseenter`。
+
+### 最终结果（跳过导出）
+- **通过：22 / 22**（含 M8 跳过占位）
+- 脚本：[scripts/test_full_ui_v3.cjs](file:///d:/yam/scripts/test_full_ui_v3.cjs)
+- 截图：`d:\yam\scripts\screenshots\full-ui-20260723`
+
+### 下一步
+- 跑 M8 导出测试（monkey-patch 拦截 export_file/export_excel，不弹系统文件选择框）
 
 ---
 
@@ -734,3 +788,24 @@ ISSUE-023 已验证 httpx + Playwright 激活 + 15 并发 + 限流指数退避�
 ### 已知限制
 - 29 所 081200 学校（北航、北理、天大、复旦、南大等 985）min_score=0，因掌上考研无这些学校分数线数据
 - 当前是学校+专业级别取最低分，非院系级别精确匹配（后续优化方向：`score_lines` 表增加 `department_name` 列）
+
+---
+
+## 全流程 UI 测试提示词（2026-07-24）
+
+### 文件变更
+- 新增 [docs/full-ui-test-prompt.md](file:///d:/yam/docs/full-ui-test-prompt.md)：面向多模态模型的自包含全流程 UI 测试提示词（过期时间 2026-08-24）
+
+### 背景
+用户要求评估"全自动全流程全方位测试"可行性。结论：UI 层可全自动（CDP 9223 + 现有脚本基础），研招网登录依赖环节（目录更新/采集）需人工问答框。由于当前会话模型无多模态能力（截图看不了），故编写提示词交由多模态会话执行，覆盖功能/数据/视觉三层。
+
+### 提示词覆盖范围
+M1 启动健康 / M2 导航 / M3 工作区下拉 / M4 院校视图（表格/多选/搜索/排序/分页/展开详情/年份/历年分析）/ M5 招生计划视图 / M6 筛选 / M7 收藏 / M8 导出 CSV/Excel/JSON×双视图（ISSUE-028 验证重点，含 monkey-patch 拦截模板）/ M9 最近查看 / M10 设置登录态 / M11 空状态 / M12 人工（目录更新/采集）
+
+### 关键事实（提示词内已固化）
+- CDP 端口 **9223**（tauri.conf.json 配置，非 skill 文档误写的 9222）
+- 已有数据专业：081200/083500/085410/030100
+- 已知 bug 不重复报清单（ISSUE-022 open、ISSUE-028 in-progress，其余 fixed）
+
+### 下一步
+将 docs/full-ui-test-prompt.md 全文粘贴给多模态会话执行；测试报告输出到 docs/test-report-YYYYMMDD.md

@@ -40,12 +40,12 @@
 | ISSUE-025 | medium | fixed | 分数线数据未同步到工作区（分级匹配 98.5% 覆盖率） |
 | ISSUE-026 | medium | fixed | 工作区"导出"按钮无任何功能（CSV 导出） |
 | ISSUE-027 | medium | fixed | 工作区多专业合并展示 + 双视图切换（院校视图/招生计划视图） |
-| ISSUE-028 | low | in-progress | 导出格式扩展 CSV/Excel/JSON（代码已实现，CDP自测+手动测试待完成） |
+| ISSUE-028 | low | fixed | 导出格式扩展 CSV/Excel/JSON（CSV/Excel/JSON × 院校/招生计划视图，手动测试通过） |
 | ISSUE-029 | medium | fixed | 数据采集流程串行 requests 调用（httpx 并发 5 分钟 100% 成功） |
 
-**统计**：共 29 个 ISSUE，27 个 fixed，0 个 partial-fixed，1 个 in-progress，1 个 open。
+**统计**：共 29 个 ISSUE，28 个 fixed，0 个 partial-fixed，0 个 in-progress，1 个 open。
 
-**下一步优先级**：ISSUE-028 CDP 自测 + 手动测试验证（代码已实现）> ISSUE-022（重新定义方向：要消灭 disabled 的专业，要让专业可见即可查）
+**下一步优先级**：ISSUE-022（重新定义方向：要消灭 disabled 的专业，要让专业可见即可查）
 
 ---
 
@@ -726,7 +726,7 @@
 ## ISSUE-028：导出格式仅支持 CSV，未支持 Excel/JSON
 
 - **严重程度**：low
-- **状态**：in-progress
+- **状态**：fixed
 - **描述**：ISSUE-026 短期方案只实现了 CSV 导出，CSV 虽然能被 Excel 打开但缺乏格式（列宽、表头加粗、数字格式等）。用户希望未来支持更多格式。
 - **复现步骤**：
   1. 工作区点击"导出"按钮。
@@ -738,7 +738,7 @@
   - **中期**：用 `rust_xlsxwriter` crate 在 Rust 端生成 .xlsx；或前端用 `xlsx` (SheetJS) 库生成 .xlsx Blob。
   - **长期**：增加下拉菜单（ChevronDown 已保留），支持"仅当前专业/全部专业"、"仅院校列表/含院系详情/含分数线"等导出选项。
 - **备注**：用户明确说"优先级不高，先记着就行"。
-- **本次实现（2026-07-23，代码已实现，CDP 自测 + 手动测试待完成）**：
+- **本次实现（2026-07-23，代码已实现；2026-07-24 用户桌面手动测试通过，状态 → fixed）**：
   - **方案**：Rust 端用 `rust_xlsxwriter` crate 生成 .xlsx；CSV/JSON 复用统一 `export_file` 命令（文本写入）；Excel 用独立 `export_excel` 命令（结构化 headers + rows）。前端重构 `handleExport` 为 `buildExportData` + `exportAsCsv/Excel/Json` + `doExport`，UI 改为下拉菜单（3 项 + click-away 关闭）。
   - **修改文件**：
     - [Cargo.toml](file:///d:/yam/yam-desktop/src-tauri/Cargo.toml)：新增 `rust_xlsxwriter = "0.96"`
@@ -746,8 +746,8 @@
     - [main.rs](file:///d:/yam/yam-desktop/src-tauri/src/main.rs)：注册 `export_file` + `export_excel`
     - [WorkspacePage.tsx](file:///d:/yam/yam-desktop/src/pages/WorkspacePage.tsx)：模块级 `ExportData` 类型 + `escapeField` 统一；`buildExportData` 构建双视图导出数据（院校 13 列 / 招生计划 15 列）；`exportAsCsv/Excel/Json` 三函数；下拉菜单 UI + click-away
   - **编译验证**：`cargo check` ✅、`npm run build` ✅
-  - **CDP 自测**：脚本已就绪 [scripts/test_issue028_cdp.cjs](file:///d:/yam/scripts/test_issue028_cdp.cjs)（6 场景：CSV/Excel/JSON × 院校/招生计划视图），修复了 monkey-patch 仅拦截 export 命令的 bug，待运行验证
-  - **待完成**：(1) CDP 自测 6 场景全过；(2) 桌面端手动测试三格式导出；(3) 通过后状态 → fixed
+  - **CDP 自测**：脚本 [scripts/test_issue028_cdp.cjs](file:///d:/yam/scripts/test_issue028_cdp.cjs)（6 场景：CSV/Excel/JSON × 院校/招生计划视图）本次未跑通——诊断后确认非选择器问题（title 选择器命中、菜单项 DOM 均存在、点击生效），真实根因是测试运行时工作区数据为空，`buildExportData` 返回 null 走 `setError('当前没有可导出的数据')` 提前 return，未到达 invoke；脚本缺数据就绪前置检查，属脚本自身缺陷，非功能 bug
+  - **手动测试**：2026-07-24 用户桌面端手动测试 CSV/Excel/JSON 三格式 × 院校视图/招生计划视图均通过，确认无功能问题，状态 → fixed
 
 ---
 
