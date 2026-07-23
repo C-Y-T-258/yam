@@ -37,6 +37,26 @@ interface AggregatedSchool extends WorkspaceSchool {
   major_count: number;
 }
 
+// ISSUE-028：导出数据结构。CSV/Excel 共用 cellRows（已字符串化的扁平行），
+// JSON 用 jsonRows（含完整原始字段 + major_name）。
+type ExportCell = string | number; // 布尔字段已转"是"/"否"字符串
+type ExportFormat = 'csv' | 'excel' | 'json';
+interface ExportData {
+  headers: string[];
+  cellRows: ExportCell[][]; // CSV + Excel 用
+  jsonRows: object[]; // JSON 用（含完整 _raw / years[] + major_name）
+  filenameBase: string; // 不含扩展名
+  viewMode: 'school' | 'plan';
+  majorCodes: string[];
+}
+// CSV 字段转义：包含 , " \n 的字段用双引号包裹，内部双引号转义为 ""
+// （原 handleExport 两处重复的 escapeField 合并为单一实现）
+const escapeField = (v: ExportCell): string => {
+  const s = String(v);
+  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+};
+
 interface TrendChartProps {
   years: YearData[];
   dataKey: 'min_score' | 'enroll_count';
@@ -203,6 +223,9 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
   const [planPageNum, setPlanPageNum] = useState(1);
   const [planPageSize, setPlanPageSize] = useState(20);
   const [expandedPlanId, setExpandedPlanId] = useState<number | null>(null);
+  // ISSUE-028：导出格式下拉菜单
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
 
   const visibleMajors = useMemo(
     () => crawledMajors.filter((m) => visibleMajorCodes.includes(m.code)),
@@ -533,9 +556,21 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
   const paginatedPlans = filteredPlans.slice((planPageNum - 1) * planPageSize, planPageNum * planPageSize);
   const planTotalPages = Math.max(1, Math.ceil(filteredPlans.length / planPageSize));
 
-  // ISSUE-026/027：导出当前筛选结果为 CSV。跟随当前专业范围（全部/单专业），
-  // 表头加"专业代码"+"专业名称"两列，每个 (school, major) 一行（用 _raw.flatMap）。
-  const handleExport = async () => {
+  // ISSUE-028：导出格式下拉菜单 click-away 关闭
+  useEffect(() => {
+    if (!exportMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
+        setExportMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [exportMenuOpen]);
+
+  // ISSUE-026/027/028：构建当前筛选结果的导出数据。CSV/Excel 共用 cellRows（已字符串化扁平行），
+  // JSON 用 jsonRows（含完整原始字段 + major_name）。空数据返回 null。
+  const buildExportData = (vm: 'school' | 'plan'): ExportData | null => {
     const majorNameOf = (code: string) =>
       crawledMajors.find((m) => m.code === code)?.name ?? code;
     const today = new Date();
@@ -547,70 +582,38 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
         : selectedMajorCodes.length === 1
           ? `${focusedMajorCode}_${focusedMajorName}`
           : `${selectedMajorCodes.join('+')}_多专业`;
+    const majorCodes = activeMajorCodes;
 
-    // ISSUE-027 阶段 2：招生计划视图导出分支
-    if (viewMode === 'plan') {
-      if (filteredPlans.length === 0) {
-        setError('当前没有可导出的数据');
-        setTimeout(() => setError(null), 2500);
-        return;
-      }
-      const planHeaders = [
+    if (vm === 'plan') {
+      if (filteredPlans.length === 0) return null;
+      const headers = [
         '院校代码', '院校名称', '专业代码', '专业名称', '省份', '层次',
         '院系', '研究方向', '考试科目', '学习方式', '考试方式', '特殊计划',
         '最新年份', '最低分', '招生人数',
       ];
-      const planRows = filteredPlans.map(p => [
+      const cellRows: ExportCell[][] = filteredPlans.map(p => [
         p.school_code, p.school_name, p.major_code, majorNameOf(p.major_code),
         p.province, p.level, p.department_name, p.research_direction,
         p.exam_subjects.join('; '), p.study_mode, p.exam_type,
         p.special_plans.join('; '), p.latest_year, p.latest_min_score, p.latest_enroll_count,
       ]);
-      const escapeField = (v: string | number) => {
-        const s = String(v);
-        if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-        return s;
+      const jsonRows = filteredPlans.map(p => ({ ...p, major_name: majorNameOf(p.major_code) }));
+      return {
+        headers, cellRows, jsonRows,
+        filenameBase: `${defaultFilenamePrefix}_招生计划_${ymd}`,
+        viewMode: 'plan', majorCodes,
       };
-      const csvBody = [planHeaders, ...planRows].map(r => r.map(escapeField).join(',')).join('\r\n');
-      const csvContent = '\uFEFF' + csvBody;
-      const planFilename = `${defaultFilenamePrefix}_招生计划_${ymd}.csv`;
-      if (!isTauri) {
-        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url; a.download = planFilename;
-        document.body.appendChild(a); a.click(); document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-        return;
-      }
-      try {
-        const { invoke } = await import('@tauri-apps/api/core');
-        const result = await invoke<string | null>('export_csv', { defaultFilename: planFilename, content: csvContent });
-        if (result === null) return;
-        setError(`已导出 ${planRows.length} 条到: ${result}`);
-        setTimeout(() => setError(null), 4000);
-      } catch (e) {
-        setError(`导出失败: ${e}`);
-      }
-      return;
     }
 
-    // 院校视图导出
-    if (filteredData.length === 0) {
-      setError('当前没有可导出的数据');
-      setTimeout(() => setError(null), 2500);
-      return;
-    }
-    const schoolFilename = `${defaultFilenamePrefix}_${ymd}.csv`;
-
-    // CSV 表头与字段（加专业代码/专业名称两列）
+    // 院校视图
+    if (filteredData.length === 0) return null;
     const headers = [
       '院校代码', '院校名称', '专业代码', '专业名称', '省份', '层次',
       '最低分', '招生人数', '自划线', '博士点',
       '双一流', '985', '211',
     ];
     // ISSUE-027：每个 (school, major) 一行，用 _raw.flatMap 展开
-    const rows = filteredData.flatMap((s) =>
+    const cellRows: ExportCell[][] = filteredData.flatMap((s) =>
       s._raw.map((raw) => [
         raw.school_code ?? '',
         raw.name ?? '',
@@ -627,49 +630,104 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
         raw.is_211 ? '是' : '否',
       ])
     );
-
-    // CSV 字段转义：包含 , " \n 的字段用双引号包裹，内部双引号转义为 ""
-    const escapeField = (v: string | number) => {
-      const s = String(v);
-      if (/[",\n\r]/.test(s)) {
-        return `"${s.replace(/"/g, '""')}"`;
-      }
-      return s;
+    const jsonRows = filteredData.flatMap((s) =>
+      s._raw.map((raw) => ({ ...raw, major_name: majorNameOf(raw.major_code) }))
+    );
+    return {
+      headers, cellRows, jsonRows,
+      filenameBase: `${defaultFilenamePrefix}_${ymd}`,
+      viewMode: 'school', majorCodes,
     };
-    const csvBody = [headers, ...rows]
+  };
+
+  // ISSUE-026/028：导出为 CSV（UTF-8 BOM + 字段转义）。Tauri 调 export_file；浏览器走 Blob。
+  const exportAsCsv = async (d: ExportData) => {
+    const csvBody = [d.headers, ...d.cellRows]
       .map((row) => row.map(escapeField).join(','))
       .join('\r\n');
-    // UTF-8 BOM 让 Excel 正确识别中文
-    const csvContent = '\uFEFF' + csvBody;
-
+    const csvContent = '\uFEFF' + csvBody; // UTF-8 BOM 让 Excel 正确识别中文
+    const filename = `${d.filenameBase}.csv`;
     if (!isTauri) {
-      // 浏览器环境：用 Blob + a 标签触发下载
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url;
-      a.download = schoolFilename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
       URL.revokeObjectURL(url);
+      return null;
+    }
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke<string | null>('export_file', { defaultFilename: filename, content: csvContent, ext: 'csv' });
+  };
+
+  // ISSUE-028：导出为 Excel（.xlsx）。Tauri 调 export_excel（Rust 用 rust_xlsxwriter 生成）；
+  // 浏览器（仅 debug）不支持 xlsx，降级为 CSV。
+  const exportAsExcel = async (d: ExportData) => {
+    const filename = `${d.filenameBase}.xlsx`;
+    const sheetName = d.viewMode === 'plan' ? '招生计划' : '院校列表';
+    if (!isTauri) {
+      console.warn('浏览器环境不支持 xlsx 导出，降级为 CSV');
+      return exportAsCsv(d);
+    }
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke<string | null>('export_excel', {
+      defaultFilename: filename,
+      sheetName,
+      headers: d.headers,
+      rows: d.cellRows,
+    });
+  };
+
+  // ISSUE-028：导出为 JSON（结构化对象，含元数据 + 完整行字段）。
+  const exportAsJson = async (d: ExportData) => {
+    const payload = {
+      export_date: new Date().toISOString(),
+      view_mode: d.viewMode,
+      major_codes: d.majorCodes,
+      row_count: d.jsonRows.length,
+      columns: d.headers,
+      rows: d.jsonRows,
+    };
+    const jsonContent = JSON.stringify(payload, null, 2);
+    const filename = `${d.filenameBase}.json`;
+    if (!isTauri) {
+      const blob = new Blob([jsonContent], { type: 'application/json;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      return null;
+    }
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke<string | null>('export_file', { defaultFilename: filename, content: jsonContent, ext: 'json' });
+  };
+
+  // ISSUE-028：导出入口，按格式分发。成功/失败/取消均通过 error 横幅反馈。
+  const doExport = async (format: ExportFormat) => {
+    setExportMenuOpen(false);
+    const d = buildExportData(viewMode);
+    if (!d) {
+      setError('当前没有可导出的数据');
+      setTimeout(() => setError(null), 2500);
       return;
     }
-
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      const result = await invoke<string | null>('export_csv', {
-        defaultFilename: schoolFilename,
-        content: csvContent,
-      });
+      const result =
+        format === 'csv' ? await exportAsCsv(d)
+          : format === 'excel' ? await exportAsExcel(d)
+            : await exportAsJson(d);
       if (result === null) {
-        // 用户取消保存
+        // 浏览器下载完成 / 用户取消保存（Tauri），无需额外提示
+        if (isTauri) return;
         return;
       }
-      setError(`已导出 ${rows.length} 条到: ${result}`);
+      const fmtLabel = format === 'csv' ? 'CSV' : format === 'excel' ? 'Excel' : 'JSON';
+      setError(`已导出 ${d.cellRows.length} 条${format === 'excel' ? '(xlsx)' : `(${fmtLabel})`} 到: ${result}`);
       setTimeout(() => setError(null), 4000);
     } catch (e) {
       setError(`导出失败: ${e}`);
+      setTimeout(() => setError(null), 4000);
     }
   };
 
@@ -788,18 +846,51 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
               <RefreshCw size={14} />
               刷新数据
             </motion.button>
-            <motion.button
-              onClick={handleExport}
-              disabled={activeMajorCodes.length === 0 || (viewMode === 'plan' ? filteredPlans.length === 0 : filteredData.length === 0)}
-              className="flex items-center gap-1 text-gray-600 hover:text-gray-800 text-sm disabled:opacity-40 disabled:cursor-not-allowed"
-              whileHover={activeMajorCodes.length > 0 ? { scale: 1.02 } : undefined}
-              whileTap={activeMajorCodes.length > 0 ? { scale: 0.97 } : undefined}
-              title="导出当前筛选结果为 CSV"
-            >
-              <Download size={14} />
-              导出
-              <ChevronDown size={14} />
-            </motion.button>
+            {/* ISSUE-028：导出格式下拉菜单（CSV / Excel / JSON） */}
+            <div className="relative" ref={exportMenuRef}>
+              <motion.button
+                onClick={() => setExportMenuOpen((o) => !o)}
+                disabled={activeMajorCodes.length === 0 || (viewMode === 'plan' ? filteredPlans.length === 0 : filteredData.length === 0)}
+                className="flex items-center gap-1 text-gray-600 hover:text-gray-800 text-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                whileHover={activeMajorCodes.length > 0 ? { scale: 1.02 } : undefined}
+                whileTap={activeMajorCodes.length > 0 ? { scale: 0.97 } : undefined}
+                title="导出当前筛选结果"
+              >
+                <Download size={14} />
+                导出
+                <ChevronDown size={14} />
+              </motion.button>
+              <AnimatePresence>
+                {exportMenuOpen && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -4 }}
+                    transition={{ duration: 0.12 }}
+                    className="absolute top-full right-0 mt-1 w-36 bg-white border border-gray-200 rounded-lg shadow-lg py-1 z-50"
+                  >
+                    <button
+                      onClick={() => doExport('csv')}
+                      className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 hover:text-[#1e3a5f]"
+                    >
+                      导出为 CSV
+                    </button>
+                    <button
+                      onClick={() => doExport('excel')}
+                      className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 hover:text-[#1e3a5f]"
+                    >
+                      导出为 Excel
+                    </button>
+                    <button
+                      onClick={() => doExport('json')}
+                      className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 hover:text-[#1e3a5f]"
+                    >
+                      导出为 JSON
+                    </button>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
             <motion.button
               onClick={onOpenManageMajors}
               className="px-4 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50"

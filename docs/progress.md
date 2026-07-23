@@ -1,12 +1,65 @@
-# 进度跟踪 - 2026-07-23
+# 进度跟踪 - 2026-07-24
 
 > 本文件用于上下文压缩后恢复进度。每完成一步立即更新。
 >
-> **已完成**：ISSUE-025 分数线分级匹配（98.5% 覆盖率）、ISSUE-029 httpx 并发优化（271/271 100% 成功，5 分钟）、ISSUE-023 目录更新 httpx 方案（7-8 分钟）、ISSUE-026 导出 CSV、ISSUE-027 阶段 1 工作区多专业合并展示 + 双视图切换、ISSUE-027 多专业 Tab 多选支持 + syncedMajorsRef 优化、ISSUE-027 阶段 2 招生计划视图、ISSUE-017 300s 自适应超时 + 种子抓取心跳（运行时验证通过）、ISSUE-019 专业选择页不全（确认 realtime 数据源已彻底解决，标记 fixed）。
+> **已完成**：ISSUE-025 分数线分级匹配（98.5% 覆盖率）、ISSUE-029 httpx 并发优化（271/271 100% 成功，5 分钟）、ISSUE-023 目录更新 httpx 方案（7-8 分钟）、ISSUE-026 导出 CSV、ISSUE-027 阶段 1 工作区多专业合并展示 + 双视图切换、ISSUE-027 多专业 Tab 多选支持 + syncedMajorsRef 优化、ISSUE-027 阶段 2 招生计划视图、ISSUE-017 300s 自适应超时 + 种子抓取心跳（运行时验证通过）、ISSUE-019 专业选择页不全（确认 realtime 数据源已彻底解决，标记 fixed）、ISSUE-022 严重程度文档对齐（high→medium）。
 >
-> **剩余 open ISSUE**（按优先级）：
-> - ISSUE-028（low）：导出格式仅支持 CSV，未支持 Excel/JSON
+> **剩余 ISSUE**（按优先级）：
+> - ISSUE-028（in-progress）：导出格式扩展 CSV/Excel/JSON——代码已实现（rust_xlsxwriter + export_file/export_excel + 前端三格式下拉菜单），cargo check + npm run build 通过，CDP 自测脚本已就绪（scripts/test_issue028_cdp.cjs），待运行验证 + 手动测试
 > - ISSUE-022（open，需重新定义方向）：选择 disabled=true 的专业后采集卡住——数据层已不可达（majors.yaml 0 个 disabled，realtime 无 enabled 字段），但本质诉求仍在：要消灭 disabled 的专业，要让专业可见即可查
+
+---
+
+## ISSUE-028 导出格式扩展 CSV/Excel/JSON（2026-07-23，代码已实现，CDP 自测待完成）
+
+### 背景
+ISSUE-026 只实现了 CSV 导出。用户希望支持 Excel（.xlsx，带格式）和 JSON（结构化元数据）。优先级 low，但代码已实现。
+
+### 设计决策
+- **Rust 端**：`rust_xlsxwriter` crate 生成 .xlsx（纯 Rust，无 Node 依赖）；CSV/JSON 复用统一 `export_file` 命令（文本写入）；Excel 用独立 `export_excel` 命令（结构化 headers + rows）
+- **前端**：重构 `handleExport` 为 `buildExportData` + `exportAsCsv/Excel/Json` + `doExport`；UI 改为下拉菜单（3 项 + click-away 关闭）
+- **单元格类型**：`Vec<Vec<serde_json::Value>>` 传前端数据，Rust 匹配 Null→blank / Bool→boolean / Number→f64 / String→string；代码列（school_code/major_code）保持 string，分数/计数为 number
+- **列宽**：手动固定 `[f64; 15]`（autofit 对 CJK 估算过窄）
+- **Excel 格式**：bold 表头 + freeze_panes(1,0) + 手动列宽
+- **JSON 结构**：`{export_date, view_mode, major_codes, row_count, columns, rows}`，rows 含完整原始字段 + major_name + years[]
+
+### 改动文件
+- [Cargo.toml](file:///d:/yam/yam-desktop/src-tauri/Cargo.toml)：新增 `rust_xlsxwriter = "0.96"`
+- [commands.rs](file:///d:/yam/yam-desktop/src-tauri/src/commands.rs)：删除 `export_csv`，新增 `export_file`（文本：CSV/JSON，弹保存对话框 + std::fs::write）+ `export_excel`（xlsx：Workbook + bold 表头 + 手动列宽 + freeze_panes + serde_json::Value 单元格类型匹配）
+- [main.rs](file:///d:/yam/yam-desktop/src-tauri/src/main.rs)：注册 `export_file` + `export_excel`（替换原 `export_csv`）
+- [WorkspacePage.tsx](file:///d:/yam/yam-desktop/src/pages/WorkspacePage.tsx)：模块级 `ExportData` 类型 + `escapeField` 统一；`buildExportData(vm)` 构建双视图导出数据（院校 13 列 / 招生计划 15 列）；`exportAsCsv/Excel/Json` 三函数（Tauri invoke + 浏览器 Blob fallback）；`doExport(format)` 调度；下拉菜单 UI + click-away useEffect
+
+### 编译验证
+- `cargo check` ✅ 通过
+- `npm run build` ✅ 通过
+
+### CDP 自测（待运行）
+- 脚本：[scripts/test_issue028_cdp.cjs](file:///d:/yam/scripts/test_issue028_cdp.cjs)
+- 6 场景：CSV/Excel/JSON × 院校视图/招生计划视图
+- 关键修复：monkey-patch 仅拦截 `export_file`/`export_excel`，其他 invoke 委托真实实现（避免切换招生计划视图时 `fetch_workspace_plans` 被拦截）
+- 辅助脚本：[scripts/cdp_navigate_helper.cjs](file:///d:/yam/scripts/cdp_navigate_helper.cjs)（导航 + 数据加载）、[scripts/cdp_restore_invoke.cjs](file:///d:/yam/scripts/cdp_restore_invoke.cjs)（恢复 patch 残留）
+
+### 待完成
+1. CDP 自测 6 场景全过
+2. 桌面端手动测试三格式导出（CSV/Excel/JSON × 院校/招生计划视图）
+3. 通过后 ISSUE-028 状态 → fixed
+
+---
+
+## 项目清理（2026-07-24）
+
+### 临时脚本清理
+- **3 个有价值脚本**移到 scripts/ 并修复：
+  - `_cdp_test_issue028.cjs` → [scripts/test_issue028_cdp.cjs](file:///d:/yam/scripts/test_issue028_cdp.cjs)（修复 monkey-patch bug：仅拦截 export 命令）
+  - `_cdp_navigate.cjs` → [scripts/cdp_navigate_helper.cjs](file:///d:/yam/scripts/cdp_navigate_helper.cjs)（CDP 导航 + 数据加载工具）
+  - `_cdp_restore.cjs` → [scripts/cdp_restore_invoke.cjs](file:///d:/yam/scripts/cdp_restore_invoke.cjs)（CDP invoke 恢复工具）
+- **7 个低价值探针脚本**归档到 git 历史（commit b9f7878）后从工作区删除：
+  - `_cdp_probe.cjs` / `_cdp_debug.cjs` / `_cdp_loaddata.cjs` / `_cdp_checkdb.cjs` / `_cdp_checkdb2.cjs` / `_cdp_backend_check.cjs` / `_check_db.py`
+  - 均为一次性 CDP 调试探针（通用 evalOn 模板 + 特定查询），无独特价值，git 历史可查
+
+### ISSUE-022 严重程度文档对齐
+- [known-issues.md](file:///d:/yam/docs/known-issues.md) L559：ISSUE-022 详情严重程度 high→medium，与汇总表 L37 一致
+- ISSUE-022 保持 open，不移除 cli.py dead code（用户决定）
 
 ---
 

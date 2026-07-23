@@ -58,7 +58,8 @@ fn main() {
             commands::reset_catalog_update,
             commands::get_catalog_update_progress,
             commands::read_majors_catalog,
-            commands::export_csv,
+            commands::export_file,
+            commands::export_excel,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

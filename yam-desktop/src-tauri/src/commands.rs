@@ -6,10 +6,12 @@ use crate::db::{
     WorkspaceFilterParams, WorkspacePlanRow, WorkspaceSchool,
 };
 use serde::Serialize;
+use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
+use rust_xlsxwriter::{Format, Workbook};
 
 #[tauri::command]
 pub fn fetch_schools(state: State<'_, DbConn>, major_code: String) -> Vec<School> {
@@ -1768,23 +1770,26 @@ pub fn read_majors_catalog() -> Result<Option<String>, String> {
     Ok(Some(content))
 }
 
-/// ISSUE-026：弹出"保存文件"对话框并将 CSV 内容写入用户选择的路径。
+/// ISSUE-026/028：弹出"保存文件"对话框并将文本内容（CSV / JSON）写入用户选择的路径。
 ///
-/// - `default_filename`：默认文件名（如 `085400_电子信息_20260721.csv`）
-/// - `content`：完整 CSV 文本（前端已加 UTF-8 BOM、已转义字段）
+/// - `default_filename`：默认文件名（已含扩展名，如 `085400_电子信息_20260721.csv`）
+/// - `content`：完整文本（CSV 已加 UTF-8 BOM、已转义字段；JSON 已序列化）
+/// - `ext`：扩展名（"csv" | "json"），用于对话框过滤器
 ///
 /// 返回 `Ok(Some(path))` 表示保存成功并返回写入路径；`Ok(None)` 表示用户取消；
 /// `Err(msg)` 表示写入失败。
 #[tauri::command]
-pub fn export_csv(
+pub fn export_file(
     app: tauri::AppHandle,
     default_filename: String,
     content: String,
+    ext: String,
 ) -> Result<Option<String>, String> {
+    let filter_label = ext.to_uppercase();
     let file_path = app
         .dialog()
         .file()
-        .add_filter("CSV", &["csv"])
+        .add_filter(&filter_label, &[&ext])
         .set_file_name(&default_filename)
         .blocking_save_file();
 
@@ -1793,9 +1798,120 @@ pub fn export_csv(
         None => return Ok(None),
     };
 
-    // 转成底层 PathBuf 字符串
     let path_str = path.to_string();
     std::fs::write(&path_str, content.as_bytes())
         .map_err(|e| format!("写入文件失败: {}", e))?;
+    Ok(Some(path_str))
+}
+
+/// ISSUE-028：导出为 Excel（.xlsx）。前端传结构化的表头 + 行（每 cell 为 serde_json::Value），
+/// Rust 侧用 rust_xlsxwriter 生成 xlsx：表头加粗、首行冻结、按列手动设宽（autofit 对 CJK 偏窄）。
+///
+/// - `default_filename`：默认文件名（如 `085400_电子信息_20260723.xlsx`）
+/// - `sheet_name`：工作表名（"院校列表" | "招生计划"）
+/// - `headers`：表头字符串数组
+/// - `rows`：数据行，每行为 `Vec<Value>`，按 Value 变体写 cell
+///   （Null→空白、Bool→布尔、Number→数字、String→字符串，其他→to_string）
+///
+/// 返回值语义同 `export_file`。
+#[tauri::command]
+pub fn export_excel(
+    app: tauri::AppHandle,
+    default_filename: String,
+    sheet_name: String,
+    headers: Vec<String>,
+    rows: Vec<Vec<Value>>,
+) -> Result<Option<String>, String> {
+    let file_path = app
+        .dialog()
+        .file()
+        .add_filter("Excel", &["xlsx"])
+        .set_file_name(&default_filename)
+        .blocking_save_file();
+
+    let path = match file_path {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+    let path_str = path.to_string();
+
+    let mut workbook = Workbook::new();
+    let worksheet = workbook
+        .add_worksheet()
+        .set_name(&sheet_name)
+        .map_err(|e| format!("创建工作表失败: {}", e))?;
+
+    let bold = Format::new().set_bold();
+
+    // 写表头（首行，加粗）
+    for (col, header) in headers.iter().enumerate() {
+        worksheet
+            .write_string_with_format(0, col as u16, header, &bold)
+            .map_err(|e| format!("写表头失败: {}", e))?;
+    }
+
+    // 手动列宽：autofit 对 CJK 字符宽度估算偏窄，按列索引设固定宽度更稳定。
+    // 顺序对应前端 headers：代码列窄、名称列宽、科目列最宽、其余默认。
+    // 院校视图：院校代码/院校名称/专业代码/专业名称/省份/层次/最低分/招生人数/自划线/博士点/双一流/985/211
+    // 招生计划：院校代码/院校名称/专业代码/专业名称/省份/层次/院系/研究方向/考试科目/学习方式/考试方式/特殊计划/最新年份/最低分/招生人数
+    let col_widths: [f64; 15] = [
+        14.0, // 院校代码
+        28.0, // 院校名称
+        12.0, // 专业代码
+        20.0, // 专业名称
+        8.0,  // 省份
+        10.0, // 层次
+        22.0, // 院系
+        20.0, // 研究方向
+        30.0, // 考试科目
+        10.0, // 学习方式
+        10.0, // 考试方式
+        14.0, // 特殊计划
+        10.0, // 最新年份
+        10.0, // 最低分
+        10.0, // 招生人数
+    ];
+    let col_count = headers.len();
+    for col in 0..col_count {
+        let width = col_widths.get(col).copied().unwrap_or(12.0);
+        worksheet
+            .set_column_width(col as u16, width)
+            .map_err(|e| format!("设置列宽失败: {}", e))?;
+    }
+
+    // 冻结首行
+    worksheet
+        .set_freeze_panes(1, 0)
+        .map_err(|e| format!("设置冻结窗格失败: {}", e))?;
+
+    // 写数据行：按 Value 变体映射 cell 类型
+    for (row_idx, row) in rows.iter().enumerate() {
+        for (col_idx, value) in row.iter().enumerate() {
+            let r = (row_idx + 1) as u32;
+            let c = col_idx as u16;
+            match value {
+                Value::Null => {
+                    worksheet.write_blank(r, c, &Format::default()).map_err(|e| format!("写单元格失败: {}", e))?;
+                }
+                Value::Bool(b) => {
+                    worksheet.write_boolean(r, c, *b).map_err(|e| format!("写单元格失败: {}", e))?;
+                }
+                Value::Number(n) => {
+                    let f = n.as_f64().unwrap_or(0.0);
+                    worksheet.write_number(r, c, f).map_err(|e| format!("写单元格失败: {}", e))?;
+                }
+                Value::String(s) => {
+                    worksheet.write_string(r, c, s).map_err(|e| format!("写单元格失败: {}", e))?;
+                }
+                _ => {
+                    worksheet.write_string(r, c, &value.to_string()).map_err(|e| format!("写单元格失败: {}", e))?;
+                }
+            }
+        }
+    }
+
+    workbook
+        .save(&path_str)
+        .map_err(|e| format!("写入 Excel 失败: {}", e))?;
     Ok(Some(path_str))
 }
