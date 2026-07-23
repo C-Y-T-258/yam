@@ -9,6 +9,40 @@
 
 ---
 
+## UX 优化计划全部完成（2026-07-24）
+
+> 来源：[docs/ux-optimization-plan.md](file:///d:/yam/docs/ux-optimization-plan.md)，9 项已全部实现。
+
+### 本轮（2026-07-24）完成的 3 项
+- **4.2 趋势图 hover tooltip（中）**：[WorkspacePage.tsx](file:///d:/yam/yam-desktop/src/pages/WorkspacePage.tsx) `TrendChart` 增加透明命中区（r=10）+ 悬停放大高亮点（r5、fill `#1e3a5f`）+ HTML tooltip（年份·最低分/招生人数 值）。viewBox 坐标按百分比定位以跟随 `preserveAspectRatio="none"` 非等比缩放，首末点 clamp 到 [15%,85%] 防溢出。
+- **5.1 简化取消收藏路径（中）**：新增 `toggleFavoriteMajor(schoolId, majorCode)` 单 (school,major) 切换；展开区每个专业分组标题旁单独显示收藏星（单专业模式也显示，提供清晰入口）；取消收藏弹 toast + 8s「撤销」按钮（`toast.show` duration=8000）。
+- **4.3 招生计划视图行密度优化（低）**：新增 `planCompact` 状态 + 紧凑/舒适视图切换按钮；紧凑模式隐藏「研究方向」「考试科目」两列（grid 模板同步从 9 列切到 7 列），展开行仍可见全部信息。
+
+### 前轮（2026-07-24 早些）已完成的 6 项
+- 1.1 修复 WelcomePage「了解软件工作流程」空链接（绑定 OnboardingModal）
+- 1.2 首次使用引导流程（OnboardingModal 4 步，localStorage 首启自动展示）
+- 2.1 后台可取消刷新（isRefreshing/isLoading 分离 + 顶部进度+取消按钮）
+- 3.1 已选 Chip 点击重新编辑（WorkspaceFilterPanel chip onEdit）
+- 4.1 聚合展开状态持久化（expandedSchoolId 写 localStorage，切专业/刷新后恢复）
+- 6.1 toast + 局部重试按钮（reportError 横幅兜底 + toast + retryAction）
+- 6.2 同步失败单独重试（syncFailures + Tab 红点 + 汇总横幅 + 单专业重试）
+
+### 附带修复
+- `reportError` retry 参数类型 `() => Promise<void> | void` → `() => Promise<unknown> | void`，消除 3 处 `loadWorkspaceData` 返回 `Promise<WorkspaceData|null>` 的预存类型错误（runRetry 忽略返回值，安全）。
+
+### 验证
+- `npm run build` ✅ 通过（仅 500kB chunk 既有警告）
+- `npx tsc --noEmit`：WorkspacePage.tsx 0 错误（其余报错均为其他文件预存问题，非本轮引入）
+- **CDP 自测 22/22 通过**（[scripts/test_ux_cdp.cjs](file:///d:/yam/scripts/test_ux_cdp.cjs)，Tauri dev CDP 9223，截图 `scripts/screenshots/ux-test/`）：
+  - 5.1（10/10）：单专业收藏星点击收藏→title/填充/toast 变化；再点取消→toast「撤销」按钮出现；点撤销→恢复收藏
+  - 4.2（5/5）：历年分析趋势图 hover 数据点→tooltip 出现（文本 `2024年 · 最低分 330`）；鼠标移开→tooltip 消失。**关键**：合成 mouseover 无法触发 React onMouseEnter，改用 CDP `Input.dispatchMouseEvent` 真实移动鼠标 + `scrollIntoView` 后取视口坐标
+  - 4.3（7/7）：紧凑视图按钮切换→研究方向/考试科目列隐藏（grid 9 列→7 列）；切回舒适→列恢复
+
+### 待办
+- 用户桌面端最终确认（可选）
+
+---
+
 ## ISSUE-028 导出格式扩展 CSV/Excel/JSON（2026-07-23 代码实现，2026-07-24 手动测试通过 → fixed）
 
 ### 背景

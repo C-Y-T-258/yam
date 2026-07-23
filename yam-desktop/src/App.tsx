@@ -17,6 +17,11 @@ import { FavoritesPage, RecentPage } from './pages/Modals';
 import { ManageMajorsModal, CompareModal } from './pages/Modals';
 import { SettingsPage } from './pages/SettingsPage';
 import { BackgroundTaskPanel } from './components/BackgroundTaskPanel';
+import { ToastContainer } from './components/ToastContainer';
+import { OnboardingModal } from './components/OnboardingModal';
+
+// UX-1.2：首次启动自动展示新手引导的 localStorage key
+const ONBOARDING_SEEN_KEY = 'yam-onboarding-seen';
 
 // 后端 emit 的 `crawl-synced` 事件 payload，对应 Rust 端 `CrawlSyncedPayload`
 interface CrawlSyncedPayload {
@@ -60,6 +65,20 @@ export default function App() {
   const [isCompareOpen, setIsCompareOpen] = useState(false);
   const [initialized, setInitialized] = useState(false);
   const [workspaceRefreshNonce, setWorkspaceRefreshNonce] = useState(0);
+  // UX-1.2：首次启动（localStorage 未标记 seen）自动打开新手引导
+  const [showOnboarding, setShowOnboarding] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!window.localStorage.getItem(ONBOARDING_SEEN_KEY)) {
+      setShowOnboarding(true);
+    }
+  }, []);
+
+  const handleOnboardingClose = () => {
+    window.localStorage.setItem(ONBOARDING_SEEN_KEY, '1');
+    setShowOnboarding(false);
+  };
 
   // On desktop, auto-detect majors already synced to Tauri DB.
   useEffect(() => {
@@ -213,6 +232,12 @@ export default function App() {
 
       {/* 全局后台任务面板：固定在左下角，显示采集任务进度 */}
       <BackgroundTaskPanel />
+
+      {/* UX-6.1：全局 toast 通知容器，固定右上角 */}
+      <ToastContainer />
+
+      {/* UX-1.2：首次启动自动展示新手引导 */}
+      <OnboardingModal isOpen={showOnboarding} onClose={handleOnboardingClose} />
     </div>
   );
 }

@@ -1,8 +1,12 @@
+import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { useAppStore } from '../stores/appStore';
+import { OnboardingModal } from '../components/OnboardingModal';
 
 export function WelcomePage() {
   const { setPage } = useAppStore();
+  // UX-1.1：「了解软件工作流程」按钮打开新手引导弹窗（原为空链接，点击无响应）
+  const [showOnboarding, setShowOnboarding] = useState(false);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-white">
@@ -27,11 +31,19 @@ export function WelcomePage() {
           添加专业
         </motion.button>
         <p className="mt-6">
-          <button className="text-sm text-gray-500 hover:text-gray-700 underline">
+          <button
+            onClick={() => setShowOnboarding(true)}
+            className="text-sm text-gray-500 hover:text-gray-700 underline transition-colors"
+          >
             了解软件工作流程
           </button>
         </p>
       </motion.div>
+
+      <OnboardingModal
+        isOpen={showOnboarding}
+        onClose={() => setShowOnboarding(false)}
+      />
     </div>
   );
 }

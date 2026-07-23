@@ -3,9 +3,10 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Search, RefreshCw, Download,
   Star, ChevronDown, ChevronLeft, ChevronRight, ChevronUp,
-  MapPin, Award, BookOpen, Clock, Square
+  MapPin, Award, BookOpen, Clock, Square, X, AlertCircle, RotateCw
 } from 'lucide-react';
 import { useAppStore } from '../stores/appStore';
+import { toast } from '../stores/toastStore';
 import { TopNav } from '../components/TopNav';
 import { WorkspaceFilterPanel } from '../components/WorkspaceFilterPanel';
 import {
@@ -20,6 +21,7 @@ import {
   type WorkspaceSchool,
   type WorkspaceDepartment,
   type WorkspacePlanRow,
+  type WorkspaceData,
   type FilterOptions,
   type WorkspaceFilters,
 } from '../lib/db';
@@ -67,6 +69,8 @@ interface TrendChartProps {
 
 function TrendChart({ years, dataKey, title, baseMin, baseMax }: TrendChartProps) {
   const data = [...years].reverse();
+  // UX-4.2：hover tooltip。悬停数据点时显示年份+数值，并放大该点高亮。
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   const values = data.map((d) => d[dataKey]);
   const minValue = values.length > 0 ? Math.min(...values) : baseMin ?? 0;
   const maxValue = values.length > 0 ? Math.max(...values) : baseMax ?? 100;
@@ -92,6 +96,16 @@ function TrendChart({ years, dataKey, title, baseMin, baseMax }: TrendChartProps
   const pathD = data.map((d, i) => `${i === 0 ? 'M' : 'L'} ${getX(i)} ${getY(d[dataKey])}`).join(' ');
   const chartKey = `${dataKey}-${data.map((d) => d.year).join('-')}`;
 
+  // UX-4.2：viewBox 坐标 → 容器百分比。SVG 用 preserveAspectRatio="none"，
+  // 容器宽高与 viewBox 比例不同，按百分比定位 HTML tooltip 才能跟随缩放。
+  const xPercent = (x: number) => (x / width) * 100;
+  const yPercent = (y: number) => (y / height) * 100;
+  const hovered = hoverIdx !== null ? data[hoverIdx] : null;
+  // 边缘 clamp，避免首末点 tooltip 超出容器
+  const hoveredX = hoverIdx !== null ? Math.min(85, Math.max(15, xPercent(getX(hoverIdx)))) : 0;
+  const hoveredY = hoverIdx !== null ? yPercent(getY(data[hoverIdx][dataKey])) : 0;
+  const valueLabel = dataKey === 'min_score' ? '最低分' : '招生人数';
+
   return (
     <div className="border border-gray-200 rounded-lg p-3">
       <h4 className="text-xs font-medium text-gray-600 mb-3">{title}</h4>
@@ -101,7 +115,10 @@ function TrendChart({ years, dataKey, title, baseMin, baseMax }: TrendChartProps
             <span key={i}>{t}</span>
           ))}
         </div>
-        <div className="flex-1 relative">
+        <div
+          className="flex-1 relative"
+          onMouseLeave={() => setHoverIdx(null)}
+        >
           <svg className="w-full h-full" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
             {[0, 0.25, 0.5, 0.75, 1].map((p) => {
               const y = padTop + p * drawHeight;
@@ -132,28 +149,40 @@ function TrendChart({ years, dataKey, title, baseMin, baseMax }: TrendChartProps
             {data.map((d, i) => {
               const x = getX(i);
               const y = getY(d[dataKey]);
+              const isHovered = hoverIdx === i;
               return (
                 <g key={d.year}>
+                  {/* UX-4.2：透明命中区扩大悬停范围，便于精准 hover */}
+                  <circle
+                    cx={x}
+                    cy={y}
+                    r="10"
+                    fill="transparent"
+                    style={{ cursor: 'pointer' }}
+                    onMouseEnter={() => setHoverIdx(i)}
+                  />
                   <motion.circle
                     cx={x}
                     cy={y}
-                    r="4"
+                    r={isHovered ? 5 : 4}
                     fill="#3b82f6"
                     stroke="#ffffff"
                     strokeWidth="1"
                     initial={{ scale: 0, opacity: 0 }}
                     animate={{ scale: 1, opacity: 1 }}
                     transition={{ delay: 0.3 + i * 0.1, duration: 0.3, type: 'spring', stiffness: 300 }}
+                    style={{ pointerEvents: 'none' }}
                   />
                   <motion.text
                     x={x}
                     y={y - 8}
                     textAnchor="middle"
                     className="text-[8px]"
-                    fill="#3b82f6"
+                    fill={isHovered ? '#1e3a5f' : '#3b82f6'}
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     transition={{ delay: 0.4 + i * 0.1, duration: 0.3 }}
+                    style={{ pointerEvents: 'none' }}
                   >
                     {d[dataKey]}
                   </motion.text>
@@ -161,6 +190,19 @@ function TrendChart({ years, dataKey, title, baseMin, baseMax }: TrendChartProps
               );
             })}
           </svg>
+          {/* UX-4.2：hover tooltip（HTML 浮层，百分比定位跟随缩放） */}
+          {hovered && (
+            <div
+              className="absolute z-10 pointer-events-none bg-gray-900 text-white text-[10px] rounded px-2 py-1 shadow-lg whitespace-nowrap"
+              style={{
+                left: `${hoveredX}%`,
+                top: `${hoveredY}%`,
+                transform: 'translate(-50%, calc(-100% - 6px))',
+              }}
+            >
+              {hovered.year}年 · {valueLabel} {hovered[dataKey]}
+            </div>
+          )}
         </div>
       </div>
       <div className="flex justify-between text-[10px] text-gray-500 ml-8 mt-1">
@@ -223,9 +265,42 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
   const [planPageNum, setPlanPageNum] = useState(1);
   const [planPageSize, setPlanPageSize] = useState(20);
   const [expandedPlanId, setExpandedPlanId] = useState<number | null>(null);
+  // UX-4.3：招生计划视图紧凑/舒适切换。紧凑模式隐藏低频列（研究方向、考试科目），
+  // 展开行仍可见全部信息。默认舒适视图。
+  const [planCompact, setPlanCompact] = useState(false);
   // ISSUE-028：导出格式下拉菜单
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const exportMenuRef = useRef<HTMLDivElement>(null);
+
+  // UX-2.1：后台可取消刷新。isRefreshing 与 isLoading 分离：
+  //   isRefreshing = 长耗时 sync 循环（页面保持可交互，旧列表可见，顶部显示进度+取消）
+  //   isLoading    = 短耗时 DB 查询（loadWorkspaceData / loadPlans 内部设置）
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshProgress, setRefreshProgress] = useState<{ current: number; total: number; failed: number } | null>(null);
+  const cancelRefreshRef = useRef(false);
+  // UX-6.2：同步失败的专业 { code: { name, error } }，用于 Tab 红点 + 单独重试（6.2 接入 UI）
+  const [syncFailures, setSyncFailures] = useState<Record<string, { name: string; error: string }>>({});
+
+  // UX-6.1：错误横幅的「重试」按钮。reportError 设置 error + 对应 retry 函数。
+  // persistent=true 的错误同时显示横幅（兜底）+ toast；persistent=false 只发 toast（如导出/收藏）。
+  const [retryAction, setRetryAction] = useState<{ fn: () => Promise<unknown> | void } | null>(null);
+  const reportError = (
+    msg: string,
+    retry?: () => Promise<unknown> | void,
+    persistent = true
+  ) => {
+    if (persistent) {
+      setError(msg);
+      setRetryAction(retry ? { fn: retry } : null);
+    }
+    toast.error(msg, retry ? { label: '重试', onClick: () => { void retry(); } } : undefined);
+  };
+  const runRetry = async () => {
+    const fn = retryAction?.fn;
+    setError(null);
+    setRetryAction(null);
+    if (fn) await fn();
+  };
 
   const visibleMajors = useMemo(
     () => crawledMajors.filter((m) => visibleMajorCodes.includes(m.code)),
@@ -274,45 +349,137 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
     }
   };
 
-  const loadWorkspaceData = async (schoolId: string = '') => {
+  const loadWorkspaceData = async (schoolId: string = ''): Promise<WorkspaceData | null> => {
     if (activeMajorCodes.length === 0) {
       setSchools([]);
-      return;
+      return null;
     }
     setIsLoading(true);
     setError(null);
+    setRetryAction(null);
     try {
       const data = await fetchWorkspaceData(schoolId, activeMajorCodes, filters);
       setSchools(data.schools);
       if (schoolId) {
         setDepartments(data.departments);
       }
+      return data;
     } catch (err) {
-      setError(err instanceof Error ? err.message : '加载数据失败');
+      // UX-6.1：数据加载失败 → 横幅（兜底）+ toast + 局部重试按钮
+      reportError(
+        err instanceof Error ? err.message : '加载数据失败',
+        () => loadWorkspaceData(schoolId)
+      );
+      return null;
     } finally {
       setIsLoading(false);
     }
   };
 
+  // UX-4.1：展开状态持久化。expandedSchoolId 写入 localStorage，切换专业/刷新后恢复。
+  // expandedSchoolIdRef 让 effect/handleSync 读取最新值而不进入依赖数组。
+  const EXPANDED_KEY = 'yam-expanded-school';
+  const expandedSchoolIdRef = useRef<string | null>(null);
+  useEffect(() => { expandedSchoolIdRef.current = expandedSchoolId; }, [expandedSchoolId]);
+  const persistExpanded = (id: string | null) => {
+    if (typeof window === 'undefined') return;
+    if (id) window.localStorage.setItem(EXPANDED_KEY, id);
+    else window.localStorage.removeItem(EXPANDED_KEY);
+  };
+  // 从 localStorage 恢复展开：若该 school 仍在结果中则展开并加载院系，否则清空。
+  const restoreExpanded = (schoolsList: WorkspaceSchool[]) => {
+    const saved = typeof window !== 'undefined' ? window.localStorage.getItem(EXPANDED_KEY) : null;
+    if (saved && schoolsList.some((s) => s.school_id === saved)) {
+      setExpandedSchoolId(saved);
+      void loadWorkspaceData(saved);
+    } else {
+      setExpandedSchoolId(null);
+      if (saved) persistExpanded(null);
+    }
+  };
+
+  // UX-2.1：后台可取消刷新。sync 循环不再用 isLoading 阻塞整页（旧列表保持可见、可筛选），
+  // 改为 isRefreshing + 顶部进度条 + 取消按钮。cancelRefreshRef 在每个 major 之间检查中断。
+  // 单专业失败记录到 syncFailures（6.2 接入 Tab 红点 + 单独重试），不阻塞其余专业。
   const handleSync = async () => {
-    if (activeMajorCodes.length === 0) return;
-    setIsLoading(true);
+    if (activeMajorCodes.length === 0 || isRefreshing) return;
+    setIsRefreshing(true);
+    setRefreshProgress({ current: 0, total: activeMajorCodes.length, failed: 0 });
+    setSyncFailures({});
+    cancelRefreshRef.current = false;
+    setError(null);
+    const failures: Record<string, { name: string; error: string }> = {};
+    for (let i = 0; i < activeMajorCodes.length; i++) {
+      if (cancelRefreshRef.current) break;
+      const code = activeMajorCodes[i];
+      const mName = crawledMajors.find((m) => m.code === code)?.name ?? code;
+      try {
+        await syncWorkspaceData(code);
+        syncedMajorsRef.current.add(code);
+      } catch (syncErr) {
+        const msg = syncErr instanceof Error ? syncErr.message : String(syncErr);
+        failures[code] = { name: mName, error: msg };
+        console.warn(`同步专业 ${code} 失败:`, syncErr);
+      }
+      setRefreshProgress({
+        current: i + 1,
+        total: activeMajorCodes.length,
+        failed: Object.keys(failures).length,
+      });
+    }
+    setSyncFailures(failures);
+    // 无论完成或取消，都重新加载已同步进 DB 的数据（DB 查询毫秒级，loadWorkspaceData 内部会短暂 isLoading）
+    try {
+      const data = await loadWorkspaceData('');
+      // UX-4.1：刷新后若展开的院校仍在结果中，重新加载其院系（同步可能带来新数据）
+      if (data && expandedSchoolIdRef.current && data.schools.some((s) => s.school_id === expandedSchoolIdRef.current)) {
+        await loadWorkspaceData(expandedSchoolIdRef.current);
+      }
+      await loadFilterOptions();
+      await loadFavorites();
+    } catch (err) {
+      reportError(
+        err instanceof Error ? err.message : '刷新数据失败',
+        () => handleSync()
+      );
+    } finally {
+      setIsRefreshing(false);
+      setRefreshProgress(null);
+    }
+  };
+
+  const handleCancelRefresh = () => {
+    cancelRefreshRef.current = true;
+  };
+
+  // UX-6.2：单个专业重新同步（从失败列表重试）。只 sync 该专业后刷新数据。
+  const handleRetrySyncOne = async (code: string) => {
+    if (isRefreshing) return;
+    const mName = crawledMajors.find((m) => m.code === code)?.name ?? code;
+    setIsRefreshing(true);
+    setRefreshProgress({ current: 0, total: 1, failed: 0 });
     setError(null);
     try {
-      // ISSUE-027："全部"模式下循环同步每个 activeMajorCode，单个失败不阻塞
-      for (const code of activeMajorCodes) {
-        try {
-          await syncWorkspaceData(code);
-        } catch (syncErr) {
-          console.warn(`同步专业 ${code} 失败:`, syncErr);
-        }
-      }
+      await syncWorkspaceData(code);
+      syncedMajorsRef.current.add(code);
+      setSyncFailures((prev) => {
+        const next = { ...prev };
+        delete next[code];
+        return next;
+      });
       await loadWorkspaceData('');
       await loadFilterOptions();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '刷新数据失败');
+      await loadFavorites();
+    } catch (syncErr) {
+      const msg = syncErr instanceof Error ? syncErr.message : String(syncErr);
+      setSyncFailures((prev) => ({ ...prev, [code]: { name: mName, error: msg } }));
+      reportError(
+        `重新同步「${mName}」失败：${msg}`,
+        () => handleRetrySyncOne(code)
+      );
     } finally {
-      setIsLoading(false);
+      setRefreshProgress(null);
+      setIsRefreshing(false);
     }
   };
 
@@ -348,6 +515,9 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
     const autoSync = async () => {
       setIsLoading(true);
       setError(null);
+      // UX-6.2：切换专业 Tab 时清空上一组专业的同步失败记录，避免残留红点
+      setSyncFailures({});
+      setRetryAction(null);
       try {
         // 只 sync syncedMajorsRef 里没有的专业
         const toSync = activeMajorCodes.filter((code) => !syncedMajorsRef.current.has(code));
@@ -366,13 +536,18 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
         setSchools(data.schools);
         await loadFilterOptions();
         await loadFavorites();
-        setExpandedSchoolId(null);
+        // UX-4.1：切换专业/刷新后恢复上次展开的院校（若仍在新结果中）
+        restoreExpanded(data.schools);
         setExpandedDeptIndex(0);
         setActiveYear(2026);
         setShowHistorical(false);
         resetAllFilters();
       } catch (err) {
-        setError(err instanceof Error ? err.message : '刷新数据失败');
+        // UX-6.1：刷新失败 → 横幅 + toast + 重试（重新拉取 DB 数据）
+        reportError(
+          err instanceof Error ? err.message : '刷新数据失败',
+          () => loadWorkspaceData('')
+        );
       } finally {
         setIsLoading(false);
       }
@@ -394,13 +569,18 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
         setSchools(data.schools);
         await loadFilterOptions();
         await loadFavorites();
-        setExpandedSchoolId(null);
+        // UX-4.1：切换专业/刷新后恢复上次展开的院校（若仍在新结果中）
+        restoreExpanded(data.schools);
         setExpandedDeptIndex(0);
         setActiveYear(2026);
         setShowHistorical(false);
         resetAllFilters();
       } catch (err) {
-        setError(err instanceof Error ? err.message : '刷新数据失败');
+        // UX-6.1：刷新失败 → 横幅 + toast + 重试（重新拉取 DB 数据）
+        reportError(
+          err instanceof Error ? err.message : '刷新数据失败',
+          () => loadWorkspaceData('')
+        );
       } finally {
         setIsLoading(false);
       }
@@ -411,7 +591,8 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
 
   useEffect(() => {
     loadWorkspaceData('');
-    setExpandedSchoolId(null);
+    // UX-4.1：筛选变化不强制收起展开的院校。若该院校被筛掉，渲染时自然不显示（无害）；
+    // 重新出现时仍保持展开（其院系数据对院校筛选不敏感，无需重载）。
     setCurrentPageNum(1);
   }, [filters]);
 
@@ -428,7 +609,11 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
         setPlanPageNum(1);
         setExpandedPlanId(null);
       } catch (err) {
-        setError(err instanceof Error ? err.message : '加载招生计划失败');
+        // UX-6.1：招生计划加载失败 → 横幅 + toast + 重试
+        reportError(
+          err instanceof Error ? err.message : '加载招生计划失败',
+          () => { void fetchWorkspacePlans(activeMajorCodes, filters).then(setPlans); }
+        );
       } finally {
         setIsLoading(false);
       }
@@ -472,13 +657,54 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
       }
       await loadFavorites();
     } catch (err) {
-      setError(err instanceof Error ? err.message : '收藏操作失败');
+      // UX-6.1：收藏操作失败 → 仅 toast（瞬时反馈，不留横幅），带重试
+      reportError(
+        err instanceof Error ? err.message : '收藏操作失败',
+        () => toggleFavorite(schoolId),
+        false
+      );
     }
   };
 
   // 判断聚合行是否高亮（任一 activeMajorCode 已收藏即高亮）
   const isSchoolFavorited = (schoolId: string) =>
     activeMajorCodes.some((code) => favorites.has(`${schoolId}|${code}`));
+
+  // UX-5.1：单个 (school, major) 收藏切换，简化取消收藏路径。
+  // 展开区每个专业分组单独显示收藏星，点击即可直接切换；取消后 toast 提示并提供「撤销」。
+  const toggleFavoriteMajor = async (schoolId: string, majorCode: string) => {
+    const key = `${schoolId}|${majorCode}`;
+    const wasFav = favorites.has(key);
+    const mName = crawledMajors.find((m) => m.code === majorCode)?.name ?? majorCode;
+    const schoolName = schools.find((s) => s.school_id === schoolId)?.name ?? schoolId;
+    try {
+      await toggleFavoriteApi(schoolId, majorCode, mName);
+      await loadFavorites();
+      if (wasFav) {
+        // 取消收藏 → 提供「撤销」（8s 内可恢复，比默认 4s 更宽松）
+        toast.show({
+          message: `已取消收藏「${schoolName} · ${mName}」`,
+          type: 'info',
+          duration: 8000,
+          action: {
+            label: '撤销',
+            onClick: () => {
+              void toggleFavoriteApi(schoolId, majorCode, mName).then(() => loadFavorites());
+            },
+          },
+        });
+      } else {
+        toast.success(`已收藏「${schoolName} · ${mName}」`);
+      }
+    } catch (err) {
+      // UX-6.1：收藏操作失败 → 仅 toast（瞬时反馈，不留横幅），带重试
+      reportError(
+        err instanceof Error ? err.message : '收藏操作失败',
+        () => toggleFavoriteMajor(schoolId, majorCode),
+        false
+      );
+    }
+  };
 
   const toggleCompare = (id: string) => {
     setSelectedForCompare(prev => {
@@ -495,8 +721,12 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
   const handleToggleExpand = (id: string) => {
     if (expandedSchoolId === id) {
       setExpandedSchoolId(null);
+      // UX-4.1：收起时清除持久化
+      persistExpanded(null);
     } else {
       setExpandedSchoolId(id);
+      // UX-4.1：展开时持久化到 localStorage，切换专业/刷新后可恢复
+      persistExpanded(id);
       setExpandedDeptIndex(0);
       setActiveYear(2026);
       setShowHistorical(false);
@@ -555,6 +785,10 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
   );
   const paginatedPlans = filteredPlans.slice((planPageNum - 1) * planPageSize, planPageNum * planPageSize);
   const planTotalPages = Math.max(1, Math.ceil(filteredPlans.length / planPageSize));
+  // UX-4.3：紧凑模式去掉「研究方向」「考试科目」两列（1.6fr × 2），减少小屏换行。
+  const planGridCols = planCompact
+    ? 'grid-cols-[1.4fr_0.9fr_1.2fr_0.6fr_0.6fr_0.6fr_40px]'
+    : 'grid-cols-[1.4fr_0.9fr_1.2fr_1.6fr_1.6fr_0.6fr_0.6fr_0.6fr_40px]';
 
   // ISSUE-028：导出格式下拉菜单 click-away 关闭
   useEffect(() => {
@@ -703,13 +937,12 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
     return invoke<string | null>('export_file', { defaultFilename: filename, content: jsonContent, ext: 'json' });
   };
 
-  // ISSUE-028：导出入口，按格式分发。成功/失败/取消均通过 error 横幅反馈。
+  // ISSUE-028：导出入口，按格式分发。UX-6.1：成功/失败改用 toast（瞬时通知，不留横幅）。
   const doExport = async (format: ExportFormat) => {
     setExportMenuOpen(false);
     const d = buildExportData(viewMode);
     if (!d) {
-      setError('当前没有可导出的数据');
-      setTimeout(() => setError(null), 2500);
+      toast.warning('当前没有可导出的数据');
       return;
     }
     try {
@@ -723,11 +956,9 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
         return;
       }
       const fmtLabel = format === 'csv' ? 'CSV' : format === 'excel' ? 'Excel' : 'JSON';
-      setError(`已导出 ${d.cellRows.length} 条${format === 'excel' ? '(xlsx)' : `(${fmtLabel})`} 到: ${result}`);
-      setTimeout(() => setError(null), 4000);
+      toast.success(`已导出 ${d.cellRows.length} 条${format === 'excel' ? '(xlsx)' : `(${fmtLabel})`} 到：${result}`);
     } catch (e) {
-      setError(`导出失败: ${e}`);
-      setTimeout(() => setError(null), 4000);
+      toast.error(`导出失败: ${e}`, { label: '重试', onClick: () => { void doExport(format); } });
     }
   };
 
@@ -774,19 +1005,30 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                 >
                   全部
                 </button>
-                {visibleMajors.map((m) => (
+                {visibleMajors.map((m) => {
+                  // UX-6.2：同步失败的专业 Tab 显示红点，hover 提示失败原因
+                  const failed = syncFailures[m.code];
+                  return (
                   <button
                     key={m.code}
                     onClick={() => handleToggleMajor(m.code)}
-                    className={`px-3 py-1.5 text-sm rounded-lg whitespace-nowrap transition-colors ${
+                    title={failed ? `同步失败：${failed.error}` : undefined}
+                    className={`relative px-3 py-1.5 text-sm rounded-lg whitespace-nowrap transition-colors ${
                       selectedMajorCodes.includes(m.code)
                         ? 'bg-[#1e3a5f] text-white'
                         : 'text-gray-600 hover:bg-gray-100'
                     }`}
                   >
                     {m.name}
+                    {failed && (
+                      <span
+                        className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-red-500 rounded-full border border-white"
+                        title={`同步失败：${failed.error}`}
+                      />
+                    )}
                   </button>
-                ))}
+                  );
+                })}
                 {selectedMajorCodes.length >= 2 && selectedMajorCodes.length < visibleMajors.length && (
                   <span className="text-xs text-gray-400 ml-2 whitespace-nowrap">
                     已选 {selectedMajorCodes.length} 个
@@ -836,16 +1078,37 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
               />
               <Search size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400" />
             </div>
-            <motion.button
-              onClick={handleSync}
-              disabled={activeMajorCodes.length === 0}
-              className="flex items-center gap-1 text-[#1e3a5f] hover:text-[#162d4a] text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed"
-              whileHover={activeMajorCodes.length > 0 ? { scale: 1.02 } : undefined}
-              whileTap={activeMajorCodes.length > 0 ? { scale: 0.97 } : undefined}
-            >
-              <RefreshCw size={14} />
-              刷新数据
-            </motion.button>
+            {/* UX-2.1：刷新数据按钮。刷新中改为「进度 + 取消」内联显示，页面保持可交互。 */}
+            {isRefreshing ? (
+              <div className="flex items-center gap-2 text-sm">
+                <RefreshCw size={14} className="animate-spin text-[#1e3a5f]" />
+                <span className="text-gray-600 whitespace-nowrap">
+                  刷新中
+                  {refreshProgress && ` ${refreshProgress.current}/${refreshProgress.total}`}
+                  {refreshProgress && refreshProgress.failed > 0 && (
+                    <span className="text-red-500 ml-1">· 失败 {refreshProgress.failed}</span>
+                  )}
+                </span>
+                <button
+                  onClick={handleCancelRefresh}
+                  className="flex items-center gap-1 text-xs text-red-500 hover:text-red-600 border border-red-200 rounded px-2 py-0.5 hover:bg-red-50 transition-colors whitespace-nowrap"
+                >
+                  <X size={12} />
+                  取消
+                </button>
+              </div>
+            ) : (
+              <motion.button
+                onClick={handleSync}
+                disabled={activeMajorCodes.length === 0}
+                className="flex items-center gap-1 text-[#1e3a5f] hover:text-[#162d4a] text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+                whileHover={activeMajorCodes.length > 0 ? { scale: 1.02 } : undefined}
+                whileTap={activeMajorCodes.length > 0 ? { scale: 0.97 } : undefined}
+              >
+                <RefreshCw size={14} />
+                刷新数据
+              </motion.button>
+            )}
             {/* ISSUE-028：导出格式下拉菜单（CSV / Excel / JSON） */}
             <div className="relative" ref={exportMenuRef}>
               <motion.button
@@ -904,6 +1167,42 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
 
         {activeMajorCodes.length > 0 && (
           <>
+            {/* UX-6.2：批量刷新结束后的同步失败汇总。每个失败专业可单独「重新同步」。 */}
+            {!isRefreshing && Object.keys(syncFailures).length > 0 && (
+              <div className="flex items-start gap-3 bg-amber-50 border border-amber-200 text-amber-800 text-sm px-4 py-3 rounded-lg mb-4">
+                <AlertCircle size={16} className="flex-shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <p className="font-medium mb-2">
+                    {Object.keys(syncFailures).length} 个专业同步失败，可单独重试：
+                  </p>
+                  <div className="flex flex-col gap-1.5">
+                    {Object.entries(syncFailures).map(([code, info]) => (
+                      <div key={code} className="flex items-center gap-2 text-xs">
+                        <span className="font-medium text-amber-900 flex-shrink-0">{info.name}</span>
+                        <span className="text-amber-600 truncate flex-1 min-w-0" title={info.error}>
+                          {info.error}
+                        </span>
+                        <button
+                          onClick={() => handleRetrySyncOne(code)}
+                          className="flex items-center gap-1 text-[#1e3a5f] hover:text-[#162d4a] font-medium flex-shrink-0"
+                        >
+                          <RotateCw size={12} />
+                          重新同步
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <button
+                  onClick={() => setSyncFailures({})}
+                  className="text-amber-400 hover:text-amber-600 flex-shrink-0"
+                  aria-label="关闭"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )}
+
             {/* Filters */}
             <WorkspaceFilterPanel
               options={filterOptions}
@@ -919,9 +1218,27 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                 加载中…
               </div>
             )}
+            {/* UX-6.1：错误横幅（兜底）+ 局部「重试」按钮。toast 在右上角同步提示。 */}
             {error && (
-              <div className="bg-red-50 text-red-600 text-sm px-4 py-3 rounded-lg mb-4">
-                {error}
+              <div className="flex items-start gap-3 bg-red-50 text-red-600 text-sm px-4 py-3 rounded-lg mb-4">
+                <AlertCircle size={16} className="flex-shrink-0 mt-0.5" />
+                <span className="flex-1 break-words">{error}</span>
+                {retryAction && (
+                  <button
+                    onClick={() => { void runRetry(); }}
+                    className="flex items-center gap-1 flex-shrink-0 text-xs font-medium text-red-600 hover:text-red-700 border border-red-300 rounded px-2 py-1 hover:bg-red-100 transition-colors"
+                  >
+                    <RotateCw size={12} />
+                    重试
+                  </button>
+                )}
+                <button
+                  onClick={() => { setError(null); setRetryAction(null); }}
+                  className="text-red-400 hover:text-red-600 flex-shrink-0"
+                  aria-label="关闭"
+                >
+                  <X size={14} />
+                </button>
               </div>
             )}
 
@@ -1111,11 +1428,32 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                             .reduce((sum, g) => sum + g.depts.length, 0);
                           return (
                           <div key={group.major.code}>
-                            {isAllMajors && (
-                              <h4 className="text-sm font-semibold text-[#1e3a5f] mb-2 mt-3 first:mt-0">
-                                {group.major.name}（{group.depts.length} 个院系）
+                            {/* UX-5.1：专业分组标题 + 单专业收藏星。单专业模式也显示，
+                                提供清晰的「收藏/取消收藏此专业」入口，取消后 toast 可撤销。 */}
+                            <div className="flex items-center gap-2 mb-2 mt-3 first:mt-0">
+                              <h4 className="text-sm font-semibold text-[#1e3a5f]">
+                                {group.major.name}
+                                {isAllMajors && (
+                                  <span className="text-gray-400 font-normal">（{group.depts.length} 个院系）</span>
+                                )}
                               </h4>
-                            )}
+                              {(() => {
+                                const favKey = `${item.school_id}|${group.major.code}`;
+                                const isFav = favorites.has(favKey);
+                                return (
+                                  <motion.button
+                                    onClick={() => toggleFavoriteMajor(item.school_id, group.major.code)}
+                                    className={`transition-colors ${isFav ? 'text-yellow-500' : 'text-gray-300 hover:text-yellow-500'}`}
+                                    whileTap={{ scale: 0.8 }}
+                                    animate={isFav ? { scale: [1, 1.3, 1] } : { scale: 1 }}
+                                    transition={{ duration: 0.3 }}
+                                    title={isFav ? '取消收藏此专业' : '收藏此专业'}
+                                  >
+                                    <Star size={14} fill={isFav ? 'currentColor' : 'none'} />
+                                  </motion.button>
+                                );
+                              })()}
+                            </div>
                             {group.depts.map((dept, deptIdx) => {
                               const flatIdx = offset + deptIdx;
                               return (
@@ -1390,14 +1728,25 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
 
             {/* ISSUE-027 阶段 2：招生计划视图表格（viewMode === 'plan'） */}
             {viewMode === 'plan' && (
+              <>
+              {/* UX-4.3：紧凑/舒适视图切换。紧凑模式隐藏研究方向、考试科目列，展开行仍可见。 */}
+              <div className="flex justify-end mb-2">
+                <button
+                  onClick={() => setPlanCompact((c) => !c)}
+                  className="text-xs text-gray-600 hover:text-[#1e3a5f] border border-gray-200 rounded px-2 py-1 hover:bg-gray-50 transition-colors"
+                  title={planCompact ? '切换到舒适视图（显示研究方向、考试科目列）' : '切换到紧凑视图（隐藏低频列）'}
+                >
+                  {planCompact ? '舒适视图' : '紧凑视图'}
+                </button>
+              </div>
               <div className="border border-gray-200 rounded-lg overflow-hidden">
                 {/* Plan Table Header */}
-                <div className="grid grid-cols-[1.4fr_0.9fr_1.2fr_1.6fr_1.6fr_0.6fr_0.6fr_0.6fr_40px] gap-3 px-4 py-3 bg-gray-50 text-xs text-gray-500 font-medium border-b border-gray-200">
+                <div className={`grid ${planGridCols} gap-3 px-4 py-3 bg-gray-50 text-xs text-gray-500 font-medium border-b border-gray-200`}>
                   <div>院校</div>
                   <div>专业</div>
                   <div>院系</div>
-                  <div>研究方向</div>
-                  <div>考试科目</div>
+                  {!planCompact && <div>研究方向</div>}
+                  {!planCompact && <div>考试科目</div>}
                   <div className="text-center">年份</div>
                   <div className="text-center">最低分</div>
                   <div className="text-center">招生</div>
@@ -1411,7 +1760,7 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                       initial={{ opacity: 0, y: 6 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: Math.min(idx * 0.02, 0.3) }}
-                      className={`grid grid-cols-[1.4fr_0.9fr_1.2fr_1.6fr_1.6fr_0.6fr_0.6fr_0.6fr_40px] gap-3 px-4 py-3 border-b border-gray-100 hover:bg-gray-50 transition-colors items-center text-sm ${
+                      className={`grid ${planGridCols} gap-3 px-4 py-3 border-b border-gray-100 hover:bg-gray-50 transition-colors items-center text-sm ${
                         expandedPlanId === p.department_id ? 'bg-blue-50' : ''
                       }`}
                     >
@@ -1433,14 +1782,18 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                       <div className="text-gray-700 text-xs min-w-0 truncate" title={p.department_name}>
                         {p.department_name}
                       </div>
-                      {/* 研究方向 */}
-                      <div className="text-gray-500 text-xs min-w-0 line-clamp-2" title={p.research_direction}>
-                        {p.research_direction || '—'}
-                      </div>
-                      {/* 考试科目 */}
-                      <div className="text-gray-500 text-xs min-w-0 line-clamp-2" title={p.exam_subjects.join('；')}>
-                        {p.exam_subjects.join('；') || '—'}
-                      </div>
+                      {/* 研究方向（紧凑模式隐藏，展开行仍可见） */}
+                      {!planCompact && (
+                        <div className="text-gray-500 text-xs min-w-0 line-clamp-2" title={p.research_direction}>
+                          {p.research_direction || '—'}
+                        </div>
+                      )}
+                      {/* 考试科目（紧凑模式隐藏，展开行仍可见） */}
+                      {!planCompact && (
+                        <div className="text-gray-500 text-xs min-w-0 line-clamp-2" title={p.exam_subjects.join('；')}>
+                          {p.exam_subjects.join('；') || '—'}
+                        </div>
+                      )}
                       {/* 年份 */}
                       <div className="text-center text-gray-500 text-xs">{p.latest_year || '—'}</div>
                       {/* 最低分 */}
@@ -1527,6 +1880,7 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                   <div className="py-12 text-center text-gray-400 text-sm">暂无招生计划数据</div>
                 )}
               </div>
+              </>
             )}
 
             {/* ISSUE-027 阶段 2：招生计划视图分页 */}

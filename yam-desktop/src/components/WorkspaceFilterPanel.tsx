@@ -278,56 +278,65 @@ export function WorkspaceFilterPanel({
     filters.businessTwoMax !== undefined;
 
   const activeChips = useMemo(() => {
-    const chips: { label: string; onRemove: () => void }[] = [];
+    // UX-3.1：每个 chip 附带 onEdit，点击 chip 主体（非 ×）打开对应筛选面板重新编辑
+    const chips: { label: string; onRemove: () => void; onEdit: () => void }[] = [];
     if (activeRegionGroup) {
-      chips.push({ label: activeRegionGroup, onRemove: clearProvinces });
+      chips.push({ label: activeRegionGroup, onRemove: clearProvinces, onEdit: () => setShowProvincePanel(true) });
     }
     selectedProvinces.forEach((p) =>
       chips.push({
         label: p,
         onRemove: () => toggleProvince(p),
+        onEdit: () => setShowProvincePanel(true),
       })
     );
     selectedLevels.forEach((l) =>
       chips.push({
         label: l,
         onRemove: () => toggleLevel(l),
+        onEdit: () => setShowLevelPanel(true),
       })
     );
     selectedStudyModes.forEach((s) =>
       chips.push({
         label: s,
         onRemove: () => toggleArrayFilter('studyModes', s),
+        onEdit: () => setShowStudyModePanel(true),
       })
     );
     selectedExamTypes.forEach((e) =>
       chips.push({
         label: e,
         onRemove: () => toggleArrayFilter('examTypes', e),
+        onEdit: () => setShowExamTypePanel(true),
       })
     );
     selectedSpecialPlans.forEach((s) =>
       chips.push({
         label: s,
         onRemove: () => toggleArrayFilter('specialPlans', s),
+        onEdit: () => setShowSpecialPlanPanel(true),
       })
     );
     selectedForeign.forEach((s) =>
       chips.push({
         label: `外语：${s}`,
         onRemove: () => toggleExamSubject('foreignSubjects', s),
+        onEdit: () => setShowExamSubjectPanel(true),
       })
     );
     selectedBusinessOne.forEach((s) =>
       chips.push({
         label: `业务课一：${s}`,
         onRemove: () => toggleExamSubject('businessOneSubjects', s),
+        onEdit: () => setShowExamSubjectPanel(true),
       })
     );
     selectedBusinessTwo.forEach((s) =>
       chips.push({
         label: `业务课二：${s}`,
         onRemove: () => toggleExamSubject('businessTwoSubjects', s),
+        onEdit: () => setShowExamSubjectPanel(true),
       })
     );
     return chips;
@@ -785,10 +794,16 @@ export function WorkspaceFilterPanel({
               {activeChips.map((chip, idx) => (
                 <span
                   key={`${chip.label}-${idx}`}
-                  className="inline-flex items-center gap-1 px-2 py-0.5 text-xs bg-blue-50 text-[#1e3a5f] border border-blue-100 rounded-full"
+                  onClick={chip.onEdit}
+                  title="点击重新编辑该筛选条件"
+                  className="inline-flex items-center gap-1 px-2 py-0.5 text-xs bg-blue-50 text-[#1e3a5f] border border-blue-100 rounded-full cursor-pointer hover:bg-blue-100 hover:border-blue-300 transition-colors"
                 >
                   {chip.label}
-                  <button onClick={chip.onRemove} className="hover:text-red-500">
+                  <button
+                    onClick={(e) => { e.stopPropagation(); chip.onRemove(); }}
+                    className="hover:text-red-500"
+                    aria-label="移除"
+                  >
                     <X size={12} />
                   </button>
                 </span>
