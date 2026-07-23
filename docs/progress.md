@@ -151,6 +151,64 @@ ISSUE-026 只实现了 CSV 导出。用户希望支持 Excel（.xlsx，带格式
 
 ---
 
+## 项目清理与进度同步（2026-07-24 续）
+
+### 清理目标
+响应用户「检查一下项目进度，更新一下文档，清理一下项目」的要求，对本轮 UI 测试与 UX 优化过程中产生的一次性探针、旧版脚本、临时截图进行清理，同时确保可复用脚本保留。
+
+### 保留脚本（可复用）
+| 文件 | 用途 |
+|------|------|
+| [scripts/test_httpx_full_219.py](file:///d:/yam/scripts/test_httpx_full_219.py) | ISSUE-023 完整 219 个 yjxkdm 目录更新验证 |
+| [scripts/test_httpx_hybrid.py](file:///d:/yam/scripts/test_httpx_hybrid.py) | ISSUE-023 Playwright 激活 + httpx 接管验证 |
+| [scripts/test_issue025_cdp.cjs](file:///d:/yam/scripts/test_issue025_cdp.cjs) | ISSUE-025 分数线同步 CDP 端到端验证 |
+| [scripts/test_issue028_cdp.cjs](file:///d:/yam/scripts/test_issue028_cdp.cjs) | ISSUE-028 导出 CSV/Excel/JSON CDP 验证 |
+| [scripts/cdp_navigate_helper.cjs](file:///d:/yam/scripts/cdp_navigate_helper.cjs) | CDP 导航 + 数据加载工具 |
+| [scripts/cdp_restore_invoke.cjs](file:///d:/yam/scripts/cdp_restore_invoke.cjs) | CDP invoke monkey-patch 恢复工具 |
+| [scripts/test_full_ui_v3.cjs](file:///d:/yam/scripts/test_full_ui_v3.cjs) | 全量 UI 测试脚本（跳过导出） |
+| [scripts/test_ux_cdp.cjs](file:///d:/yam/scripts/test_ux_cdp.cjs) | UX 优化项 CDP 自测脚本（趋势图/收藏/视图密度） |
+
+### 归档后删除脚本（一次性探针/旧版测试脚本）
+以下文件均为 UI 调试过程中产生的临时探针或已被 v3 取代的旧版脚本，无独特复用价值，本次归档到 git 历史后从工作区删除：
+
+- `scripts/check_body_text.cjs`
+- `scripts/check_initial_state.cjs`
+- `scripts/diagnose_rows.cjs`
+- `scripts/diagnose_workspace.cjs`
+- `scripts/find_store.cjs`
+- `scripts/goto_school_view.cjs`
+- `scripts/inspect_nav.cjs`
+- `scripts/inspect_school_rows.cjs`
+- `scripts/maximize_tauri.cjs`
+- `scripts/test_export_current.cjs`
+- `scripts/test_full_ui.cjs`（旧版，已被 v3 取代）
+- `scripts/test_full_ui_v2.cjs`（旧版，已被 v3 取代）
+- `scripts/test_minimal_m4.cjs`
+- `scripts/test_minimal_read.cjs`
+- `scripts/test_nav_only.cjs`
+- `scripts/test_regex.cjs`
+- `scripts/test_switch_views.cjs`
+- `yam-desktop/screenshot_current.cjs`（临时截图脚本）
+
+### 删除临时截图目录
+- `d:\yam\screenshots\`：本轮回话临时截图（4 张页面状态演示图）
+- `d:\yam\scripts\screenshots\`：已被 `.gitignore` 忽略，但工作区残留；包含 full-ui-20260723、ux-test 等测试截图
+
+### 文档状态同步
+- [docs/ux-optimization-plan.md](file:///d:/yam/docs/ux-optimization-plan.md)：
+  - 为所有优化项增加「状态」字段（已完成 / 待处理）
+  - 修正 4.2 趋势图 tooltip 状态为「已完成」（代码已实现并通过 CDP 自测）
+  - 新增「补充：真实用户反馈（2026-07-24）」章节，记录用户新提出的 5 个体验问题及根因分析
+
+### 待处理事项（后续开发重点）
+- A. 管理显示专业进度条显示不正确（高）
+- B. 工作区院校行仅右侧箭头可点击但整行有 hover（高）
+- C. 展开详情时闪烁出现全局「加载中…」（中）
+- D. 展开详情后右侧院系列表信息密度低（高）
+- E. 院校详情不能再次点击关闭且不能多开（高）
+
+---
+
 ## ISSUE-017 300s 自适应超时 + 种子抓取心跳（2026-07-23）
 
 ### 背景
