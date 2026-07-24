@@ -1567,7 +1567,7 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                               <h4 className="text-sm font-semibold text-[#1e3a5f]">
                                 {group.major.name}
                                 {isAllMajors && (
-                                  <span className="text-gray-400 font-normal">（{group.depts.length} 个院系）</span>
+                                  <span className="text-gray-400 font-normal">（{new Set(group.depts.map((d) => d.name)).size} 个院系）</span>
                                 )}
                               </h4>
                               {(() => {
@@ -1587,10 +1587,18 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                                 );
                               })()}
                             </div>
-                            {group.depts.map((dept, deptIdx) => {
+                            {(() => {
+                              const seenDepartmentNames = new Set<string>();
+                              return group.depts.map((dept, deptIdx) => {
                               const flatIdx = offset + deptIdx;
+                              const isFirstInDepartment = !seenDepartmentNames.has(dept.name);
+                              seenDepartmentNames.add(dept.name);
+                              const directionLabel = dept.research_direction.trim()
+                                || dept.exam_subjects.join(' / ')
+                                || dept.special_plans.join(' / ')
+                                || '未注明研究方向';
                               return (
-                          <div className="mb-2">
+                          <div key={dept.department_id} className="mb-2">
                             {/* Department Header */}
                             <motion.button
                               onClick={() => setExpandedDeptBySchool((current) => ({ ...current, [item.school_id]: schoolExpandedDeptIndex === flatIdx ? -1 : flatIdx }))}
@@ -1605,7 +1613,10 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                                 >
                                   <ChevronRight size={14} className="text-gray-500" />
                                 </motion.span>
-                                {dept.name}
+                                {isFirstInDepartment ? dept.name : `↳ ${directionLabel}`}
+                                {isFirstInDepartment && directionLabel !== '未注明研究方向' && (
+                                  <span className="ml-3 text-[11px] font-normal text-gray-500 truncate">{directionLabel}</span>
+                                )}
                                 {(() => {
                                   const latest = dept.years[0];
                                   return latest ? (
@@ -1793,7 +1804,8 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                             </AnimatePresence>
                           </div>
                               );
-                            })}
+                            });
+                            })()}
                           </div>
                           );
                         })}
