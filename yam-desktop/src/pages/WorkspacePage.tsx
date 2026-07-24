@@ -63,17 +63,17 @@ interface TrendChartProps {
   years: YearData[];
   dataKey: 'min_score' | 'enroll_count';
   title: string;
+  chartHeight?: number;
 }
 
-function TrendChart({ years, dataKey, title }: TrendChartProps) {
+function TrendChart({ years, dataKey, title, chartHeight = 260 }: TrendChartProps) {
   const data = [...years].reverse();
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   const valueLabel = dataKey === 'min_score' ? '最低分' : '招生人数';
 
-  // 无数据或只有 1 条数据时给出占位提示
   if (data.length === 0) {
     return (
-      <div className="border border-gray-200 rounded-lg p-4 h-48 flex items-center justify-center text-sm text-gray-400">
+      <div className="border border-gray-200 rounded-xl p-4 h-52 flex items-center justify-center text-sm text-gray-400 bg-white w-full max-w-2xl mx-auto">
         暂无{valueLabel}数据
       </div>
     );
@@ -86,17 +86,21 @@ function TrendChart({ years, dataKey, title }: TrendChartProps) {
 
   // Y 轴范围：按实际数据加 12% padding，避免折线贴边；
   // 若数据完全相同，则构造一个对称区间让点居中显示。
-  const padding = isFlat ? Math.max(1, Math.abs(minValue) * 0.25) : (maxValue - minValue) * 0.12;
-  const minScale = isFlat ? minValue - padding : minValue - padding;
-  const maxScale = isFlat ? maxValue + padding : maxValue + padding;
+  const rawSpan = Math.max(1, maxValue - minValue);
+  const padding = isFlat ? Math.max(1, Math.abs(minValue) * 0.25) : rawSpan * 0.12;
+  const minScale = minValue - padding;
+  const maxScale = maxValue + padding;
   const range = maxScale - minScale || 1;
 
-  const width = 240;
-  const height = 120;
-  const padLeft = 36;
-  const padRight = 12;
-  const padTop = 20;
-  const padBottom = 20;
+  // 画布比例 21:13（约 1.62:1），比原来的 2:1 更竖，折线更有起伏感；
+  // 同时限制卡片最大宽度，避免在宽屏上被横向拉成"大饼"。
+  // chartHeight 根据年份数据量动态变化，避免数据少时图过大。
+  const height = Math.max(120, chartHeight);
+  const width = 420;
+  const padLeft = 38;
+  const padRight = 24;
+  const padTop = Math.max(10, Math.round(height * 0.08));
+  const padBottom = Math.max(20, Math.round(height * 0.15));
   const drawWidth = width - padLeft - padRight;
   const drawHeight = height - padTop - padBottom;
 
@@ -104,13 +108,12 @@ function TrendChart({ years, dataKey, title }: TrendChartProps) {
     data.length <= 1 ? padLeft + drawWidth / 2 : padLeft + (i / (data.length - 1)) * drawWidth;
   const getY = (value: number) => padTop + drawHeight - ((value - minScale) / range) * drawHeight;
 
-  // 生成 4 条水平网格线对应的刻度值
-  const tickCount = 4;
+  // 小图减少刻度数量，避免标签拥挤
+  const tickCount = height <= 140 ? 3 : height <= 200 ? 4 : 5;
   const ticks = Array.from({ length: tickCount + 1 }, (_, i) =>
     Math.round(maxScale - (i / tickCount) * range)
   );
 
-  // 折线路径：使用平滑贝塞尔曲线
   const points = data.map((d, i) => ({ x: getX(i), y: getY(d[dataKey]) }));
   const linePath =
     data.length === 1
@@ -118,85 +121,148 @@ function TrendChart({ years, dataKey, title }: TrendChartProps) {
       : points.reduce((acc, p, i, arr) => {
           if (i === 0) return `M ${p.x} ${p.y}`;
           const prev = arr[i - 1];
-          const cp1x = prev.x + (p.x - prev.x) / 3;
+          const cp1x = prev.x + (p.x - prev.x) / 4;
           const cp1y = prev.y;
-          const cp2x = p.x - (p.x - prev.x) / 3;
+          const cp2x = p.x - (p.x - prev.x) / 4;
           const cp2y = p.y;
           return `${acc} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p.x} ${p.y}`;
         }, '');
   const areaPath = `${linePath} L ${points[points.length - 1].x} ${height - padBottom} L ${points[0].x} ${height - padBottom} Z`;
   const chartKey = `${dataKey}-${data.map((d) => d.year).join('-')}`;
 
-  const xPercent = (x: number) => (x / width) * 100;
-  const yPercent = (y: number) => (y / height) * 100;
   const hovered = hoverIdx !== null ? data[hoverIdx] : null;
-  const hoveredX = hoverIdx !== null ? Math.min(88, Math.max(12, xPercent(getX(hoverIdx)))) : 0;
-  const hoveredY = hoverIdx !== null ? yPercent(getY(data[hoverIdx][dataKey])) : 0;
+
+  // 根据图表高度调整卡片内边距、标题间距、线粗、点大小，避免小图视觉过粗
+  const isCompact = height <= 160;
+  const cardPadding = isCompact ? 'p-2.5' : 'p-4';
+  const titleMargin = isCompact ? 'mb-2' : 'mb-3';
+  const xLabelHeight = isCompact ? 22 : 28;
+  const strokeWidth = isCompact ? 1.5 : 2;
+  const pointRadius = isCompact ? 3 : 4;
+  const hoverRadius = isCompact ? 5 : 6.5;
 
   return (
-    <div className="border border-gray-200 rounded-lg p-4 bg-white">
-      <div className="flex items-center justify-between mb-2">
-        <h4 className="text-sm font-medium text-gray-700">{title}</h4>
+    <div className={`border border-gray-200 rounded-xl ${cardPadding} bg-white w-full max-w-2xl mx-auto shadow-sm`}>
+      <div className={`flex items-center justify-between ${titleMargin}`}>
+        <h4 className="text-sm font-semibold text-gray-800">{title}</h4>
         {isFlat && (
-          <span className="text-xs text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">
+          <span className="text-xs font-medium text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-100">
             无变化
           </span>
         )}
       </div>
-      <div className="flex h-48">
-        <div className="w-10 flex flex-col justify-between text-[11px] text-gray-500 pr-2 text-right">
+
+      <div
+        className="grid grid-cols-[38px_1fr] gap-x-2 gap-y-0.5"
+        style={{ gridTemplateRows: `1fr ${xLabelHeight}px` }}
+        onMouseLeave={() => setHoverIdx(null)}
+      >
+        {/* Y 轴刻度标签 */}
+        <div
+          className="flex flex-col justify-between text-[11px] text-gray-400 text-right pr-1 pointer-events-none"
+          style={{ paddingTop: `${padTop}px`, paddingBottom: `${padBottom}px` }}
+        >
           {ticks.map((t, i) => (
             <span key={i}>{t}</span>
           ))}
         </div>
+
+        {/* SVG 图表区 */}
         <div
-          className="flex-1 relative"
-          onMouseLeave={() => setHoverIdx(null)}
+          className="relative w-full"
+          style={{ aspectRatio: `${width} / ${height}` }}
         >
-          <svg className="w-full h-full overflow-visible" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
+          <svg
+            className="absolute inset-0 w-full h-full overflow-visible"
+            viewBox={`0 0 ${width} ${height}`}
+            preserveAspectRatio="none"
+          >
+            <defs>
+              <linearGradient id={`areaGradient-${dataKey}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.18" />
+                <stop offset="55%" stopColor="#3b82f6" stopOpacity="0.05" />
+                <stop offset="100%" stopColor="#3b82f6" stopOpacity="0" />
+              </linearGradient>
+              <filter id={`shadow-${dataKey}`} x="-50%" y="-50%" width="200%" height="200%">
+                <feDropShadow dx="0" dy="2" stdDeviation="2.5" floodColor="#2563eb" floodOpacity="0.22" />
+              </filter>
+            </defs>
+
             {/* 水平网格线 */}
             {ticks.map((_, i) => {
               const y = padTop + (i / tickCount) * drawHeight;
               return (
                 <line
-                  key={`grid-${i}`}
+                  key={`grid-h-${i}`}
                   x1={padLeft}
                   y1={y}
                   x2={width - padRight}
                   y2={y}
-                  stroke="#f3f4f6"
+                  stroke="#f1f5f9"
                   strokeWidth="1"
                 />
               );
             })}
+
+            {/* 垂直网格线 */}
+            {data.length > 1 &&
+              data.map((_, i) => {
+                const x = getX(i);
+                return (
+                  <line
+                    key={`grid-v-${i}`}
+                    x1={x}
+                    y1={padTop}
+                    x2={x}
+                    y2={height - padBottom}
+                    stroke="#f8fafc"
+                    strokeWidth="1"
+                  />
+                );
+              })}
+
+            {/* 坐标轴 */}
+            <line
+              x1={padLeft}
+              y1={height - padBottom}
+              x2={width - padRight}
+              y2={height - padBottom}
+              stroke="#e2e8f0"
+              strokeWidth="1"
+            />
+            <line
+              x1={padLeft}
+              y1={padTop}
+              x2={padLeft}
+              y2={height - padBottom}
+              stroke="#e2e8f0"
+              strokeWidth="1"
+            />
+
             {/* 面积填充 */}
             <motion.path
               key={`area-${chartKey}`}
               d={areaPath}
-              fill="url(#areaGradient)"
+              fill={`url(#areaGradient-${dataKey})`}
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               transition={{ duration: 0.6, ease: 'easeInOut' }}
             />
-            <defs>
-              <linearGradient id="areaGradient" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.18" />
-                <stop offset="100%" stopColor="#3b82f6" stopOpacity="0.02" />
-              </linearGradient>
-            </defs>
+
             {/* 折线 */}
             <motion.path
               key={`path-${chartKey}`}
               d={linePath}
               fill="none"
               stroke="#2563eb"
-              strokeWidth="2.5"
+              strokeWidth={strokeWidth}
               strokeLinecap="round"
               strokeLinejoin="round"
               initial={{ pathLength: 0, opacity: 0 }}
               animate={{ pathLength: 1, opacity: 1 }}
               transition={{ duration: 0.8, ease: 'easeInOut' }}
             />
+
             {/* 数据点 */}
             {data.map((d, i) => {
               const x = getX(i);
@@ -215,38 +281,46 @@ function TrendChart({ years, dataKey, title }: TrendChartProps) {
                   <motion.circle
                     cx={x}
                     cy={y}
-                    r={isHovered ? 6 : 5}
+                    r={isHovered ? hoverRadius : pointRadius}
                     fill="#ffffff"
                     stroke={isHovered ? '#1e3a5f' : '#2563eb'}
-                    strokeWidth="2.5"
+                    strokeWidth={strokeWidth}
+                    filter={isHovered ? `url(#shadow-${dataKey})` : undefined}
                     initial={{ scale: 0, opacity: 0 }}
                     animate={{ scale: 1, opacity: 1 }}
-                    transition={{ delay: 0.2 + i * 0.08, duration: 0.25, type: 'spring', stiffness: 300 }}
+                    transition={{ delay: 0.2 + i * 0.08, duration: 0.25, type: 'spring', stiffness: 320 }}
                     style={{ pointerEvents: 'none' }}
                   />
                 </g>
               );
             })}
           </svg>
-          {hovered && (
+
+          {/* Hover tooltip */}
+          {hovered && hoverIdx !== null && (
             <div
-              className="absolute z-10 pointer-events-none bg-gray-900 text-white text-xs rounded-lg px-2.5 py-1.5 shadow-xl whitespace-nowrap"
+              className="absolute z-10 pointer-events-none bg-gray-900/95 backdrop-blur text-white text-[11px] rounded-md px-2.5 py-1.5 shadow-xl whitespace-nowrap"
               style={{
-                left: `${hoveredX}%`,
-                top: `${hoveredY}%`,
-                transform: 'translate(-50%, calc(-100% - 8px))',
+                left: `${((getX(hoverIdx) - padLeft) / (width - padLeft - padRight)) * 100}%`,
+                top: `${((getY(hovered[dataKey]) - padTop) / (height - padTop - padBottom)) * 100}%`,
+                transform: 'translate(-50%, calc(-100% - 10px))',
               }}
             >
-              <div className="font-medium">{hovered.year}年</div>
+              <div className="font-semibold">{hovered.year}年</div>
               <div className="text-gray-300">{valueLabel} {hovered[dataKey]}</div>
             </div>
           )}
         </div>
-      </div>
-      <div className="flex justify-between text-xs text-gray-500 ml-10 mt-2">
-        {data.map((d) => (
-          <span key={d.year}>{d.year}</span>
-        ))}
+
+        {/* 左下角占位 */}
+        <div />
+
+        {/* X 轴年份标签 */}
+        <div className="flex justify-between text-[11px] text-gray-400 px-[2px] pointer-events-none">
+          {data.map((d) => (
+            <span key={d.year}>{d.year}</span>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -288,13 +362,14 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
     has_research_institute: false,
   });
 
-  const [expandedSchoolId, setExpandedSchoolId] = useState<string | null>(null);
-  const [expandedDeptIndex, setExpandedDeptIndex] = useState<number>(0);
-  const [activeYear, setActiveYear] = useState<number>(2026);
-  const [showHistorical, setShowHistorical] = useState(false);
+  const [expandedSchoolIds, setExpandedSchoolIds] = useState<Set<string>>(new Set());
+  const [departmentsBySchool, setDepartmentsBySchool] = useState<Record<string, WorkspaceDepartment[]>>({});
+  const [loadingSchoolIds, setLoadingSchoolIds] = useState<Set<string>>(new Set());
+  const [expandedDeptBySchool, setExpandedDeptBySchool] = useState<Record<string, number>>({});
+  const [activeYearBySchool, setActiveYearBySchool] = useState<Record<string, number>>({});
+  const [showHistoricalBySchool, setShowHistoricalBySchool] = useState<Record<string, boolean>>({});
 
   const [schools, setSchools] = useState<WorkspaceSchool[]>([]);
-  const [departments, setDepartments] = useState<WorkspaceDepartment[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -387,19 +462,19 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
     }
   };
 
-  const loadWorkspaceData = async (schoolId: string = ''): Promise<WorkspaceData | null> => {
+  const loadWorkspaceData = async (schoolId: string = '', quiet = false): Promise<WorkspaceData | null> => {
     if (activeMajorCodes.length === 0) {
       setSchools([]);
       return null;
     }
-    setIsLoading(true);
+    if (!quiet) setIsLoading(true);
     setError(null);
     setRetryAction(null);
     try {
       const data = await fetchWorkspaceData(schoolId, activeMajorCodes, filters);
       setSchools(data.schools);
       if (schoolId) {
-        setDepartments(data.departments);
+        setDepartmentsBySchool((prev) => ({ ...prev, [schoolId]: data.departments }));
       }
       return data;
     } catch (err) {
@@ -410,30 +485,49 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
       );
       return null;
     } finally {
-      setIsLoading(false);
+      if (!quiet) setIsLoading(false);
     }
   };
 
   // UX-4.1：展开状态持久化。expandedSchoolId 写入 localStorage，切换专业/刷新后恢复。
   // expandedSchoolIdRef 让 effect/handleSync 读取最新值而不进入依赖数组。
   const EXPANDED_KEY = 'yam-expanded-school';
-  const expandedSchoolIdRef = useRef<string | null>(null);
-  useEffect(() => { expandedSchoolIdRef.current = expandedSchoolId; }, [expandedSchoolId]);
-  const persistExpanded = (id: string | null) => {
+  const expandedSchoolIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => { expandedSchoolIdsRef.current = expandedSchoolIds; }, [expandedSchoolIds]);
+  const persistExpanded = (ids: Set<string>) => {
     if (typeof window === 'undefined') return;
-    if (id) window.localStorage.setItem(EXPANDED_KEY, id);
+    if (ids.size > 0) window.localStorage.setItem(EXPANDED_KEY, JSON.stringify(Array.from(ids)));
     else window.localStorage.removeItem(EXPANDED_KEY);
   };
-  // 从 localStorage 恢复展开：若该 school 仍在结果中则展开并加载院系，否则清空。
+  const loadSchoolDepartments = async (schoolId: string) => {
+    setLoadingSchoolIds((prev) => new Set(prev).add(schoolId));
+    try {
+      await loadWorkspaceData(schoolId, true);
+    } finally {
+      setLoadingSchoolIds((prev) => {
+        const next = new Set(prev);
+        next.delete(schoolId);
+        return next;
+      });
+    }
+  };
+
+  // 从 localStorage 恢复展开：兼容旧版单个 school_id，也支持多个展开院校。
   const restoreExpanded = (schoolsList: WorkspaceSchool[]) => {
     const saved = typeof window !== 'undefined' ? window.localStorage.getItem(EXPANDED_KEY) : null;
-    if (saved && schoolsList.some((s) => s.school_id === saved)) {
-      setExpandedSchoolId(saved);
-      void loadWorkspaceData(saved);
-    } else {
-      setExpandedSchoolId(null);
-      if (saved) persistExpanded(null);
+    if (!saved) return;
+    let ids: string[];
+    try {
+      const parsed = JSON.parse(saved);
+      ids = Array.isArray(parsed) ? parsed : [saved];
+    } catch {
+      ids = [saved];
     }
+    const validIds = ids.filter((id) => schoolsList.some((s) => s.school_id === id));
+    const next = new Set(validIds);
+    setExpandedSchoolIds(next);
+    persistExpanded(next);
+    validIds.forEach((id) => { void loadSchoolDepartments(id); });
   };
 
   // UX-2.1：后台可取消刷新。sync 循环不再用 isLoading 阻塞整页（旧列表保持可见、可筛选），
@@ -470,9 +564,10 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
     try {
       const data = await loadWorkspaceData('');
       // UX-4.1：刷新后若展开的院校仍在结果中，重新加载其院系（同步可能带来新数据）
-      if (data && expandedSchoolIdRef.current && data.schools.some((s) => s.school_id === expandedSchoolIdRef.current)) {
-        await loadWorkspaceData(expandedSchoolIdRef.current);
-      }
+      const expandedIds = Array.from(expandedSchoolIdsRef.current);
+      await Promise.all(expandedIds
+        .filter((id) => data?.schools.some((s) => s.school_id === id))
+        .map((id) => loadSchoolDepartments(id)));
       await loadFilterOptions();
       await loadFavorites();
     } catch (err) {
@@ -576,9 +671,9 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
         await loadFavorites();
         // UX-4.1：切换专业/刷新后恢复上次展开的院校（若仍在新结果中）
         restoreExpanded(data.schools);
-        setExpandedDeptIndex(0);
-        setActiveYear(2026);
-        setShowHistorical(false);
+        setExpandedDeptBySchool(Object.fromEntries(data.schools.map((s) => [s.school_id, 0])));
+        setActiveYearBySchool(Object.fromEntries(data.schools.map((s) => [s.school_id, 2026])));
+        setShowHistoricalBySchool({});
         resetAllFilters();
       } catch (err) {
         // UX-6.1：刷新失败 → 横幅 + toast + 重试（重新拉取 DB 数据）
@@ -609,9 +704,9 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
         await loadFavorites();
         // UX-4.1：切换专业/刷新后恢复上次展开的院校（若仍在新结果中）
         restoreExpanded(data.schools);
-        setExpandedDeptIndex(0);
-        setActiveYear(2026);
-        setShowHistorical(false);
+        setExpandedDeptBySchool(Object.fromEntries(data.schools.map((s) => [s.school_id, 0])));
+        setActiveYearBySchool(Object.fromEntries(data.schools.map((s) => [s.school_id, 2026])));
+        setShowHistoricalBySchool({});
         resetAllFilters();
       } catch (err) {
         // UX-6.1：刷新失败 → 横幅 + toast + 重试（重新拉取 DB 数据）
@@ -757,25 +852,25 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
   };
 
   const handleToggleExpand = (id: string) => {
-    if (expandedSchoolId === id) {
-      setExpandedSchoolId(null);
-      // UX-4.1：收起时清除持久化
-      persistExpanded(null);
-    } else {
-      setExpandedSchoolId(id);
-      // UX-4.1：展开时持久化到 localStorage，切换专业/刷新后可恢复
-      persistExpanded(id);
-      setExpandedDeptIndex(0);
-      setActiveYear(2026);
-      setShowHistorical(false);
-      loadWorkspaceData(id);
-      // ISSUE-027：recent_views 是单专业语义，"全部"模式跳过；单专业模式照常记录
-      if (focusedMajorCode) {
-        addRecentView(id, focusedMajorCode, focusedMajorName).catch(err => {
-          console.error('记录最近查看失败:', err);
-        });
+    setExpandedSchoolIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+        setExpandedDeptBySchool((current) => ({ ...current, [id]: 0 }));
+        setActiveYearBySchool((current) => ({ ...current, [id]: 2026 }));
+        setShowHistoricalBySchool((current) => ({ ...current, [id]: false }));
+        void loadSchoolDepartments(id);
+        if (focusedMajorCode) {
+          addRecentView(id, focusedMajorCode, focusedMajorName).catch(err => {
+            console.error('记录最近查看失败:', err);
+          });
+        }
       }
-    }
+      persistExpanded(next);
+      return next;
+    });
   };
 
   // ISSUE-027：多专业院校聚合。按 school_id 聚合扁平 schools：
@@ -999,26 +1094,6 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
       toast.error(`导出失败: ${e}`, { label: '重试', onClick: () => { void doExport(format); } });
     }
   };
-
-  // ISSUE-027：展开区按专业分组。departmentsByMajor 按 major_code 分组并按 visibleMajors 顺序排序；
-  // flatDepts 是跨专业扁平化后的列表，expandedDeptIndex 指向 flatDepts（跨专业连续编号）。
-  const departmentsByMajor = useMemo(() => {
-    const map = new Map<string, WorkspaceDepartment[]>();
-    for (const d of departments) {
-      if (!map.has(d.major_code)) map.set(d.major_code, []);
-      map.get(d.major_code)!.push(d);
-    }
-    return visibleMajors
-      .filter((m) => map.has(m.code))
-      .map((m) => ({ major: m, depts: map.get(m.code)! }));
-  }, [departments, visibleMajors]);
-  const flatDepts = useMemo(
-    () => departmentsByMajor.flatMap((g) => g.depts),
-    [departmentsByMajor]
-  );
-
-  const expandedDept = flatDepts[expandedDeptIndex];
-  const yearData = expandedDept?.years.find(y => y.year === activeYear) || expandedDept?.years[0];
 
   return (
     <div className="min-h-screen bg-white flex flex-col">
@@ -1301,20 +1376,35 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
           </div>
 
           {/* Table Body */}
-          {paginatedData.map((item, index) => (
+          {paginatedData.map((item, index) => {
+            const schoolDepartments = departmentsBySchool[item.school_id] ?? [];
+            const schoolIsLoading = loadingSchoolIds.has(item.school_id);
+            const schoolExpandedDeptIndex = expandedDeptBySchool[item.school_id] ?? 0;
+            const schoolExpandedDept = schoolDepartments[schoolExpandedDeptIndex];
+            const schoolActiveYear = activeYearBySchool[item.school_id] ?? 2026;
+            const schoolShowHistorical = showHistoricalBySchool[item.school_id] ?? false;
+            const schoolYearData = schoolExpandedDept?.years.find(y => y.year === schoolActiveYear) || schoolExpandedDept?.years[0];
+            const schoolDepartmentsByMajor = (() => {
+              const map = new Map<string, WorkspaceDepartment[]>();
+              schoolDepartments.forEach((d) => map.set(d.major_code, [...(map.get(d.major_code) ?? []), d]));
+              return visibleMajors.filter((m) => map.has(m.code)).map((m) => ({ major: m, depts: map.get(m.code)! }));
+            })();
+            const schoolDeptOffset = (groupIdx: number) => schoolDepartmentsByMajor.slice(0, groupIdx).reduce((sum, g) => sum + g.depts.length, 0);
+            return (
             <div key={item.school_id}>
               <motion.div
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: index * 0.03 }}
-                className={`grid grid-cols-[40px_40px_1fr_auto_auto_auto_auto_auto] gap-4 px-4 py-3 border-b border-gray-100 hover:bg-gray-50 transition-colors items-center ${
-                  expandedSchoolId === item.school_id ? 'bg-blue-50' : ''
+                onClick={() => handleToggleExpand(item.school_id)}
+                className={`grid grid-cols-[40px_40px_1fr_auto_auto_auto_auto_auto] gap-4 px-4 py-3 border-b border-gray-100 hover:bg-gray-50 transition-colors items-center cursor-pointer ${
+                  expandedSchoolIds.has(item.school_id) ? 'bg-blue-50' : ''
                 }`}
               >
                 {/* Favorite */}
                 <div className="flex items-center justify-center">
                   <motion.button
-                    onClick={() => toggleFavorite(item.school_id)}
+                    onClick={(e) => { e.stopPropagation(); void toggleFavorite(item.school_id); }}
                     className={`transition-colors ${
                       isSchoolFavorited(item.school_id) ? 'text-yellow-500' : 'text-gray-300 hover:text-yellow-500'
                     }`}
@@ -1331,6 +1421,7 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                   <input
                     type="checkbox"
                     checked={selectedForCompare.has(item.school_id)}
+                    onClick={(e) => e.stopPropagation()}
                     onChange={() => toggleCompare(item.school_id)}
                     className="w-4 h-4 rounded border-gray-300 text-[#1e3a5f] focus:ring-[#1e3a5f]"
                   />
@@ -1374,12 +1465,12 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                 {/* Actions */}
                 <div className="w-16 flex items-center justify-center">
                   <motion.button
-                    onClick={() => handleToggleExpand(item.school_id)}
+                    onClick={(e) => { e.stopPropagation(); handleToggleExpand(item.school_id); }}
                     className="p-1 text-gray-400 hover:text-[#1e3a5f] transition-colors"
                     whileTap={{ scale: 0.9 }}
                   >
                     <motion.span
-                      animate={{ rotate: expandedSchoolId === item.school_id ? 90 : 0 }}
+                      animate={{ rotate: expandedSchoolIds.has(item.school_id) ? 90 : 0 }}
                       transition={{ duration: 0.2 }}
                       className="inline-block"
                     >
@@ -1391,7 +1482,7 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
 
               {/* Expanded Detail Panel */}
               <AnimatePresence>
-                {expandedSchoolId === item.school_id && (
+                {expandedSchoolIds.has(item.school_id) && (
                   <motion.div
                     initial={{ height: 0, opacity: 0 }}
                     animate={{ height: 'auto', opacity: 1 }}
@@ -1458,12 +1549,16 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                       </div>
 
                       {/* Right - Department Details */}
-                      <div className="flex-1 p-6 overflow-auto max-h-[500px]">
+                      <div className="flex-1 p-6 overflow-auto max-h-[min(700px,70vh)]">
+                        {schoolIsLoading && (
+                          <div className="flex items-center gap-2 py-3 mb-3 text-xs text-gray-400 border-b border-gray-100">
+                            <RefreshCw size={13} className="animate-spin" />
+                            正在加载院系详情…
+                          </div>
+                        )}
                         {/* ISSUE-027：按专业分组渲染院系，多专业模式每组带专业标题 */}
-                        {departmentsByMajor.map((group, groupIdx) => {
-                          const offset = departmentsByMajor
-                            .slice(0, groupIdx)
-                            .reduce((sum, g) => sum + g.depts.length, 0);
+                        {schoolDepartmentsByMajor.map((group, groupIdx) => {
+                          const offset = schoolDeptOffset(groupIdx);
                           return (
                           <div key={group.major.code}>
                             {/* UX-5.1：专业分组标题 + 单专业收藏星。单专业模式也显示，
@@ -1495,25 +1590,33 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                             {group.depts.map((dept, deptIdx) => {
                               const flatIdx = offset + deptIdx;
                               return (
-                          <div className="mb-3">
+                          <div className="mb-2">
                             {/* Department Header */}
                             <motion.button
-                              onClick={() => setExpandedDeptIndex(flatIdx)}
-                              className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
+                              onClick={() => setExpandedDeptBySchool((current) => ({ ...current, [item.school_id]: schoolExpandedDeptIndex === flatIdx ? -1 : flatIdx }))}
+                              className="w-full flex items-center justify-between px-3 py-2 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
                               whileTap={{ scale: 0.995 }}
                             >
-                              <span className="font-medium text-gray-900 text-sm flex items-center">
+                              <span className="font-medium text-gray-900 text-sm flex items-center min-w-0">
                                 <motion.span
-                                  animate={{ rotate: expandedDeptIndex === flatIdx ? 90 : 0 }}
+                                  animate={{ rotate: schoolExpandedDeptIndex === flatIdx ? 90 : 0 }}
                                   transition={{ duration: 0.2 }}
                                   className="inline-block mr-2"
                                 >
                                   <ChevronRight size={14} className="text-gray-500" />
                                 </motion.span>
                                 {dept.name}
+                                {(() => {
+                                  const latest = dept.years[0];
+                                  return latest ? (
+                                    <span className="ml-3 text-[11px] font-normal text-gray-400">
+                                      最低分 {latest.min_score} · 招生 {latest.enroll_count}
+                                    </span>
+                                  ) : null;
+                                })()}
                               </span>
                               <motion.span
-                                animate={{ rotate: expandedDeptIndex === flatIdx ? 180 : 0 }}
+                                animate={{ rotate: schoolExpandedDeptIndex === flatIdx ? 180 : 0 }}
                                 transition={{ duration: 0.2 }}
                                 className="inline-block"
                               >
@@ -1523,7 +1626,7 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
 
                             {/* Department Content */}
                             <AnimatePresence>
-                              {expandedDeptIndex === flatIdx && (
+                              {schoolExpandedDeptIndex === flatIdx && (
                                 <motion.div
                                   initial={{ height: 0, opacity: 0 }}
                                   animate={{ height: 'auto', opacity: 1 }}
@@ -1540,14 +1643,14 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                                     {/* Research Direction */}
                                     <div className="mb-4">
                                       <h4 className="text-xs font-medium text-gray-500 mb-1">研究方向</h4>
-                                      <p className="text-sm text-gray-700">{dept.research_direction}</p>
+                                      <p className="text-sm text-gray-700">{schoolExpandedDept?.research_direction ?? '—'}</p>
                                     </div>
 
                                     {/* Exam Subjects */}
                                     <div className="mb-4">
                                       <h4 className="text-xs font-medium text-gray-500 mb-1">考试科目</h4>
                                       <div className="flex flex-wrap gap-2 text-sm text-gray-600">
-                                        {dept.exam_subjects.map((subject, i) => (
+                                        {(schoolExpandedDept?.exam_subjects ?? []).map((subject, i) => (
                                           <span key={i}>{subject}</span>
                                         ))}
                                       </div>
@@ -1555,15 +1658,15 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
 
                                     {/* Year Tabs */}
                                     <div className="flex items-center gap-3 mb-3 border-b border-gray-200">
-                                      {dept.years.map((y) => (
+                                      {(schoolExpandedDept?.years ?? []).map((y) => (
                                         <button
                                           key={y.year}
                                           onClick={() => {
-                                            setActiveYear(y.year);
-                                            setShowHistorical(false);
-                                          }}
-                                          className={`pb-2 text-sm font-medium transition-colors ${
-                                            activeYear === y.year && !showHistorical
+                                              setActiveYearBySchool((current) => ({ ...current, [item.school_id]: y.year }));
+                                              setShowHistoricalBySchool((current) => ({ ...current, [item.school_id]: false }));
+                                            }}
+                                            className={`pb-2 text-sm font-medium transition-colors ${
+                                              schoolActiveYear === y.year && !schoolShowHistorical
                                               ? 'text-[#1e3a5f] border-b-2 border-[#1e3a5f]'
                                               : 'text-gray-500 hover:text-gray-700'
                                           }`}
@@ -1572,9 +1675,9 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                                         </button>
                                       ))}
                                       <button
-                                        onClick={() => setShowHistorical(true)}
+                                        onClick={() => setShowHistoricalBySchool((current) => ({ ...current, [item.school_id]: true }))}
                                         className={`pb-2 text-sm font-medium transition-colors ${
-                                          showHistorical
+                                          schoolShowHistorical
                                             ? 'text-[#1e3a5f] border-b-2 border-[#1e3a5f]'
                                             : 'text-gray-500 hover:text-gray-700'
                                         }`}
@@ -1585,7 +1688,7 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
 
                                     <AnimatePresence mode="wait">
                                       {/* Year Data */}
-                                      {yearData && !showHistorical && (
+                                      {schoolYearData && !schoolShowHistorical && (
                                         <motion.div
                                           key="year-data"
                                           initial={{ opacity: 0, x: -10 }}
@@ -1596,33 +1699,33 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                                         >
                                           <div className="flex justify-between py-1.5 border-b border-gray-100">
                                             <span className="text-gray-500">招生人数</span>
-                                            <span className="text-gray-900">{yearData.enroll_count}</span>
+                                            <span className="text-gray-900">{schoolYearData.enroll_count}</span>
                                           </div>
                                           <div className="flex justify-between py-1.5 border-b border-gray-100">
                                             <span className="text-gray-500">最低分</span>
-                                            <span className="text-gray-900 font-medium">{yearData.min_score}</span>
+                                            <span className="text-gray-900 font-medium">{schoolYearData.min_score}</span>
                                           </div>
                                           <div className="flex justify-between py-1.5 border-b border-gray-100">
                                             <span className="text-gray-500">政治</span>
-                                            <span className="text-gray-900">{yearData.politics}</span>
+                                            <span className="text-gray-900">{schoolYearData.politics}</span>
                                           </div>
                                           <div className="flex justify-between py-1.5 border-b border-gray-100">
                                             <span className="text-gray-500">英语</span>
-                                            <span className="text-gray-900">{yearData.english}</span>
+                                            <span className="text-gray-900">{schoolYearData.english}</span>
                                           </div>
                                           <div className="flex justify-between py-1.5 border-b border-gray-100">
                                             <span className="text-gray-500">数学</span>
-                                            <span className="text-gray-900">{yearData.math}</span>
+                                            <span className="text-gray-900">{schoolYearData.math}</span>
                                           </div>
                                           <div className="flex justify-between py-1.5">
                                             <span className="text-gray-500">专业课</span>
-                                            <span className="text-gray-900">{yearData.specialized}</span>
+                                            <span className="text-gray-900">{schoolYearData.specialized}</span>
                                           </div>
                                         </motion.div>
                                       )}
 
                                       {/* Historical Analysis */}
-                                      {showHistorical && (
+                                      {schoolShowHistorical && (
                                         <motion.div
                                           key="historical"
                                           initial={{ opacity: 0, x: 10 }}
@@ -1630,6 +1733,12 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                                           exit={{ opacity: 0, x: -10 }}
                                           transition={{ duration: 0.2 }}
                                         >
+                                          {/* 动态图高：数据少则图小，避免浪费空间 */}
+                                          {(() => {
+                                            const yearCount = schoolExpandedDept?.years.length ?? 0;
+                                            const chartHeight = yearCount <= 4 ? 120 : yearCount <= 6 ? 180 : 220;
+                                            return (
+                                              <>
                                           <table className="w-full text-sm mb-4">
                                           <thead>
                                             <tr className="border-b border-gray-200">
@@ -1643,7 +1752,7 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                                             </tr>
                                           </thead>
                                           <tbody>
-                                            {dept.years.map((y) => (
+                                            {(schoolExpandedDept?.years ?? []).map((y) => (
                                               <tr key={y.year} className="border-b border-gray-100">
                                                 <td className="py-1.5 text-gray-900">{y.year}</td>
                                                 <td className="py-1.5 text-right text-gray-900">{y.enroll_count}</td>
@@ -1658,20 +1767,25 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                                         </table>
 
                                         {/* Charts */}
-                                        <div className="grid grid-cols-2 gap-4">
+                                        <div className="grid grid-cols-2 gap-3">
                                           <TrendChart
-                                            years={dept.years}
+                                            years={schoolExpandedDept?.years ?? []}
                                             dataKey="min_score"
                                             title="最低分趋势"
+                                            chartHeight={chartHeight}
                                           />
                                           <TrendChart
-                                            years={dept.years}
+                                            years={schoolExpandedDept?.years ?? []}
                                             dataKey="enroll_count"
                                             title="招生人数趋势"
+                                            chartHeight={chartHeight}
                                           />
                                         </div>
-                                      </motion.div>
-                                    )}
+                                              </>
+                                            );
+                                          })()}
+                                        </motion.div>
+                                      )}
                                     </AnimatePresence>
                                   </motion.div>
                                 </motion.div>
@@ -1689,7 +1803,8 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                 )}
               </AnimatePresence>
             </div>
-          ))}
+            );
+          })}
         </div>
 
         {/* Pagination */}

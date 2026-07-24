@@ -218,7 +218,7 @@ export function ManageMajorsModal({ isOpen, onClose, onConfirm }: ManageMajorsMo
                     className="h-full bg-[#1e3a5f]"
                     initial={{ width: 0 }}
                     animate={{
-                      width: `${((refreshProgress.current + 1) / refreshProgress.total) * 100}%`,
+                      width: `${Math.min(100, (refreshProgress.current / refreshProgress.total) * 100)}%`,
                     }}
                     transition={{ duration: 0.3 }}
                   />
