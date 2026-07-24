@@ -646,7 +646,8 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
     // 仅 sync 尚未 sync 过的专业（首次/新增专业），已 sync 的专业直接从 DB 查询。
     if (activeMajorCodes.length === 0) return;
     const autoSync = async () => {
-      setIsLoading(true);
+      const showInitialLoading = schools.length === 0;
+      if (showInitialLoading) setIsLoading(true);
       setError(null);
       // UX-6.2：切换专业 Tab 时清空上一组专业的同步失败记录，避免残留红点
       setSyncFailures({});
@@ -682,7 +683,7 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
           () => loadWorkspaceData('')
         );
       } finally {
-        setIsLoading(false);
+        if (showInitialLoading) setIsLoading(false);
       }
     };
     autoSync();
