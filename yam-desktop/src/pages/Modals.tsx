@@ -7,6 +7,9 @@ import { useAppStore } from '../stores/appStore';
 import {
   fetchFavorites,
   toggleFavorite,
+  fetchPlanFavorites,
+  removePlanFavorite,
+  planFavoriteKey,
   fetchRecentViews,
   clearRecentViews,
   formatRelativeTime,
@@ -16,10 +19,13 @@ import {
   isResearchInstitute,
   syncWorkspaceData,
   type Favorite,
+  type PlanFavorite,
   type RecentView,
   type FilterOptions,
   type WorkspaceFilters,
+  type WorkspacePlanRow,
 } from '../lib/db';
+import { getDirectionLabel, getScoreScopeLabel } from '../lib/workspace-utils';
 
 // S009 - Manage Display Majors Modal
 interface ManageMajorsModalProps {
@@ -273,30 +279,46 @@ export function ManageMajorsModal({ isOpen, onClose, onConfirm }: ManageMajorsMo
   );
 }
 
-// S010 - School Compare Modal
+// S010 - Direction / Plan Compare Modal
 interface CompareModalProps {
   isOpen: boolean;
   onClose: () => void;
-  schools: Array<{
-    id: string;
-    name: string;
-    region: string;
-    level: string;
-    tuition: number;
-    duration: number;
-    enrollCount: number;
-    minScore: number;
-    politics: number;
-    english: number;
-    math: number;
-    specialized: number;
-  }>;
+  onClear: () => void;
+  plans: WorkspacePlanRow[];
 }
 
-export function CompareModal({ isOpen, onClose, schools }: CompareModalProps) {
-  const handleClearAll = () => {
-    onClose();
+function displayCompareValue(value: string | number | undefined): string | number {
+  return value === '' || value === undefined ? '—' : value;
+}
+
+export function CompareModal({ isOpen, onClose, onClear, plans }: CompareModalProps) {
+  const gridStyle = {
+    gridTemplateColumns: `120px repeat(${plans.length}, minmax(180px, 1fr))`,
+    minWidth: `${120 + plans.length * 180}px`,
   };
+  const comparisonRows = [
+    { label: '院校名称', value: (plan: WorkspacePlanRow) => plan.school_name },
+    { label: '地区', value: (plan: WorkspacePlanRow) => plan.province },
+    { label: '院校层次', value: (plan: WorkspacePlanRow) => plan.level },
+    { label: '专业代码', value: (plan: WorkspacePlanRow) => plan.major_code },
+    { label: '院系', value: (plan: WorkspacePlanRow) => plan.department_name },
+    { label: '研究方向', value: getDirectionLabel },
+    { label: '学习方式', value: (plan: WorkspacePlanRow) => plan.study_mode },
+    { label: '考试方式', value: (plan: WorkspacePlanRow) => plan.exam_type },
+    { label: '特殊计划', value: (plan: WorkspacePlanRow) => plan.special_plans.join('、') },
+    { label: '最新年份', value: (plan: WorkspacePlanRow) => plan.latest_year },
+    { label: '分数值', value: (plan: WorkspacePlanRow) => plan.latest_min_score },
+    { label: '分数粒度', value: (plan: WorkspacePlanRow) => plan.years[0] ? getScoreScopeLabel(plan.years[0]) : '—' },
+    { label: '招生人数', value: (plan: WorkspacePlanRow) => plan.latest_enroll_count },
+    { label: '政治', value: (plan: WorkspacePlanRow) => plan.years[0]?.politics },
+    { label: '英语', value: (plan: WorkspacePlanRow) => plan.years[0]?.english },
+    { label: '数学', value: (plan: WorkspacePlanRow) => plan.years[0]?.math },
+    { label: '专业课', value: (plan: WorkspacePlanRow) => plan.years[0]?.specialized },
+    { label: '计划来源', value: (plan: WorkspacePlanRow) => plan.department_source },
+    { label: '计划更新时间', value: (plan: WorkspacePlanRow) => plan.department_updated_at },
+    { label: '分数来源', value: (plan: WorkspacePlanRow) => plan.years[0]?.source },
+    { label: '分数更新时间', value: (plan: WorkspacePlanRow) => plan.years[0]?.updated_at },
+  ];
 
   return (
     <AnimatePresence>
@@ -313,79 +335,43 @@ export function CompareModal({ isOpen, onClose, schools }: CompareModalProps) {
             animate={{ scale: 1, opacity: 1 }}
             exit={{ scale: 0.9, opacity: 0 }}
             onClick={(e) => e.stopPropagation()}
-            className="bg-white rounded-lg shadow-xl w-[900px] max-h-[80vh] flex flex-col"
+            className="bg-white rounded-lg shadow-xl w-[min(1100px,calc(100vw-48px))] max-h-[85vh] flex flex-col"
           >
-            {/* Header */}
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
               <div>
-                <h2 className="text-lg font-medium text-gray-900">学校比较</h2>
-                <p className="text-sm text-gray-500">比较已选择学校的招生信息。</p>
+                <h2 className="text-lg font-medium text-gray-900">方向/计划比较</h2>
+                <p className="text-sm text-gray-500">比较已选择的 {plans.length} 条招生方向/计划。</p>
               </div>
-              <button
-                onClick={handleClearAll}
-                className="text-sm text-gray-500 hover:text-gray-700"
-              >
-                清空全部
-              </button>
+              <div className="flex items-center gap-4">
+                <button onClick={onClear} className="text-sm text-gray-500 hover:text-gray-700">
+                  清空全部
+                </button>
+                <button onClick={onClose} className="text-gray-400 hover:text-gray-600" aria-label="关闭">
+                  <X size={20} />
+                </button>
+              </div>
             </div>
 
-            {/* Content */}
             <div className="flex-1 overflow-auto p-6">
-              {/* Selected Schools */}
-              <div className="flex items-center gap-3 mb-6">
-                {schools.map((school) => (
-                  <div
-                    key={school.id}
-                    className="flex items-center gap-2 px-4 py-2 bg-gray-100 rounded-lg"
-                  >
-                    <div className="w-8 h-8 bg-[#1e3a5f] rounded-full flex items-center justify-center text-white text-xs font-bold">
-                      {school.name.charAt(0)}
-                    </div>
-                    <div>
-                      <div className="text-sm font-medium text-gray-900">{school.name}</div>
-                      <div className="text-xs text-gray-500">{school.region}</div>
-                    </div>
-                    <button className="text-gray-400 hover:text-gray-600 ml-2">
-                      <X size={14} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-
-              {/* Comparison Table */}
               <div className="border border-gray-200 rounded-lg overflow-hidden">
-                <div className={`grid grid-cols-[120px_repeat(${schools.length},1fr)] gap-4 px-4 py-3 bg-gray-50 text-sm font-medium border-b border-gray-200`}>
+                <div className="grid gap-4 px-4 py-3 bg-gray-50 text-sm font-medium border-b border-gray-200" style={gridStyle}>
                   <div className="text-gray-500">对比项</div>
-                  {schools.map((school) => (
-                    <div key={school.id} className="text-center text-gray-900">{school.name}</div>
+                  {plans.map((plan) => (
+                    <div key={plan.plan_key} className="text-center text-gray-900">
+                      {plan.school_name} · {plan.department_name}
+                    </div>
                   ))}
                 </div>
-                {[
-                  { label: '地区', key: 'region' },
-                  { label: '院校层次', key: 'level' },
-                  { label: '学费（元/年）', key: 'tuition' },
-                  { label: '学制', key: 'duration', suffix: '年' },
-                  { label: '招生人数', key: 'enrollCount' },
-                  { label: '最低分', key: 'minScore', highlight: true },
-                  { label: '政治', key: 'politics' },
-                  { label: '英语', key: 'english' },
-                  { label: '数学', key: 'math' },
-                  { label: '专业课', key: 'specialized' },
-                ].map((row) => (
+                {comparisonRows.map((row) => (
                   <div
-                    key={row.key}
-                    className={`grid grid-cols-[120px_repeat(${schools.length},1fr)] gap-4 px-4 py-3 border-b border-gray-100`}
+                    key={row.label}
+                    className="grid gap-4 px-4 py-3 border-b border-gray-100 last:border-b-0"
+                    style={gridStyle}
                   >
                     <div className="text-gray-500 text-sm">{row.label}</div>
-                    {schools.map((school) => (
-                      <div
-                        key={school.id}
-                        className={`text-center text-sm ${
-                          row.highlight ? 'font-medium text-gray-900' : 'text-gray-600'
-                        }`}
-                      >
-                        {school[row.key as keyof typeof school]}
-                        {row.suffix || ''}
+                    {plans.map((plan) => (
+                      <div key={plan.plan_key} className="text-center text-sm text-gray-700 break-words">
+                        {displayCompareValue(row.value(plan))}
                       </div>
                     ))}
                   </div>
@@ -404,8 +390,16 @@ interface FavoritesPageProps {
   onClose?: () => void;
 }
 
-export function FavoritesPage({ onClose }: FavoritesPageProps) {
+function getPlanFavoriteDirection(item: PlanFavorite): string {
+  return item.research_direction.trim()
+    || item.exam_subjects.filter(Boolean).join(' / ')
+    || item.special_plans.filter(Boolean).join(' / ')
+    || '未注明研究方向';
+}
+
+export function FavoritesPage(_props: FavoritesPageProps) {
   const [favorites, setFavorites] = useState<Favorite[]>([]);
+  const [planFavorites, setPlanFavorites] = useState<PlanFavorite[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -418,8 +412,12 @@ export function FavoritesPage({ onClose }: FavoritesPageProps) {
     setIsLoading(true);
     setError(null);
     try {
-      const data = await fetchFavorites();
-      setFavorites(data);
+      const [schoolData, planData] = await Promise.all([
+        fetchFavorites(),
+        fetchPlanFavorites(),
+      ]);
+      setFavorites(schoolData);
+      setPlanFavorites(planData);
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载收藏失败');
     } finally {
@@ -437,6 +435,16 @@ export function FavoritesPage({ onClose }: FavoritesPageProps) {
       await loadFavorites();
     } catch (err) {
       setError(err instanceof Error ? err.message : '操作失败');
+    }
+  };
+
+  const handleRemovePlanFavorite = async (item: PlanFavorite) => {
+    try {
+      setError(null);
+      await removePlanFavorite(item);
+      setPlanFavorites(await fetchPlanFavorites());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '取消方向收藏失败');
     }
   };
 
@@ -482,10 +490,23 @@ export function FavoritesPage({ onClose }: FavoritesPageProps) {
   }, [favorites]);
 
   const filteredFavorites = useMemo(() => {
+    const keyword = searchQuery.trim().toLowerCase();
     return applyWorkspaceFilters(favorites, filters).filter((item) =>
-      item.name.toLowerCase().includes(searchQuery.toLowerCase())
+      !keyword
+      || item.name.toLowerCase().includes(keyword)
+      || item.major_code.toLowerCase().includes(keyword)
+      || item.departments.some((department) => department.name.toLowerCase().includes(keyword))
     );
   }, [favorites, filters, searchQuery]);
+
+  const filteredPlanFavorites = useMemo(() => {
+    const keyword = searchQuery.trim().toLowerCase();
+    if (!keyword) return planFavorites;
+    return planFavorites.filter((item) =>
+      [item.school_name, item.department_name, getPlanFavoriteDirection(item), item.major_code]
+        .some((value) => value.toLowerCase().includes(keyword))
+    );
+  }, [planFavorites, searchQuery]);
 
   return (
     <div className="min-h-screen bg-white flex flex-col">
@@ -493,7 +514,7 @@ export function FavoritesPage({ onClose }: FavoritesPageProps) {
 
       <div className="flex-1 max-w-6xl mx-auto px-6 py-8 w-full">
         <h1 className="text-3xl font-bold text-gray-900 mb-2">收藏</h1>
-        <p className="text-gray-500 mb-6">快速访问关注的学校。</p>
+        <p className="text-gray-500 mb-6">快速访问关注的学校与研究方向。</p>
 
         {/* Filters */}
         <div className="flex items-center gap-4 mb-4">
@@ -502,7 +523,7 @@ export function FavoritesPage({ onClose }: FavoritesPageProps) {
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="搜索学校名称......"
+              placeholder="搜索学校、院系、方向或专业代码......"
               className="w-full pl-4 pr-10 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-[#1e3a5f]"
             />
             <Search size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400" />
@@ -575,6 +596,65 @@ export function FavoritesPage({ onClose }: FavoritesPageProps) {
             <span className="text-sm text-gray-500">20条/页</span>
           </div>
         </div>
+
+        {!isLoading && (
+          <section className="mt-10">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-semibold text-gray-900">研究方向与招生计划</h2>
+              <span className="text-sm text-gray-500">共 {filteredPlanFavorites.length} 条</span>
+            </div>
+            <div className="border border-gray-200 rounded-lg overflow-x-auto">
+              <div className="min-w-[1380px]">
+                <div className="grid grid-cols-[40px_160px_90px_180px_260px_280px_90px_90px_150px_120px] gap-3 px-4 py-3 bg-gray-50 text-sm text-gray-500 font-medium border-b border-gray-200">
+                  <div className="flex items-center justify-center">
+                    <Star size={16} className="text-yellow-500" fill="currentColor" />
+                  </div>
+                  <div>学校名称</div>
+                  <div>专业代码</div>
+                  <div>院系</div>
+                  <div>研究方向</div>
+                  <div>考试科目</div>
+                  <div>学习方式</div>
+                  <div>考试方式</div>
+                  <div>专项计划</div>
+                  <div>收藏时间</div>
+                </div>
+                {filteredPlanFavorites.length === 0 ? (
+                  <div className="px-4 py-8 text-center text-sm text-gray-500">
+                    暂无匹配的研究方向收藏
+                  </div>
+                ) : (
+                  filteredPlanFavorites.map((item) => (
+                    <div
+                      key={planFavoriteKey(item)}
+                      className="grid grid-cols-[40px_160px_90px_180px_260px_280px_90px_90px_150px_120px] gap-3 px-4 py-3 border-b border-gray-100 last:border-b-0 hover:bg-gray-50 items-start text-sm"
+                    >
+                      <div className="flex items-center justify-center">
+                        <button
+                          onClick={() => { void handleRemovePlanFavorite(item); }}
+                          className="text-yellow-500 hover:text-yellow-600 transition-colors"
+                          title="取消收藏该计划"
+                          aria-label={`取消收藏 ${item.school_name} ${getPlanFavoriteDirection(item)}`}
+                        >
+                          <Star size={18} fill="currentColor" />
+                        </button>
+                      </div>
+                      <div className="font-medium text-gray-900 break-words">{item.school_name || '—'}</div>
+                      <div className="font-mono text-gray-700 break-words">{item.major_code || '—'}</div>
+                      <div className="text-gray-700 break-words">{item.department_name || '—'}</div>
+                      <div className="text-gray-900 break-words">{getPlanFavoriteDirection(item)}</div>
+                      <div className="text-gray-600 break-words">{item.exam_subjects.filter(Boolean).join(' / ') || '—'}</div>
+                      <div className="text-gray-600 break-words">{item.study_mode || '—'}</div>
+                      <div className="text-gray-600 break-words">{item.exam_type || '—'}</div>
+                      <div className="text-gray-600 break-words">{item.special_plans.filter(Boolean).join('、') || '—'}</div>
+                      <div className="text-gray-500">{formatRelativeTime(item.created_at)}</div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </section>
+        )}
       </div>
     </div>
   );
@@ -585,7 +665,7 @@ interface RecentPageProps {
   onClose?: () => void;
 }
 
-export function RecentPage({ onClose }: RecentPageProps) {
+export function RecentPage(_props: RecentPageProps) {
   const [recentViews, setRecentViews] = useState<RecentView[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

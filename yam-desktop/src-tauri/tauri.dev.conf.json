@@ -1,0 +1,9 @@
+{
+  "app": {
+    "windows": [
+      {
+        "additionalBrowserArgs": "--remote-debugging-port=9223"
+      }
+    ]
+  }
+}

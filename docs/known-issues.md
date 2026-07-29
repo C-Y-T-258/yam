@@ -34,7 +34,7 @@
 | ISSUE-019 | high | fixed | 专业选择页面可供选择的专业不全（实时查询 majors_realtime.json，2255 majors，无 enabled 字段） |
 | ISSUE-020 | medium | fixed | BackgroundTaskPanel 用时计时器不会重置 |
 | ISSUE-021 | medium | fixed | 切出数据采集页面再切回误报"已有采集任务在运行" |
-| ISSUE-022 | medium | open | 选择 disabled=true 的专业后采集卡住（需重新定义方向：要消灭 disabled 的专业，要让专业可见即可查） |
+| ISSUE-022 | medium | fixed | 已统一实时目录与采集入口数据源，移除 enabled 拒绝分支，并增加结构化失败分类 |
 | ISSUE-023 | high | fixed | 专业目录更新流程耗时过长（httpx 方案 7-8 分钟） |
 | ISSUE-024 | high | fixed | 登录状态缺乏统一管理 |
 | ISSUE-025 | medium | fixed | 分数线数据未同步到工作区（分级匹配 98.5% 覆盖率） |
@@ -43,9 +43,9 @@
 | ISSUE-028 | low | fixed | 导出格式扩展 CSV/Excel/JSON（CSV/Excel/JSON × 院校/招生计划视图，手动测试通过） |
 | ISSUE-029 | medium | fixed | 数据采集流程串行 requests 调用（httpx 并发 5 分钟 100% 成功） |
 
-**统计**：共 29 个 ISSUE，28 个 fixed，0 个 partial-fixed，0 个 in-progress，1 个 open。
+**统计**：共 29 个 ISSUE，29 个 fixed，0 个 partial-fixed，0 个 in-progress，0 个 open。
 
-**下一步优先级**：ISSUE-022（重新定义方向：要消灭 disabled 的专业，要让专业可见即可查）
+**下一步优先级**：阶段 3 采集失败局部恢复 + 专业级重试（ISSUE-022 已闭环）
 
 ---
 
@@ -420,7 +420,7 @@
 ## ISSUE-018：085400 电子信息 seed 抓取正常但 zys.do 返回 totalCount=0
 
 - **严重程度**：medium
-- **状态**：open
+- **状态**：fixed
 - **描述**：早期会话曾误判"085400 作为专业学位门类代码在研招网数据源已不可用"，并把 `data/majors.yaml` 中 085400 的 `enabled` 改为 `false`。实际验证发现：
   - `data/seeds/yan_zhao_085400_all_regions.json` 成功抓取 **228 所院校**，覆盖 **29 个省份**（北京 22、江苏 17、湖北 17、上海 15、浙江 15 等）。
   - 228 条记录的 `sign` / `sign2` 字段**全部非空**，证明 `zys.do` 接口对 085400 仍返回完整院校列表。
@@ -557,7 +557,7 @@
 ## ISSUE-022：选择 disabled=true 的专业（如 140700 区域国别学）后采集卡住
 
 - **严重程度**：medium
-- **状态**：open
+- **状态**：fixed（2026-07-27：统一实时目录与采集入口数据源，移除 enabled 拒绝分支，并增加结构化失败分类）
 - **描述**：用户在专业选择页面选择 `140700 区域国别学` 后启动采集，前端一直显示"专业 140700 当前未启用"且卡住，无法继续也无法回退。`data/majors.yaml` 中该专业 `enabled: false`，但前端 MajorSelectPage 仍允许选择。
 - **复现步骤**：
   1. 在专业选择页面找到 `140700 区域国别学`。
@@ -571,7 +571,12 @@
 - **重新定义方向（2026-07-23）**：
   - 原描述的"disabled 专业卡住"在数据层已不可达：`majors_realtime.json`（前端实际数据源）无 `enabled` 字段，`data/majors.yaml` 中 `enabled: false` 数量为 0，`cli.py` 的 enabled 检查分支（原 YAM_ERROR "未启用" 来源）已永远不会触发。
   - 但 ISSUE 本质诉求仍在：**要消灭 disabled 的专业，要让专业可见即可查**。即不应存在"可见但不可采集"的专业——凡是出现在专业选择页的专业，都必须能正常进入采集流程。
-  - 后续推进方向：(1) 确认 `cli.py` L67-73 的 enabled 检查是否应直接移除（已无数据支撑该分支）；(2) 确认 `data/majors.yaml` 是否可彻底废弃或仅作 fallback；(3) 若未来重新引入"暂不支持采集"的专业，应在前端选择阶段就置灰并提示原因，而非让用户选了之后才卡住。
+  - 已完成（2026-07-27）：
+    1. `Config.get_major()` 优先读取与桌面端同源的 `data/majors_realtime.json`，静态 `majors.yaml` 仅作 fallback。
+    2. 删除 `cli.py fetch` 的 `enabled` 拒绝分支，前端实时目录中可见的专业可直接进入采集流程。
+    3. 验证 `140700 区域国别学`、`0101J1 中国古典学` 可由采集入口识别；`085410` 静态 fallback 仍正常。
+    4. `YAM_ERROR` 增加结构化分类：`UNKNOWN_MAJOR / LOGIN_REQUIRED / NO_PUBLIC_DATA / UNREACHABLE / FAILED`；Rust 解析为 `CrawlProgress.error_code`，不再仅依赖错误文案判断。
+  - 结论：旧 disabled 卡住路径已消除，“专业可见即可进入采集”的数据源基础已统一。若未来重新引入不可采集专业，应在目录数据中提供明确状态并在选择阶段置灰。
 
 ---
 

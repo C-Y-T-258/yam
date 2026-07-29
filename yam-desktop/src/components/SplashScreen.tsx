@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Check, ChevronRight, RefreshCw, Database } from 'lucide-react';
+import { Check, ChevronRight, RefreshCw } from 'lucide-react';
 import { useAppStore } from '../stores/appStore';
 import {
   ACADEMIC_CATEGORIES,

@@ -4,6 +4,8 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+/build/pyinstaller/
+.venv-build/
 .eggs/
 
 # Local data
@@ -22,6 +24,8 @@ data/cache/
 node_modules/
 
 # Project-specific
+/release/staging/
+/yam-desktop/src-tauri/resources/yam-backend.exe
 ui-research/
 tmp_*
 *.log
@@ -41,6 +45,12 @@ diagnostic-*.png
 diag-*.png
 kaoyan_majors_raw.json
 .commit-msg-tmp.txt
+
+# Generated release/build artifacts
+/release/staging/
+/build/python-backend-venv/
+/build/pyinstaller/
+/yam-desktop/src-tauri/resources/yam-backend.exe
 
 # Additional temporary debug artifacts (2026-07-17)
 /debug-*

@@ -32,10 +32,13 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+from yam.browser import BrowserMissingError, launch_browser
+from yam.config import config
+
+REPO_ROOT = config.project_dir
 MAJORS_TS = REPO_ROOT / "yam-desktop" / "src" / "data" / "majors.ts"
-OUTPUT_JSON = REPO_ROOT / "data" / "majors_realtime.json"
-PARTIAL_JSON = REPO_ROOT / "data" / "majors_realtime.partial.json"
+OUTPUT_JSON = config.realtime_majors_file
+PARTIAL_JSON = config.data_dir / "majors_realtime.partial.json"
 INCREMENTAL_SAVE_INTERVAL = 5  # 每完成 5 个 yjxkdm 保存一次（保留用于单测/兜底）
 
 # ISSUE-023：httpx + Playwright 激活并发方案参数
@@ -72,7 +75,31 @@ def parse_yjxkdm_list_from_majors_ts() -> list[tuple[str, str, str, str]]:
     按行扫描，跟踪当前 category（2 位代码），遇到 4 位代码的 discipline 就记录。
     """
     if not MAJORS_TS.exists():
-        raise FileNotFoundError(f"找不到 majors.ts: {MAJORS_TS}")
+        results: list[tuple[str, str, str, str]] = []
+        seen: set[str] = set()
+        for major in config.list_majors(enabled_only=False):
+            code = str(major.get("code", ""))
+            if len(code) < 4 or not code[:4].isdigit() or code[:4] in seen:
+                continue
+            yjxkdm = code[:4]
+            seen.add(yjxkdm)
+            discipline_name = next(
+                (
+                    str(item.get("name", yjxkdm))
+                    for item in config.list_majors(enabled_only=False)
+                    if str(item.get("code", "")) == yjxkdm + "00"
+                ),
+                str(major.get("name", yjxkdm)),
+            )
+            results.append(
+                (
+                    yjxkdm,
+                    discipline_name,
+                    str(major.get("category_code", "")),
+                    str(major.get("category_name", "")),
+                )
+            )
+        return results
 
     content = MAJORS_TS.read_text(encoding="utf-8")
 
@@ -585,7 +612,7 @@ async def update_all_majors(login: bool = False, resume: bool = False) -> dict[s
     from playwright.async_api import async_playwright
     print(f"YAM_MAJORS_UPDATE_PROGRESS 0 {total} 启动浏览器", flush=True)
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        browser = await launch_browser(p.chromium, headless=True)
         try:
             print(f"YAM_MAJORS_UPDATE_PROGRESS 0 {total} 浏览器就绪", flush=True)
 
@@ -772,6 +799,9 @@ def main() -> None:
 
     try:
         result = asyncio.run(update_all_majors(login=args.login, resume=args.resume))
+    except BrowserMissingError as e:
+        print(f"YAM_ERROR BROWSER_MISSING {e}", flush=True)
+        sys.exit(1)
     except Exception as e:
         print(f"YAM_MAJORS_UPDATE_ERROR {e}", flush=True)
         sys.exit(1)

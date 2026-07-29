@@ -7,9 +7,11 @@
 """
 
 import argparse
+import hashlib
 import json
 import sqlite3
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -27,11 +29,15 @@ CREATE TABLE IF NOT EXISTS workspace_schools (
     self_scoring INTEGER NOT NULL DEFAULT 0,
     doctoral_program INTEGER NOT NULL DEFAULT 0,
     double_first_class INTEGER NOT NULL DEFAULT 0,
+    source TEXT NOT NULL DEFAULT 'yanzhao',
+    updated_at TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (school_id, major_code)
 );
 
 CREATE TABLE IF NOT EXISTS workspace_departments (
     department_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_department_id TEXT NOT NULL DEFAULT '',
+    plan_key TEXT NOT NULL DEFAULT '',
     school_id TEXT NOT NULL,
     major_code TEXT NOT NULL,
     name TEXT NOT NULL,
@@ -40,6 +46,8 @@ CREATE TABLE IF NOT EXISTS workspace_departments (
     study_mode TEXT NOT NULL DEFAULT '',
     exam_type TEXT NOT NULL DEFAULT '',
     special_plans TEXT NOT NULL DEFAULT '[]',
+    source TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT '',
     FOREIGN KEY (school_id, major_code) REFERENCES workspace_schools(school_id, major_code)
 );
 
@@ -53,8 +61,96 @@ CREATE TABLE IF NOT EXISTS workspace_department_years (
     english INTEGER NOT NULL,
     math INTEGER NOT NULL,
     specialized INTEGER NOT NULL,
+    score_scope TEXT NOT NULL DEFAULT 'school_major',
+    source TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT '',
+    match_note TEXT NOT NULL DEFAULT '',
     FOREIGN KEY (department_id) REFERENCES workspace_departments(department_id)
 );
+
+CREATE TABLE IF NOT EXISTS workspace_majors (
+    major_code TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    degree_type TEXT NOT NULL DEFAULT '',
+    category_code TEXT NOT NULL DEFAULT '',
+    category_name TEXT NOT NULL DEFAULT '',
+    discipline_code TEXT NOT NULL DEFAULT '',
+    discipline_name TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT 'major_catalog',
+    updated_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS workspace_department_entities (
+    department_key TEXT PRIMARY KEY,
+    school_id TEXT NOT NULL,
+    major_code TEXT NOT NULL,
+    source_department_id TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT '',
+    UNIQUE(school_id, major_code, source_department_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS workspace_plans (
+    plan_id INTEGER PRIMARY KEY,
+    plan_key TEXT NOT NULL UNIQUE,
+    department_key TEXT NOT NULL,
+    school_id TEXT NOT NULL,
+    major_code TEXT NOT NULL,
+    research_direction TEXT NOT NULL,
+    exam_subjects TEXT NOT NULL,
+    study_mode TEXT NOT NULL DEFAULT '',
+    exam_type TEXT NOT NULL DEFAULT '',
+    special_plans TEXT NOT NULL DEFAULT '[]',
+    enrollment_count INTEGER NOT NULL DEFAULT 0,
+    source TEXT NOT NULL DEFAULT '',
+    source_record_kind TEXT NOT NULL DEFAULT 'yanzhao_department_derived',
+    updated_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS workspace_plan_years (
+    plan_year_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    plan_key TEXT NOT NULL,
+    year INTEGER NOT NULL,
+    enroll_count INTEGER NOT NULL,
+    min_score INTEGER NOT NULL,
+    politics INTEGER NOT NULL,
+    english INTEGER NOT NULL,
+    math INTEGER NOT NULL,
+    specialized INTEGER NOT NULL,
+    score_scope TEXT NOT NULL DEFAULT 'school_major',
+    source TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT '',
+    match_note TEXT NOT NULL DEFAULT '',
+    UNIQUE(plan_key, year)
+);
+
+CREATE TABLE IF NOT EXISTS workspace_model_state (
+    major_code TEXT PRIMARY KEY,
+    model_version INTEGER NOT NULL DEFAULT 2,
+    status TEXT NOT NULL CHECK(status IN ('writing','ready','failed')),
+    old_plan_count INTEGER NOT NULL DEFAULT 0,
+    new_plan_count INTEGER NOT NULL DEFAULT 0,
+    old_year_count INTEGER NOT NULL DEFAULT 0,
+    new_year_count INTEGER NOT NULL DEFAULT 0,
+    verified_at TEXT NOT NULL DEFAULT '',
+    error_message TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_workspace_schools_major_score
+ON workspace_schools(major_code, min_score DESC, name);
+CREATE INDEX IF NOT EXISTS idx_workspace_departments_major_school
+ON workspace_departments(major_code, school_id);
+CREATE INDEX IF NOT EXISTS idx_workspace_department_years_department
+ON workspace_department_years(department_id, year DESC);
+CREATE INDEX IF NOT EXISTS idx_workspace_entities_major_school
+ON workspace_department_entities(major_code, school_id);
+CREATE INDEX IF NOT EXISTS idx_workspace_plans_major_school
+ON workspace_plans(major_code, school_id);
+CREATE INDEX IF NOT EXISTS idx_workspace_plans_department
+ON workspace_plans(department_key);
+CREATE INDEX IF NOT EXISTS idx_workspace_plan_years_plan
+ON workspace_plan_years(plan_key, year DESC);
 
 CREATE TABLE IF NOT EXISTS favorites (
     favorite_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -105,9 +201,24 @@ def ensure_target_schema(conn: sqlite3.Connection) -> None:
     add_if_missing("workspace_schools", "is_985", "INTEGER NOT NULL DEFAULT 0")
     add_if_missing("workspace_schools", "is_211", "INTEGER NOT NULL DEFAULT 0")
     add_if_missing("workspace_schools", "display_order", "INTEGER NOT NULL DEFAULT 0")
+    add_if_missing("workspace_schools", "source", "TEXT NOT NULL DEFAULT 'yanzhao'")
+    add_if_missing("workspace_schools", "updated_at", "TEXT NOT NULL DEFAULT ''")
+    add_if_missing("workspace_departments", "source_department_id", "TEXT NOT NULL DEFAULT ''")
+    add_if_missing("workspace_departments", "plan_key", "TEXT NOT NULL DEFAULT ''")
     add_if_missing("workspace_departments", "study_mode", "TEXT NOT NULL DEFAULT ''")
     add_if_missing("workspace_departments", "exam_type", "TEXT NOT NULL DEFAULT ''")
     add_if_missing("workspace_departments", "special_plans", "TEXT NOT NULL DEFAULT '[]'")
+    add_if_missing("workspace_departments", "source", "TEXT NOT NULL DEFAULT ''")
+    add_if_missing("workspace_departments", "updated_at", "TEXT NOT NULL DEFAULT ''")
+    add_if_missing("workspace_department_years", "score_scope", "TEXT NOT NULL DEFAULT 'school_major'")
+    add_if_missing("workspace_department_years", "source", "TEXT NOT NULL DEFAULT ''")
+    add_if_missing("workspace_department_years", "updated_at", "TEXT NOT NULL DEFAULT ''")
+    add_if_missing("workspace_department_years", "match_note", "TEXT NOT NULL DEFAULT ''")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_workspace_schools_major_code "
+        "ON workspace_schools(major_code, school_code, name)"
+    )
+    conn.commit()
 
 
 def _normalize_name(name: str) -> str:
@@ -135,7 +246,10 @@ def _normalize_province(name: str) -> str:
 
 
 def _seed_path(major_code: str) -> Path:
-    """研招网种子文件路径，可能不存在."""
+    """研招网种子文件路径，优先用户目录，源码模式兼容仓库数据."""
+    user_path = config.data_dir / "seeds" / f"yan_zhao_{major_code}_all_regions.json"
+    if user_path.exists():
+        return user_path
     return config.project_dir / "data" / "seeds" / f"yan_zhao_{major_code}_all_regions.json"
 
 
@@ -151,17 +265,28 @@ def load_seed_index(major_code: str) -> dict[str, dict[str, Any]]:
 
 def clear_major(conn: sqlite3.Connection, major_code: str) -> None:
     conn.execute(
-        """
-        DELETE FROM workspace_department_years
-        WHERE department_id IN (
-            SELECT department_id FROM workspace_departments WHERE major_code = ?
-        )
-        """,
+        "DELETE FROM workspace_plan_years WHERE plan_key IN "
+        "(SELECT plan_key FROM workspace_plans WHERE major_code = ?)", (major_code,),
+    )
+    conn.execute("DELETE FROM workspace_plans WHERE major_code = ?", (major_code,))
+    conn.execute("DELETE FROM workspace_department_entities WHERE major_code = ?", (major_code,))
+    conn.execute("DELETE FROM workspace_model_state WHERE major_code = ?", (major_code,))
+    conn.execute("DELETE FROM workspace_majors WHERE major_code = ?", (major_code,))
+    conn.execute(
+        "DELETE FROM workspace_department_years WHERE department_id IN "
+        "(SELECT department_id FROM workspace_departments WHERE major_code = ?)",
         (major_code,),
     )
     conn.execute("DELETE FROM workspace_departments WHERE major_code = ?", (major_code,))
     conn.execute("DELETE FROM workspace_schools WHERE major_code = ?", (major_code,))
-    conn.commit()
+
+
+def _department_key(school_id: str, major_code: str, source_department_id: str, name: str) -> str:
+    identity = [value.strip() for value in (school_id, major_code, source_department_id, name)]
+    digest = hashlib.sha256(
+        json.dumps(identity, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return f"department:v1:{digest}"
 
 
 def load_schools(conn: sqlite3.Connection, major_code: str) -> list[dict[str, Any]]:
@@ -175,6 +300,7 @@ def load_schools(conn: sqlite3.Connection, major_code: str) -> list[dict[str, An
     has_is_985 = _source_has_column(conn, "schools", "is_985")
     has_is_211 = _source_has_column(conn, "schools", "is_211")
     has_display_order = _source_has_column(conn, "schools", "display_order")
+    has_updated_at = _source_has_column(conn, "schools", "updated_at")
 
     select_cols = [
         "school_id", "name", "province", "level",
@@ -190,6 +316,8 @@ def load_schools(conn: sqlite3.Connection, major_code: str) -> list[dict[str, An
         select_cols.append("is_211")
     if has_display_order:
         select_cols.append("display_order")
+    if has_updated_at:
+        select_cols.append("updated_at")
 
     order_by = "school_code ASC" if has_school_code else "name ASC"
     sql = (
@@ -206,6 +334,8 @@ def load_schools(conn: sqlite3.Connection, major_code: str) -> list[dict[str, An
         r.setdefault("is_985", 0)
         r.setdefault("is_211", 0)
         r.setdefault("display_order", 0)
+        r.setdefault("updated_at", "")
+        r["source"] = "yanzhao"
     return rows
 
 
@@ -285,10 +415,13 @@ def _enrich_school_fields(school: dict[str, Any]) -> None:
 
 
 def load_departments(conn: sqlite3.Connection, school_id: str, major_code: str) -> list[dict[str, Any]]:
+    source_expr = "COALESCE(source, '')" if _source_has_column(conn, "departments", "source") else "''"
+    updated_at_expr = "COALESCE(updated_at, '')" if _source_has_column(conn, "departments", "updated_at") else "''"
     cur = conn.execute(
-        """
+        f"""
         SELECT department_id, name, research_direction, enrollment_count,
-               exam_subjects, exam_type, study_mode, special_plans
+               exam_subjects, exam_type, study_mode, special_plans,
+               {source_expr} AS source, {updated_at_expr} AS updated_at
         FROM departments
         WHERE school_id = ? AND major_code = ?
         ORDER BY name
@@ -329,7 +462,10 @@ def load_score_lines(
                MIN(sl.politics) as politics,
                MIN(sl.english) as english,
                MIN(sl.special_one) as special_one,
-               MIN(sl.special_two) as special_two
+               MIN(sl.special_two) as special_two,
+               COALESCE(MAX(sl.source), '') as source,
+               COALESCE(MAX(sl.updated_at), '') as updated_at,
+               COALESCE(MAX(sl.note), '') as note
         FROM score_lines sl
         WHERE sl.school_id = ? AND sl.major_code = ?
         GROUP BY sl.year
@@ -346,28 +482,70 @@ def insert_department(
     major_code: str,
     dept: dict[str, Any],
 ) -> int:
-    exam_subjects = dept.get("exam_subjects") or []
-    special_plans = dept.get("special_plans") or []
+    exam_subjects = [str(value).strip() for value in (dept.get("exam_subjects") or [])]
+    special_plans = [str(value).strip() for value in (dept.get("special_plans") or [])]
+    source_department_id = str(dept.get("department_id") or "").strip()
+    name = str(dept.get("name") or "").strip()
+    research_direction = str(dept.get("research_direction") or "").strip()
+    study_mode = str(dept.get("study_mode") or "").strip()
+    exam_type = str(dept.get("exam_type") or "").strip()
+    plan_identity = [
+        school_id,
+        major_code,
+        source_department_id,
+        name,
+        research_direction,
+        exam_subjects,
+        study_mode,
+        exam_type,
+        special_plans,
+    ]
+    plan_key = hashlib.sha256(
+        json.dumps(
+            plan_identity,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    source = str(dept.get("source") or "")
+    updated_at = str(dept.get("updated_at") or "")
+    exam_subjects_text = ",".join(exam_subjects)
+    special_plans_text = json.dumps(special_plans, ensure_ascii=False)
+    department_key = _department_key(school_id, major_code, source_department_id, name)
     target.execute(
         """
-        INSERT INTO workspace_departments
-        (school_id, major_code, name, research_direction, exam_subjects,
-         study_mode, exam_type, special_plans)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO workspace_department_entities
+        (department_key, school_id, major_code, source_department_id, name, source, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(department_key) DO UPDATE SET
+            source=excluded.source, updated_at=excluded.updated_at
         """,
-        (
-            school_id,
-            major_code,
-            dept.get("name") or "",
-            dept.get("research_direction") or "",
-            ",".join(exam_subjects),
-            dept.get("study_mode") or "",
-            dept.get("exam_type") or "",
-            json.dumps(special_plans, ensure_ascii=False),
-        ),
+        (department_key, school_id, major_code, source_department_id, name, source, updated_at),
     )
-    target.commit()
-    return target.execute("SELECT last_insert_rowid()").fetchone()[0]
+    cursor = target.execute(
+        """
+        INSERT INTO workspace_departments
+        (source_department_id, plan_key, school_id, major_code, name, research_direction,
+         exam_subjects, study_mode, exam_type, special_plans, source, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (source_department_id, plan_key, school_id, major_code, name, research_direction,
+         exam_subjects_text, study_mode, exam_type, special_plans_text, source, updated_at),
+    )
+    department_id = int(cursor.lastrowid)
+    target.execute(
+        """
+        INSERT INTO workspace_plans
+        (plan_id, plan_key, department_key, school_id, major_code, research_direction,
+         exam_subjects, study_mode, exam_type, special_plans, enrollment_count, source,
+         source_record_kind, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yanzhao_department_derived', ?)
+        """,
+        (department_id, plan_key, department_key, school_id, major_code, research_direction,
+         exam_subjects_text, study_mode, exam_type, special_plans_text,
+         dept.get("enrollment_count") or 0, source, updated_at),
+    )
+    return department_id
 
 
 def insert_department_years(
@@ -384,29 +562,78 @@ def insert_department_years(
             if dept_min_score is None or total < dept_min_score:
                 dept_min_score = total
 
+        note = score.get("note") or ""
+        if "一级学科参考线" in note:
+            score_scope = "first_level_reference"
+        elif "门类级参考线" in note:
+            score_scope = "category_reference"
+        else:
+            # 当前同步按 school_id + major_code + year 聚合，不能标为方向精确分数线。
+            score_scope = "school_major"
+
+        year_values = (
+            score.get("year") or 0,
+            dept_enrollment_count or 0,
+            total or 0,
+            score.get("politics") or 0,
+            score.get("english") or 0,
+            score.get("special_one") or 0,
+            score.get("special_two") or 0,
+            score_scope,
+            score.get("source") or "",
+            score.get("updated_at") or "",
+            note,
+        )
         target.execute(
             """
             INSERT INTO workspace_department_years
-            (department_id, year, enroll_count, min_score, politics, english, math, specialized)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (department_id, year, enroll_count, min_score, politics, english, math, specialized,
+             score_scope, source, updated_at, match_note)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (
-                department_id,
-                score.get("year") or 0,
-                dept_enrollment_count or 0,
-                total or 0,
-                score.get("politics") or 0,
-                score.get("english") or 0,
-                score.get("special_one") or 0,
-                score.get("special_two") or 0,
-            ),
+            (department_id, *year_values),
         )
-    target.commit()
+        plan_key = target.execute(
+            "SELECT plan_key FROM workspace_plans WHERE plan_id = ?", (department_id,)
+        ).fetchone()[0]
+        target.execute(
+            """
+            INSERT INTO workspace_plan_years
+            (plan_key, year, enroll_count, min_score, politics, english, math, specialized,
+             score_scope, source, updated_at, match_note)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (plan_key, *year_values),
+        )
     return dept_min_score or 0
 
 
 def sync_major(source: sqlite3.Connection, target: sqlite3.Connection, major_code: str) -> dict[str, int]:
     clear_major(target, major_code)
+    now_str = datetime.now(timezone.utc).isoformat()
+    major_info = config.get_major(major_code) or {}
+    major_source = (
+        "realtime_major_catalog"
+        if config.realtime_majors_file.exists()
+        and bool(major_info.get("discipline_code") or major_info.get("category_code"))
+        else "static_major_catalog"
+    )
+    target.execute(
+        """
+        INSERT INTO workspace_majors
+        (major_code, name, degree_type, category_code, category_name,
+         discipline_code, discipline_name, source, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (major_code, str(major_info.get("name") or major_info.get("zymc") or major_code),
+         str(major_info.get("degree_type") or ""), str(major_info.get("category_code") or ""),
+         str(major_info.get("category_name") or ""), str(major_info.get("discipline_code") or ""),
+         str(major_info.get("discipline_name") or ""), major_source, now_str),
+    )
+    target.execute(
+        "INSERT INTO workspace_model_state (major_code, status) VALUES (?, 'writing')",
+        (major_code,),
+    )
 
     schools = load_schools(source, major_code)
     # 从种子文件回填 school_code/province_code/is_985/is_211 并修正科研院所 level
@@ -437,6 +664,8 @@ def sync_major(source: sqlite3.Connection, target: sqlite3.Connection, major_cod
     for school in schools:
         school_id = school["school_id"]
         departments = load_departments(source, school_id, major_code)
+        # 当前分数按学校+专业+年份聚合，每所学校只需查询一次并复用到各计划。
+        score_lines = load_score_lines(source, school_id, "", major_code)
 
         school_enroll_count = 0
         school_min_score: int | None = None
@@ -448,7 +677,6 @@ def sync_major(source: sqlite3.Connection, target: sqlite3.Connection, major_cod
             target_dept_id = insert_department(target, school_id, major_code, dept)
             inserted_departments += 1
 
-            score_lines = load_score_lines(source, school_id, dept["name"], major_code)
             dept_min_score = insert_department_years(
                 target, target_dept_id, dept_enrollment_count, score_lines
             )
@@ -462,8 +690,8 @@ def sync_major(source: sqlite3.Connection, target: sqlite3.Connection, major_cod
             INSERT INTO workspace_schools
             (school_id, major_code, name, province, level, min_score, enroll_count,
              self_scoring, doctoral_program, double_first_class,
-             school_code, province_code, is_985, is_211, display_order)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             school_code, province_code, is_985, is_211, display_order, source, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 school_id,
@@ -481,11 +709,57 @@ def sync_major(source: sqlite3.Connection, target: sqlite3.Connection, major_cod
                 int(bool(school.get("is_985"))),
                 int(bool(school.get("is_211"))),
                 int(school.get("display_order", 0) or 0),
+                "yanzhao",
+                school.get("updated_at", "") or "",
             ),
         )
         inserted_schools += 1
 
-    target.commit()
+    old_plan_count = target.execute(
+        "SELECT COUNT(*) FROM workspace_departments WHERE major_code = ?", (major_code,)
+    ).fetchone()[0]
+    new_plan_count = target.execute(
+        "SELECT COUNT(*) FROM workspace_plans WHERE major_code = ?", (major_code,)
+    ).fetchone()[0]
+    old_year_count = target.execute(
+        """SELECT COUNT(*) FROM workspace_department_years y
+           JOIN workspace_departments d ON d.department_id = y.department_id
+           WHERE d.major_code = ?""", (major_code,),
+    ).fetchone()[0]
+    new_year_count = target.execute(
+        """SELECT COUNT(*) FROM workspace_plan_years y
+           JOIN workspace_plans p ON p.plan_key = y.plan_key
+           WHERE p.major_code = ?""", (major_code,),
+    ).fetchone()[0]
+    invalid_plan_keys = target.execute(
+        """SELECT COUNT(*) FROM workspace_departments
+           WHERE major_code = ? AND (plan_key IS NULL OR TRIM(plan_key) = '')""",
+        (major_code,),
+    ).fetchone()[0]
+    duplicate_plan_keys = target.execute(
+        """SELECT COUNT(*) FROM (
+           SELECT plan_key FROM workspace_plans WHERE major_code = ?
+           GROUP BY plan_key HAVING COUNT(*) > 1)""", (major_code,),
+    ).fetchone()[0]
+    duplicate_years = target.execute(
+        """SELECT COUNT(*) FROM (
+           SELECT y.plan_key, y.year FROM workspace_plan_years y
+           JOIN workspace_plans p ON p.plan_key = y.plan_key WHERE p.major_code = ?
+           GROUP BY y.plan_key, y.year HAVING COUNT(*) > 1)""", (major_code,),
+    ).fetchone()[0]
+    if (old_plan_count != new_plan_count or old_year_count != new_year_count
+            or invalid_plan_keys or duplicate_plan_keys or duplicate_years):
+        raise RuntimeError(
+            f"规范化校验失败: plans={old_plan_count}/{new_plan_count}, "
+            f"years={old_year_count}/{new_year_count}, empty_keys={invalid_plan_keys}, "
+            f"duplicate_keys={duplicate_plan_keys}, duplicate_years={duplicate_years}"
+        )
+    target.execute(
+        """UPDATE workspace_model_state SET status='ready', old_plan_count=?, new_plan_count=?,
+           old_year_count=?, new_year_count=?, verified_at=?, error_message=''
+           WHERE major_code=?""",
+        (old_plan_count, new_plan_count, old_year_count, new_year_count, now_str, major_code),
+    )
     return {
         "schools": inserted_schools,
         "departments": inserted_departments,
@@ -512,7 +786,11 @@ def main() -> int:
             ensure_target_schema(target)
 
             if args.clear and not args.major_code:
-                for table in ["workspace_department_years", "workspace_departments", "workspace_schools"]:
+                for table in [
+                    "workspace_plan_years", "workspace_plans", "workspace_department_entities",
+                    "workspace_model_state", "workspace_majors", "workspace_department_years",
+                    "workspace_departments", "workspace_schools",
+                ]:
                     target.execute(f"DELETE FROM {table}")
                 target.commit()
 
@@ -526,7 +804,8 @@ def main() -> int:
                 major_codes = [r["major_code"] for r in cur.fetchall()]
 
             for major_code in major_codes:
-                stats = sync_major(source, target, major_code)
+                with target:
+                    stats = sync_major(source, target, major_code)
                 print(
                     f"同步完成 {major_code}: "
                     f"{stats['schools']} 所学校, "

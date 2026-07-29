@@ -1,6 +1,7 @@
 """YAM 命令行入口."""
 
 import asyncio
+import json
 import os
 import sys
 from typing import Optional
@@ -10,10 +11,12 @@ from rich.console import Console
 from rich.table import Table
 
 from yam.audit import DataAuditor
+from yam.browser import BrowserMissingError
 from yam.config import config
 from yam.crawler.dynamic import DynamicYanZhaoCrawler, LoginRequiredError
 from yam.crawler.yanzhao import YanZhaoCrawler
 from yam.crawler.zhangshangkaoyan import ZhangShangKaoYanCrawler
+from yam.diagnostics import log_exception, safe_message
 from yam.storage.db import Database
 from yam.utils import now_str
 from yam.verify import CrossSourceVerifier
@@ -62,15 +65,9 @@ def fetch(
     """抓取指定专业的数据."""
     major_info = config.get_major(major)
     if not major_info:
-        console.print(f"[red]错误：未知专业代码 {major}[/red]")
-        raise typer.Exit(1)
-
-    if not major_info.get("enabled"):
-        # 输出结构化 YAM_ERROR 让 Rust 端捕获并展示给用户
-        # 之前只是警告但继续执行，会导致后续采集流程异常卡住（ISSUE-022）
-        msg = f"专业 {major} {major_info['name']} 当前未启用，暂不支持采集，请选择其他专业"
+        msg = f"未知专业代码 {major}，请先更新专业目录"
         console.print(f"[red]错误：{msg}[/red]")
-        print(f"YAM_ERROR {msg}", flush=True)
+        print(f"YAM_ERROR UNKNOWN_MAJOR {msg}", flush=True)
         raise typer.Exit(1)
 
     target_years = years or [2026, 2025, 2024, 2023]
@@ -91,32 +88,41 @@ def fetch(
     is_desktop = bool(os.environ.get("YAM_DESKTOP"))
     try:
         schools = crawler.fetch_schools()
+    except BrowserMissingError as e:
+        msg = str(e)
+        console.print(f"[red]错误：{msg}[/red]")
+        print(f"YAM_ERROR BROWSER_MISSING {msg}", flush=True)
+        raise typer.Exit(1) from e
     except LoginRequiredError as e:
+        log_exception("fetch_login_required", e)
+        detail = safe_message(e, "登录状态不可用")
         if is_desktop:
-            console.print(
-                f"[red]错误：{e}\n"
-                f"请在桌面端完成登录向导后再试。[/red]"
-            )
-            print(f"YAM_ERROR 需要登录研招网：{e}", flush=True)
+            msg = f"需要登录研招网：{detail}。请在桌面端完成登录向导后再试"
         else:
-            console.print(
-                f"[red]错误：{e}\n"
-                f"请先在终端运行：yam fetch-seeds -m {major} --login 完成研招网登录后重试。[/red]"
-            )
-            print(f"YAM_ERROR 需要登录研招网：{e}。请先运行 yam fetch-seeds -m {major} --login", flush=True)
+            msg = f"需要登录研招网：{detail}。请先运行 yam fetch-seeds -m {major} --login"
+        console.print(f"[red]错误：{msg}[/red]")
+        print(f"YAM_ERROR LOGIN_REQUIRED {msg}", flush=True)
         raise typer.Exit(1) from e
     except RuntimeError as e:
-        console.print(f"[red]错误：{e}[/red]")
-        print(f"YAM_ERROR {e}", flush=True)
+        log_exception("fetch_unreachable", e)
+        msg = safe_message(e, "数据源暂时不可访问")
+        console.print(f"[red]错误：{msg}[/red]")
+        print(f"YAM_ERROR UNREACHABLE {msg}", flush=True)
         raise typer.Exit(1) from e
     except Exception as e:
-        # 捕获所有其他异常（网络超时、Playwright 错误等），
-        # 输出结构化错误而非让 Python 打印完整 traceback 到 stderr。
-        console.print(f"[red]采集异常：{e}[/red]")
-        print(f"YAM_ERROR 采集异常：{type(e).__name__}: {e}", flush=True)
+        log_exception("fetch_failed", e)
+        msg = safe_message(e, type(e).__name__)
+        console.print(f"[red]采集异常：{msg}[/red]")
+        print(f"YAM_ERROR FAILED {msg}", flush=True)
         raise typer.Exit(1) from e
     if limit > 0:
         schools = schools[:limit]
+
+    if not schools:
+        msg = f"专业 {major} {major_info['name']} 暂无公开招生院校数据"
+        console.print(f"[yellow]{msg}[/yellow]")
+        print(f"YAM_ERROR NO_PUBLIC_DATA {msg}", flush=True)
+        raise typer.Exit(1)
 
     console.print(f"共 {len(schools)} 所院校待抓取")
 
@@ -125,15 +131,28 @@ def fetch(
         return
 
     # ISSUE-029：httpx 并发采集（套用 ISSUE-023 验证可行的 15 并发 + 限流退避）
-    asyncio.run(
-        _fetch_async(
-            major=major,
-            major_info=major_info,
-            schools=schools,
-            target_years=target_years,
-            skip_scores=skip_scores,
+    try:
+        asyncio.run(
+            _fetch_async(
+                major=major,
+                major_info=major_info,
+                schools=schools,
+                target_years=target_years,
+                skip_scores=skip_scores,
+            )
         )
-    )
+    except RuntimeError as e:
+        log_exception("fetch_async_unreachable", e)
+        msg = safe_message(e, "数据源暂时不可访问")
+        console.print(f"[red]采集失败：{msg}[/red]")
+        print(f"YAM_ERROR UNREACHABLE {msg}", flush=True)
+        raise typer.Exit(1) from e
+    except Exception as e:
+        log_exception("fetch_async_failed", e)
+        msg = safe_message(e, type(e).__name__)
+        console.print(f"[red]采集失败：{msg}[/red]")
+        print(f"YAM_ERROR FAILED {msg}", flush=True)
+        raise typer.Exit(1) from e
 
 
 async def _fetch_async(
@@ -467,10 +486,16 @@ def search_majors(
 
     try:
         result = asyncio.run(run())
+    except BrowserMissingError as e:
+        msg = str(e)
+        print(f"YAM_ERROR BROWSER_MISSING {msg}", flush=True)
+        if not json_output:
+            console.print(f"[red]查询失败：{msg}[/red]")
+        raise typer.Exit(1) from e
     except Exception as e:
         msg = str(e)
         if json_output:
-            print(f'{{"error": "{msg}"}}', flush=True)
+            print(json.dumps({"error": msg}, ensure_ascii=False), flush=True)
         else:
             console.print(f"[red]查询失败：{msg}[/red]")
         raise typer.Exit(1)

@@ -32,6 +32,8 @@ ui = [
 ]
 dynamic = [
     "playwright>=1.40.0",
+    "httpx>=0.27.0",
+    "aiohttp>=3.9.0",
 ]
 dev = [
     "pytest>=8.0.0",
@@ -40,11 +42,6 @@ dev = [
 
 [project.scripts]
 yam = "yam.cli:app"
-
-[project.urls]
-Homepage = "https://github.com/yourname/kaoyan-yam"
-Repository = "https://github.com/yourname/kaoyan-yam"
-Issues = "https://github.com/yourname/kaoyan-yam/issues"
 
 [build-system]
 requires = ["hatchling"]

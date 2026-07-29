@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { RefreshCw, AlertCircle, CheckCircle2, X, Loader2, LogIn, LogOut, ShieldCheck, ShieldAlert } from 'lucide-react';
+import { RefreshCw, AlertCircle, CheckCircle2, X, Loader2, LogIn, LogOut, ShieldCheck, ShieldAlert, Database, FolderOpen, Trash2 } from 'lucide-react';
 import { useAppStore } from '../stores/appStore';
 import { TopNav } from '../components/TopNav';
 import {
@@ -11,8 +11,21 @@ import {
   checkLoginStatus,
   refreshLogin,
   clearLogin,
+  getDatabaseStatus,
+  getBackendRuntimeStatus,
+  getDiagnosticsInfo,
+  openDiagnosticsDirectory,
+  getExportSettings,
+  chooseExportDirectory,
+  clearExportDirectory,
+  getErrorMessage,
+  isTauri,
   type UpdateCatalogProgress,
   type LoginStatus,
+  type DatabaseStatus,
+  type BackendRuntimeStatus,
+  type DiagnosticsInfo,
+  type ExportSettings,
 } from '../lib/db';
 
 /**
@@ -35,6 +48,54 @@ export function SettingsPage() {
   const [clearing, setClearing] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [lastChecked, setLastChecked] = useState<Date | null>(null);
+  const [databaseStatus, setDatabaseStatus] = useState<DatabaseStatus | null>(null);
+  const [databaseError, setDatabaseError] = useState<string | null>(null);
+  const [backendStatus, setBackendStatus] = useState<BackendRuntimeStatus | null>(null);
+  const [backendError, setBackendError] = useState<string | null>(null);
+  const [diagnosticsInfo, setDiagnosticsInfo] = useState<DiagnosticsInfo | null>(null);
+  const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
+  const [diagnosticsOpening, setDiagnosticsOpening] = useState(false);
+  const [exportSettings, setExportSettings] = useState<ExportSettings | null>(null);
+  const [exportLoading, setExportLoading] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  const handleOpenDiagnosticsDirectory = async () => {
+    setDiagnosticsOpening(true);
+    setDiagnosticsError(null);
+    try {
+      await openDiagnosticsDirectory();
+    } catch (e) {
+      setDiagnosticsError(getErrorMessage(e, '打开诊断日志目录失败'));
+    } finally {
+      setDiagnosticsOpening(false);
+    }
+  };
+
+  const handleChooseExportDirectory = async () => {
+    setExportLoading(true);
+    setExportError(null);
+    try {
+      await chooseExportDirectory();
+      setExportSettings(await getExportSettings());
+    } catch (e) {
+      setExportError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setExportLoading(false);
+    }
+  };
+
+  const handleClearExportDirectory = async () => {
+    setExportLoading(true);
+    setExportError(null);
+    try {
+      await clearExportDirectory();
+      setExportSettings(await getExportSettings());
+    } catch (e) {
+      setExportError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setExportLoading(false);
+    }
+  };
 
   const handleCheckLogin = async () => {
     setLoginLoading(true);
@@ -90,9 +151,21 @@ export function SettingsPage() {
     }
   };
 
-  // 初始化时检查登录状态
+  // 初始化时检查登录状态和数据库启动状态
   useEffect(() => {
     handleCheckLogin();
+    getDatabaseStatus()
+      .then(setDatabaseStatus)
+      .catch((e) => setDatabaseError(getErrorMessage(e, '加载数据库状态失败')));
+    getBackendRuntimeStatus()
+      .then(setBackendStatus)
+      .catch((e) => setBackendError(getErrorMessage(e, '加载后端运行状态失败')));
+    getDiagnosticsInfo()
+      .then(setDiagnosticsInfo)
+      .catch((e) => setDiagnosticsError(getErrorMessage(e, '加载诊断日志信息失败')));
+    getExportSettings()
+      .then(setExportSettings)
+      .catch((e) => setExportError(e instanceof Error ? e.message : String(e)));
   }, []);
 
   // 拉取初始进度 + 监听事件
@@ -109,7 +182,7 @@ export function SettingsPage() {
         // ignore
       }
 
-      if (typeof window !== 'undefined' && window.__TAURI_INTERNALS__) {
+      if (isTauri) {
         const { listen } = await import('@tauri-apps/api/event');
         const unlistenProgress = await listen<UpdateCatalogProgress>(
           'catalog-update-progress',
@@ -166,6 +239,193 @@ export function SettingsPage() {
       <div className="max-w-4xl mx-auto px-6 py-8">
         <h1 className="text-2xl font-bold text-gray-900 mb-1">设置</h1>
         <p className="text-gray-500 mb-8">应用功能与数据维护。</p>
+
+        <section className={`border rounded-lg p-6 mb-6 ${databaseStatus?.recovered ? 'border-amber-300 bg-amber-50/40' : 'border-gray-200'}`}>
+          <div className="flex items-start gap-4">
+            <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 ${databaseStatus?.recovered ? 'bg-amber-100' : 'bg-emerald-50'}`}>
+              <Database className={`w-5 h-5 ${databaseStatus?.recovered ? 'text-amber-700' : 'text-emerald-600'}`} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h2 className="text-lg font-semibold text-gray-900 mb-1">本地数据</h2>
+              {!databaseStatus && !databaseError && (
+                <div className="inline-flex items-center gap-2 text-sm text-gray-500">
+                  <Loader2 size={14} className="animate-spin" />
+                  正在加载数据库状态...
+                </div>
+              )}
+              {databaseStatus && (
+                <>
+                  <div className="flex items-center gap-2 my-3">
+                    {databaseStatus.recovered ? (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-100 text-amber-800 border border-amber-300">
+                        <AlertCircle size={12} />
+                        已从损坏状态恢复
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
+                        <CheckCircle2 size={12} />
+                        数据库状态正常
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-sm text-gray-600">
+                    数据库路径：
+                    <code className="break-all text-gray-800">{databaseStatus.database_path}</code>
+                  </div>
+                  {databaseStatus.recovered && (
+                    <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 leading-relaxed">
+                      <p className="font-medium">检测到数据库损坏，已创建新库，原库已备份。</p>
+                      <p className="mt-1">现有工作区可能为空，可重新同步；不会自动删除备份文件。</p>
+                      {databaseStatus.backup_path && (
+                        <p className="mt-2">
+                          备份路径：
+                          <code className="break-all text-amber-950">{databaseStatus.backup_path}</code>
+                        </p>
+                      )}
+                      {databaseStatus.message && <p className="mt-2 text-xs text-amber-800">{databaseStatus.message}</p>}
+                    </div>
+                  )}
+                </>
+              )}
+              {databaseError && (
+                <div className="mt-3 text-xs text-red-600 bg-red-50 border border-red-200 rounded p-2">
+                  {databaseError}
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <section className={`border rounded-lg p-6 mb-6 ${backendStatus && (!backendStatus.available || backendStatus.browser !== 'msedge') ? 'border-amber-300 bg-amber-50/40' : 'border-gray-200'}`}>
+          <div className="flex items-start gap-4">
+            <div className="w-10 h-10 bg-blue-50 rounded-lg flex items-center justify-center flex-shrink-0">
+              <Database className="w-5 h-5 text-[#1e3a5f]" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h2 className="text-lg font-semibold text-gray-900 mb-1">本地后端</h2>
+              {!backendStatus && !backendError && (
+                <div className="inline-flex items-center gap-2 text-sm text-gray-500 mt-3">
+                  <Loader2 size={14} className="animate-spin" />
+                  正在检查后端和 Microsoft Edge...
+                </div>
+              )}
+              {backendStatus && (
+                <div className="space-y-2 mt-3 text-sm text-gray-600">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium border ${backendStatus.available ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>
+                      {backendStatus.available ? <CheckCircle2 size={12} /> : <AlertCircle size={12} />}
+                      {backendStatus.mode === 'bundled' ? '内置后端' : '开发后端'}{backendStatus.available ? '可用' : '不可用'}
+                    </span>
+                    <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium border ${backendStatus.browser === 'msedge' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>
+                      {backendStatus.browser === 'msedge' ? <CheckCircle2 size={12} /> : <AlertCircle size={12} />}
+                      Microsoft Edge {backendStatus.browser === 'msedge' ? '可用' : '不可用'}
+                    </span>
+                  </div>
+                  <div>后端程序：<code className="break-all text-gray-800">{backendStatus.executable_path}</code></div>
+                  <p className={backendStatus.available && backendStatus.browser === 'msedge' ? 'text-gray-500' : 'text-amber-800'}>{backendStatus.message}</p>
+                </div>
+              )}
+              {backendError && <div className="mt-3 text-xs text-red-600 bg-red-50 border border-red-200 rounded p-2">{backendError}</div>}
+            </div>
+          </div>
+        </section>
+
+        <section className="border border-gray-200 rounded-lg p-6 mb-6">
+          <div className="flex items-start gap-4">
+            <div className="w-10 h-10 bg-blue-50 rounded-lg flex items-center justify-center flex-shrink-0">
+              <FolderOpen className="w-5 h-5 text-[#1e3a5f]" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h2 className="text-lg font-semibold text-gray-900 mb-1">诊断日志</h2>
+              <p className="text-sm text-gray-500 mb-4 leading-relaxed">
+                日志只保存在本机，不会自动上传。
+              </p>
+              {!diagnosticsInfo && !diagnosticsError ? (
+                <div className="inline-flex items-center gap-2 text-sm text-gray-500">
+                  <Loader2 size={14} className="animate-spin" />
+                  正在加载日志路径...
+                </div>
+              ) : diagnosticsInfo && (
+                <div className="space-y-2 text-sm text-gray-600 mb-4">
+                  <div>日志目录：<code className="break-all text-gray-800">{diagnosticsInfo.log_directory}</code></div>
+                  <div>桌面端日志：<code className="break-all text-gray-800">{diagnosticsInfo.desktop_log_path}</code></div>
+                  <div>Python 日志：<code className="break-all text-gray-800">{diagnosticsInfo.python_log_path}</code></div>
+                </div>
+              )}
+              <motion.button
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                onClick={handleOpenDiagnosticsDirectory}
+                disabled={diagnosticsOpening}
+                className="inline-flex items-center gap-2 px-4 py-2 bg-[#1e3a5f] text-white rounded-lg text-sm font-medium hover:bg-[#162d4a] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {diagnosticsOpening ? <Loader2 size={14} className="animate-spin" /> : <FolderOpen size={14} />}
+                打开日志目录
+              </motion.button>
+              {diagnosticsError && (
+                <div className="mt-3 text-xs text-red-600 bg-red-50 border border-red-200 rounded p-2">
+                  {diagnosticsError}
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <section className="border border-gray-200 rounded-lg p-6 mb-6">
+          <div className="flex items-start gap-4">
+            <div className="w-10 h-10 bg-blue-50 rounded-lg flex items-center justify-center flex-shrink-0">
+              <FolderOpen className="w-5 h-5 text-[#1e3a5f]" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h2 className="text-lg font-semibold text-gray-900 mb-1">导出</h2>
+              <p className="text-sm text-gray-500 mb-4 leading-relaxed">
+                设置 CSV、JSON 和 Excel 文件的默认导出目录。未设置或目录失效时，每次导出都会弹出保存对话框。
+              </p>
+              {!exportSettings && !exportError ? (
+                <div className="inline-flex items-center gap-2 text-sm text-gray-500">
+                  <Loader2 size={14} className="animate-spin" />
+                  正在加载导出设置...
+                </div>
+              ) : (
+                <div className="text-sm text-gray-600 mb-4">
+                  当前目录：{' '}
+                  {exportSettings?.export_directory ? (
+                    <code className="break-all text-gray-800">{exportSettings.export_directory}</code>
+                  ) : (
+                    <span className="text-gray-500">未设置</span>
+                  )}
+                </div>
+              )}
+              <div className="flex items-center gap-3 flex-wrap">
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={handleChooseExportDirectory}
+                  disabled={exportLoading}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-[#1e3a5f] text-white rounded-lg text-sm font-medium hover:bg-[#162d4a] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {exportLoading ? <Loader2 size={14} className="animate-spin" /> : <FolderOpen size={14} />}
+                  选择目录
+                </motion.button>
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={handleClearExportDirectory}
+                  disabled={exportLoading || !exportSettings?.export_directory}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-red-50 text-red-600 border border-red-200 rounded-lg text-sm font-medium hover:bg-red-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <Trash2 size={14} />
+                  清除设置
+                </motion.button>
+              </div>
+              {exportError && (
+                <div className="mt-3 text-xs text-red-600 bg-red-50 border border-red-200 rounded p-2">
+                  {exportError}
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
 
         {/* ISSUE-024：登录状态卡片 */}
         <section className="border border-gray-200 rounded-lg p-6 mb-6">

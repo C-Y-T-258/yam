@@ -10,12 +10,14 @@ import {
   syncWorkspaceData,
   fetchAvailableMajors,
   cancelCrawl,
-  resetCrawl,
+  checkLoginStatus,
   loginYanzhao,
+  getCrawlErrorPresentation,
+  normalizeAppError,
   type CrawlProgress,
 } from '../lib/db';
 
-type CrawlStatus = 'idle' | 'checking' | 'running' | 'done' | 'error' | 'cancelled' | 'no-target';
+type PageCrawlStatus = 'idle' | 'checking' | 'running' | 'syncing' | 'completed' | 'failed' | 'cancelled' | 'no-target';
 
 function getNowTime(): string {
   const now = new Date();
@@ -74,8 +76,9 @@ export function CrawlingPage() {
   } = useAppStore();
   const logContainerRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
+  const [errorCode, setErrorCode] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
-  const [status, setStatus] = useState<CrawlStatus>('idle');
+  const [status, setStatus] = useState<PageCrawlStatus>('idle');
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const lastSchoolRef = useRef<string>('');
@@ -92,17 +95,35 @@ export function CrawlingPage() {
     if (isLaunchingRef.current) return;
     isLaunchingRef.current = true;
     try {
-      await resetCrawl();
-      await runCrawl(crawlTarget.code);
+      const loginStatus = await checkLoginStatus();
+      if (!loginStatus.logged_in) {
+        isLaunchingRef.current = false;
+        setStatus('checking');
+        setErrorCode('LOGIN_REQUIRED');
+        setError('未检测到有效登录凭证');
+        setShowLoginModal(true);
+        addCrawlingLog('未检测到有效登录凭证，请先登录研招网');
+        return;
+      }
+
+      await runCrawl(crawlTarget.code, crawlTarget.force === true);
+      setErrorCode(null);
+      setError(null);
       setStatus('running');
+      if (crawlTarget.force) {
+        setCrawlTarget({ ...crawlTarget, force: false });
+      }
       startTimeRef.current = Date.now();
       setElapsed(0);
       addCrawlingLog(`启动采集任务：${crawlTarget.code}`);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setError(msg);
-      addCrawlingLog(`启动采集失败：${msg}`);
-      if (isLoginError(msg)) {
+      isLaunchingRef.current = false;
+      const appError = normalizeAppError(err, '启动采集失败');
+      setStatus('failed');
+      setErrorCode(appError.code === 'UNKNOWN' ? null : appError.code);
+      setError(appError.message);
+      addCrawlingLog(`启动采集失败：${appError.message}`);
+      if (appError.code === 'LOGIN_REQUIRED' || (appError.code === 'UNKNOWN' && isLoginError(appError.message))) {
         setShowLoginModal(true);
       }
     }
@@ -116,7 +137,7 @@ export function CrawlingPage() {
       // 如果没有，显示友好的空状态页面（而非静默重定向）
       getCrawlProgress()
         .then((p) => {
-          if (p.running && p.major_code) {
+          if (p.status === 'running' && p.major_code) {
             const major = crawledMajors.find((m) => m.code === p.major_code);
             if (major) {
               setCrawlTarget({ code: major.code, name: major.name });
@@ -141,11 +162,13 @@ export function CrawlingPage() {
       isPaused: false,
     });
     lastSchoolRef.current = '';
+    setErrorCode(null);
+    setError(null);
     setStatus('checking');
 
     getCrawlProgress()
       .then((p) => {
-        if (p.running) {
+        if (p.status === 'running') {
           if (p.major_code === crawlTarget.code) {
             // 后端正在采集同一专业：直接恢复监听，不打印"检测到已有..."日志。
             // 这样切出 CrawlingPage 再切回不会出现冗余提示（ISSUE-021）。
@@ -153,32 +176,35 @@ export function CrawlingPage() {
             setStatus('running');
           } else {
             const msg = `已有其他采集任务在运行（${p.major_code}）`;
-            setStatus('error');
+            setStatus('failed');
             setError(msg);
             addCrawlingLog(msg);
           }
           return;
         }
 
-        if (p.done) {
+        if (p.status === 'completed' || p.status === 'failed' || p.status === 'cancelled') {
           if (p.major_code === crawlTarget.code) {
-            addCrawlingLog(`检测到上次采集已完成：成功 ${p.success} 所，失败 ${p.failed} 所，跳过 ${p.skipped} 所`);
-            if (p.error) {
-              setStatus('error');
-              setError(p.error);
-              addCrawlingLog(`上次采集错误：${p.error}`);
-              if (isLoginError(p.error)) {
+            addCrawlingLog(`检测到上次采集已结束：成功 ${p.success} 所，失败 ${p.failed} 所，跳过 ${p.skipped} 所`);
+            if (p.status === 'failed' || p.status === 'cancelled') {
+              const progressError = p.error || (p.status === 'cancelled' ? '采集已取消' : '采集失败，未返回错误详情');
+              setStatus(p.status);
+              setErrorCode(p.error_code);
+              setError(progressError);
+              addCrawlingLog(`上次采集错误：${progressError}`);
+              if (p.error_code === 'LOGIN_REQUIRED' || (!p.error_code && isLoginError(progressError))) {
                 setShowLoginModal(true);
               }
             } else if (p.success > 0) {
               addCrawlingLog('正在同步数据到工作区...');
               handleSync();
             } else {
-              setStatus('error');
+              setStatus('failed');
+              setErrorCode(p.error_code);
               setError('上次采集未取得数据，请取消后重新选择专业');
             }
           } else {
-            // 不同专业：重置后启动新采集
+            // 不同专业的旧任务已结束：启动当前专业。
             startCrawl();
           }
           return;
@@ -218,13 +244,15 @@ export function CrawlingPage() {
         const percent = p.total > 0 ? Math.round((p.current / p.total) * 100) : 0;
 
         let displaySchool = '准备中...';
-        if (p.done) {
-          displaySchool = p.error ? '采集已结束' : '采集完成';
+        if (p.status === 'completed') {
+          displaySchool = '采集完成';
+        } else if (p.status === 'failed' || p.status === 'cancelled') {
+          displaySchool = '采集已结束';
         } else if (p.total > 0) {
           displaySchool = p.current_name || `进度 ${p.current}/${p.total}`;
         } else if (p.current_name) {
           displaySchool = p.current_name;
-        } else if (p.running) {
+        } else if (p.status === 'running') {
           displaySchool = '正在获取院校列表...';
         }
 
@@ -239,36 +267,37 @@ export function CrawlingPage() {
           lastSchoolRef.current = p.current_name;
         }
 
+        if (p.error_code !== errorCode) {
+          setErrorCode(p.error_code);
+        }
         if (p.error && p.error !== error) {
           setError(p.error);
           addCrawlingLog(`错误：${p.error}`, 'error');
         }
 
-        if (p.done) {
+        if (p.status !== 'running' && p.status !== 'idle') {
           if (intervalRef.current) {
             clearInterval(intervalRef.current);
             intervalRef.current = null;
           }
-          const successLevel = p.failed === 0 ? 'success' : (p.success > 0 ? 'info' : 'error');
+          const successLevel = p.status === 'completed' ? 'success' : 'error';
           addCrawlingLog(`采集结束：成功 ${p.success} 所，失败 ${p.failed} 所，跳过 ${p.skipped} 所`, successLevel);
-          if (p.error) {
-            setStatus('error');
-            setError(p.error);
-            addCrawlingLog(`采集失败：${p.error}，专业未添加到管理列表`, 'error');
-            if (isLoginError(p.error)) {
+          if (p.status === 'failed' || p.status === 'cancelled') {
+            const progressError = p.error || (p.status === 'cancelled' ? '采集已取消' : '采集失败，未返回错误详情');
+            setStatus(p.status);
+            setErrorCode(p.error_code);
+            setError(progressError);
+            addCrawlingLog(`采集失败：${progressError}，专业未添加到管理列表`, 'error');
+            if (p.error_code === 'LOGIN_REQUIRED' || (!p.error_code && isLoginError(progressError))) {
               setShowLoginModal(true);
             }
-          } else if (p.success === 0) {
-            const msg = '采集未取得任何数据，专业未添加到管理列表';
-            setStatus('error');
-            setError(msg);
-            addCrawlingLog(msg, 'error');
           } else {
             await handleSync();
           }
         }
       } catch (err) {
-        addCrawlingLog(`获取进度失败：${err instanceof Error ? err.message : String(err)}`, 'error');
+        const appError = normalizeAppError(err, '获取采集进度失败');
+        addCrawlingLog(`获取进度失败：${appError.message}`, 'error');
       }
     }, 1000);
 
@@ -320,7 +349,7 @@ export function CrawlingPage() {
   const handleSync = async () => {
     if (!crawlTarget) return;
     setSyncing(true);
-    setStatus('done');
+    setStatus('syncing');
     addCrawlingLog('正在同步数据到工作区...');
     try {
       await syncWorkspaceData(crawlTarget.code);
@@ -338,7 +367,7 @@ export function CrawlingPage() {
 
       if (schoolCount === 0) {
         addCrawlingLog(`同步完成，但专业 ${crawlTarget.code} 无数据，未添加到管理列表`);
-        setStatus('error');
+        setStatus('failed');
         setError('同步后无数据，请确认采集任务是否成功完成');
         setSyncing(false);
         return;
@@ -367,10 +396,11 @@ export function CrawlingPage() {
         setPage('data-ready');
       }, 1000);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      addCrawlingLog(`同步失败：${msg}`);
-      setStatus('error');
-      setError(msg);
+      const appError = normalizeAppError(err, '同步工作区数据失败');
+      addCrawlingLog(`同步失败：${appError.message}`);
+      setStatus('failed');
+      setErrorCode(appError.code === 'UNKNOWN' ? 'FAILED' : appError.code);
+      setError(appError.message);
       setSyncing(false);
     }
   };
@@ -384,6 +414,7 @@ export function CrawlingPage() {
       if (result.success) {
         addCrawlingLog(`登录成功，已抓取 ${result.school_count} 所院校种子`);
         setShowLoginModal(false);
+        setErrorCode(null);
         setError(null);
         isLaunchingRef.current = false;
         await startCrawl();
@@ -401,9 +432,19 @@ export function CrawlingPage() {
     }
   };
 
+  const handleRetryFailed = async () => {
+    setErrorCode(null);
+    setError(null);
+    setStatus('checking');
+    isLaunchingRef.current = false;
+    addCrawlingLog('正在从上次成功位置继续采集...');
+    await startCrawl();
+  };
+
   const handleCancelLogin = () => {
     setShowLoginModal(false);
-    setStatus('error');
+    setStatus('cancelled');
+    setErrorCode(null);
     setError('已取消登录，采集未完成');
     addCrawlingLog('用户取消登录');
   };
@@ -432,6 +473,27 @@ export function CrawlingPage() {
       intervalRef.current = null;
     }
     setPage('data-ready');
+  };
+
+  const errorPresentation = error
+    ? getCrawlErrorPresentation(
+        errorCode,
+        status === 'cancelled' ? 'cancelled' : 'failed',
+        error,
+      )
+    : null;
+
+  const handleErrorAction = () => {
+    if (!errorPresentation) return;
+    if (errorPresentation.actionType === 'login') {
+      setShowLoginModal(true);
+    } else if (errorPresentation.actionType === 'retry') {
+      void handleRetryFailed();
+    } else {
+      setCrawlingProgress(null);
+      setCrawlTarget(null);
+      setPage(errorPresentation.actionType);
+    }
   };
 
   const handleClearLogs = () => {
@@ -543,17 +605,33 @@ export function CrawlingPage() {
       {/* Content */}
       <div className="max-w-4xl mx-auto px-6 py-8">
         {/* Error Banner */}
-        {error && (
-          <div className={`mb-6 rounded-lg px-4 py-3 border ${isLoginError(error) ? 'bg-amber-50 border-amber-200' : 'bg-red-50 border-red-200'}`}>
+        {error && errorPresentation && (
+          <div className={`mb-6 rounded-lg px-4 py-3 border ${
+            errorPresentation.tone === 'error'
+              ? 'bg-red-50 border-red-200'
+              : errorPresentation.tone === 'info'
+                ? 'bg-blue-50 border-blue-200'
+                : 'bg-amber-50 border-amber-200'
+          }`}>
             <div className="flex items-start gap-2">
-              {isLoginError(error) ? <AlertCircle size={18} className="text-amber-500 flex-shrink-0 mt-0.5" /> : <X size={18} className="text-red-500 flex-shrink-0 mt-0.5" />}
-              <div className="flex-1">
-                <div className={`text-sm font-medium ${isLoginError(error) ? 'text-amber-700' : 'text-red-700'}`}>
-                  {isLoginError(error) ? '需要登录' : '采集失败'}
-                </div>
-                <div className={`text-sm mt-1 ${isLoginError(error) ? 'text-amber-600' : 'text-red-600'}`}>
-                  {error}
-                </div>
+              <AlertCircle size={18} className={`flex-shrink-0 mt-0.5 ${
+                errorPresentation.tone === 'error'
+                  ? 'text-red-500'
+                  : errorPresentation.tone === 'info'
+                    ? 'text-blue-500'
+                    : 'text-amber-500'
+              }`} />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium text-gray-800">{errorPresentation.title}</div>
+                <div className="text-sm mt-1 text-gray-700">发生了什么：{error}</div>
+                <div className="text-sm mt-1 text-gray-600">影响：{errorPresentation.impact}</div>
+                <div className="text-sm mt-1 text-gray-600">下一步：{errorPresentation.action}</div>
+                <button
+                  onClick={handleErrorAction}
+                  className="mt-3 px-3 py-1.5 text-sm font-medium rounded border border-current text-[#1e3a5f] hover:bg-white transition-colors"
+                >
+                  {errorPresentation.actionLabel}
+                </button>
               </div>
             </div>
           </div>

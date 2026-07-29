@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿import { useState, useEffect, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Search, RefreshCw, Download,
@@ -9,15 +9,25 @@ import { useAppStore } from '../stores/appStore';
 import { toast } from '../stores/toastStore';
 import { TopNav } from '../components/TopNav';
 import { WorkspaceFilterPanel } from '../components/WorkspaceFilterPanel';
+import { TrendChart } from '../components/TrendChart';
 import {
   fetchWorkspaceData,
+  fetchWorkspaceSchoolsPage,
+  fetchWorkspaceDepartments,
   fetchWorkspaceFilterOptions,
   fetchWorkspacePlans,
+  fetchWorkspacePlansPage,
   fetchFavorites,
+  fetchPlanFavorites,
   toggleFavorite as toggleFavoriteApi,
+  togglePlanFavorite as togglePlanFavoriteApi,
+  planFavoriteKey,
   addRecentView,
   syncWorkspaceData,
+  startPlanExport,
+  getExportProgress,
   isTauri,
+  type ExportProgress,
   type WorkspaceSchool,
   type WorkspaceDepartment,
   type WorkspacePlanRow,
@@ -25,6 +35,15 @@ import {
   type FilterOptions,
   type WorkspaceFilters,
 } from '../lib/db';
+import {
+  getDirectionLabel,
+  getPlanExportCells,
+  getScoreScopeLabel,
+  getTrendScaleDomain,
+  getWorkspaceLoadingMode,
+  getWorkspaceRefreshError,
+  type ExportCell,
+} from '../lib/workspace-utils';
 
 interface YearData {
   year: number;
@@ -41,7 +60,6 @@ interface AggregatedSchool extends WorkspaceSchool {
 
 // ISSUE-028：导出数据结构。CSV/Excel 共用 cellRows（已字符串化的扁平行），
 // JSON 用 jsonRows（含完整原始字段 + major_name）。
-type ExportCell = string | number; // 布尔字段已转"是"/"否"字符串
 type ExportFormat = 'csv' | 'excel' | 'json';
 interface ExportData {
   headers: string[];
@@ -66,7 +84,7 @@ interface TrendChartProps {
   chartHeight?: number;
 }
 
-function TrendChart({ years, dataKey, title, chartHeight = 260 }: TrendChartProps) {
+export function LegacyTrendChart({ years, dataKey, title, chartHeight = 260 }: TrendChartProps) {
   const data = [...years].reverse();
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   const valueLabel = dataKey === 'min_score' ? '最低分' : '招生人数';
@@ -80,17 +98,7 @@ function TrendChart({ years, dataKey, title, chartHeight = 260 }: TrendChartProp
   }
 
   const values = data.map((d) => d[dataKey]);
-  const minValue = Math.min(...values);
-  const maxValue = Math.max(...values);
-  const isFlat = minValue === maxValue;
-
-  // Y 轴范围：按实际数据加 12% padding，避免折线贴边；
-  // 若数据完全相同，则构造一个对称区间让点居中显示。
-  const rawSpan = Math.max(1, maxValue - minValue);
-  const padding = isFlat ? Math.max(1, Math.abs(minValue) * 0.25) : rawSpan * 0.12;
-  const minScale = minValue - padding;
-  const maxScale = maxValue + padding;
-  const range = maxScale - minScale || 1;
+  const { minScale, maxScale, range, isFlat } = getTrendScaleDomain(values);
 
   // 画布比例 21:13（约 1.62:1），比原来的 2:1 更竖，折线更有起伏感；
   // 同时限制卡片最大宽度，避免在宽屏上被横向拉成"大饼"。
@@ -327,7 +335,7 @@ function TrendChart({ years, dataKey, title, chartHeight = 260 }: TrendChartProp
 }
 
 interface WorkspacePageProps {
-  onOpenCompare?: () => void;
+  onOpenCompare?: (rows: WorkspacePlanRow[]) => void;
   onOpenManageMajors?: () => void;
   refreshNonce?: number;
 }
@@ -364,20 +372,37 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
 
   const [expandedSchoolIds, setExpandedSchoolIds] = useState<Set<string>>(new Set());
   const [departmentsBySchool, setDepartmentsBySchool] = useState<Record<string, WorkspaceDepartment[]>>({});
-  const [loadingSchoolIds, setLoadingSchoolIds] = useState<Set<string>>(new Set());
-  const [expandedDeptBySchool, setExpandedDeptBySchool] = useState<Record<string, number>>({});
-  const [activeYearBySchool, setActiveYearBySchool] = useState<Record<string, number>>({});
-  const [showHistoricalBySchool, setShowHistoricalBySchool] = useState<Record<string, boolean>>({});
+  const [loadingDepartmentKeys, setLoadingDepartmentKeys] = useState<Set<string>>(new Set());
+  const departmentsCacheRef = useRef<Map<string, WorkspaceDepartment[]>>(new Map());
+  const departmentsInFlightRef = useRef<Map<string, Promise<WorkspaceDepartment[]>>>(new Map());
+  const departmentsCacheGenerationRef = useRef(0);
+  const activeMajorCodesKeyRef = useRef('');
+  const [expandedPlanKeys, setExpandedPlanKeys] = useState<Set<string>>(new Set());
+  const [activeYearByPlan, setActiveYearByPlan] = useState<Record<string, number>>({});
+  const [historicalPlanKeys, setHistoricalPlanKeys] = useState<Set<string>>(new Set());
 
   const [schools, setSchools] = useState<WorkspaceSchool[]>([]);
+  const [schoolTotal, setSchoolTotal] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
+  const [isSchoolRefreshing, setIsSchoolRefreshing] = useState(false);
+  const schoolRequestIdRef = useRef(0);
+  const lastSchoolQueryKeyRef = useRef('');
+  const schoolsRef = useRef<WorkspaceSchool[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   // ISSUE-027 阶段 2：招生计划视图状态
   const [plans, setPlans] = useState<WorkspacePlanRow[]>([]);
+  const [isPlanLoading, setIsPlanLoading] = useState(false);
+  const [planTotal, setPlanTotal] = useState(0);
+  const [planFavorites, setPlanFavorites] = useState<Set<string>>(new Set());
+  const [selectedPlanRows, setSelectedPlanRows] = useState<Map<string, WorkspacePlanRow>>(new Map());
   const [planPageNum, setPlanPageNum] = useState(1);
   const [planPageSize, setPlanPageSize] = useState(20);
-  const [expandedPlanId, setExpandedPlanId] = useState<number | null>(null);
+  const [planReloadNonce, setPlanReloadNonce] = useState(0);
+  const planRequestIdRef = useRef(0);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
+  const [expandedPlanKeysInTable, setExpandedPlanKeysInTable] = useState<Set<string>>(new Set());
   // UX-4.3：招生计划视图紧凑/舒适切换。紧凑模式隐藏低频列（研究方向、考试科目），
   // 展开行仍可见全部信息。默认舒适视图。
   const [planCompact, setPlanCompact] = useState(false);
@@ -389,6 +414,7 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
   //   isRefreshing = 长耗时 sync 循环（页面保持可交互，旧列表可见，顶部显示进度+取消）
   //   isLoading    = 短耗时 DB 查询（loadWorkspaceData / loadPlans 内部设置）
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [queryReadyMajorKey, setQueryReadyMajorKey] = useState('');
   const [refreshProgress, setRefreshProgress] = useState<{ current: number; total: number; failed: number } | null>(null);
   const cancelRefreshRef = useRef(false);
   // UX-6.2：同步失败的专业 { code: { name, error } }，用于 Tab 红点 + 单独重试（6.2 接入 UI）
@@ -438,6 +464,8 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
     : '';
   // activeMajorCodesKey：稳定字符串，用作 useEffect 依赖（避免数组引用变化触发重复加载）
   const activeMajorCodesKey = activeMajorCodes.join(',');
+  activeMajorCodesKeyRef.current = activeMajorCodesKey;
+  useEffect(() => { schoolsRef.current = schools; }, [schools]);
 
   // ISSUE-027 多选：selectedMajorCodes 里不在 visibleMajors 的 stale code 清理掉。
   // ManageMajorsModal 删除某专业后，selectedMajorCodes 可能残留其 code，此处过滤。
@@ -462,72 +490,154 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
     }
   };
 
-  const loadWorkspaceData = async (schoolId: string = '', quiet = false): Promise<WorkspaceData | null> => {
-    if (activeMajorCodes.length === 0) {
-      setSchools([]);
-      return null;
-    }
-    if (!quiet) setIsLoading(true);
-    setError(null);
-    setRetryAction(null);
+  const loadPlanFavorites = async () => {
     try {
-      const data = await fetchWorkspaceData(schoolId, activeMajorCodes, filters);
-      setSchools(data.schools);
-      if (schoolId) {
-        setDepartmentsBySchool((prev) => ({ ...prev, [schoolId]: data.departments }));
-      }
-      return data;
+      const data = await fetchPlanFavorites();
+      setPlanFavorites(new Set(data.map(planFavoriteKey)));
     } catch (err) {
-      // UX-6.1：数据加载失败 → 横幅（兜底）+ toast + 局部重试按钮
-      reportError(
-        err instanceof Error ? err.message : '加载数据失败',
-        () => loadWorkspaceData(schoolId)
-      );
-      return null;
-    } finally {
-      if (!quiet) setIsLoading(false);
+      console.error('加载计划收藏失败:', err);
     }
   };
 
-  // UX-4.1：展开状态持久化。expandedSchoolId 写入 localStorage，切换专业/刷新后恢复。
-  // expandedSchoolIdRef 让 effect/handleSync 读取最新值而不进入依赖数组。
-  const EXPANDED_KEY = 'yam-expanded-school';
+  const loadWorkspaceData = async (
+    majorCodes = activeMajorCodes,
+    queryFilters = filters,
+    page = currentPageNum,
+    size = pageSize
+  ): Promise<WorkspaceData | null> => {
+    if (majorCodes.length === 0) return null;
+    const queryKey = JSON.stringify([majorCodes, queryFilters, page, size]);
+    lastSchoolQueryKeyRef.current = queryKey;
+    const requestId = ++schoolRequestIdRef.current;
+    const hasData = schoolsRef.current.length > 0;
+    const loadingMode = getWorkspaceLoadingMode(hasData, true);
+    if (loadingMode === 'initial') setIsLoading(true);
+    if (loadingMode === 'refreshing') setIsSchoolRefreshing(true);
+    setError(null);
+    setRetryAction(null);
+    try {
+      const data = await fetchWorkspaceSchoolsPage(majorCodes, queryFilters, page, size);
+      if (requestId !== schoolRequestIdRef.current) return null;
+      schoolsRef.current = data.items;
+      setSchools(data.items);
+      setSchoolTotal(data.total);
+      const returnedIds = new Set(data.items.map((school) => school.school_id));
+      expandedSchoolIdsRef.current.forEach((schoolId) => {
+        if (returnedIds.has(schoolId)) void loadSchoolDepartments(schoolId);
+      });
+      return { schools: data.items, departments: [] };
+    } catch (err) {
+      if (requestId !== schoolRequestIdRef.current) return null;
+      const message = err instanceof Error ? err.message : '加载数据失败';
+      reportError(
+        getWorkspaceRefreshError(message, hasData),
+        () => loadWorkspaceData(majorCodes, queryFilters, page, size)
+      );
+      return null;
+    } finally {
+      if (requestId === schoolRequestIdRef.current) {
+        setIsLoading(false);
+        setIsSchoolRefreshing(false);
+      }
+    }
+  };
+
+  // UX-4.1：展开状态按专业组合持久化，避免切换专业时串用展开状态。
+  const expandedStorageKey = (majorCodesKey: string) => `yam-expanded-school:${majorCodesKey}`;
   const expandedSchoolIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => { expandedSchoolIdsRef.current = expandedSchoolIds; }, [expandedSchoolIds]);
-  const persistExpanded = (ids: Set<string>) => {
+  const persistExpanded = (ids: Set<string>, majorCodesKey = activeMajorCodesKey) => {
     if (typeof window === 'undefined') return;
-    if (ids.size > 0) window.localStorage.setItem(EXPANDED_KEY, JSON.stringify(Array.from(ids)));
-    else window.localStorage.removeItem(EXPANDED_KEY);
+    const key = expandedStorageKey(majorCodesKey);
+    if (ids.size > 0) window.localStorage.setItem(key, JSON.stringify(Array.from(ids)));
+    else window.localStorage.removeItem(key);
   };
+  const clearDepartmentsCache = () => {
+    departmentsCacheGenerationRef.current += 1;
+    departmentsCacheRef.current.clear();
+    departmentsInFlightRef.current.clear();
+    setDepartmentsBySchool({});
+    setLoadingDepartmentKeys(new Set());
+  };
+
   const loadSchoolDepartments = async (schoolId: string) => {
-    setLoadingSchoolIds((prev) => new Set(prev).add(schoolId));
-    try {
-      await loadWorkspaceData(schoolId, true);
-    } finally {
-      setLoadingSchoolIds((prev) => {
-        const next = new Set(prev);
-        next.delete(schoolId);
-        return next;
+    const majorCodes = [...activeMajorCodes];
+    const majorCodesKey = activeMajorCodesKey;
+    const generation = departmentsCacheGenerationRef.current;
+    const cacheKey = `${majorCodesKey}|${schoolId}`;
+    const cached = departmentsCacheRef.current.get(cacheKey);
+    if (cached) {
+      if (activeMajorCodesKeyRef.current === majorCodesKey) {
+        setDepartmentsBySchool((prev) => ({ ...prev, [schoolId]: cached }));
+      }
+      return;
+    }
+
+    let request = departmentsInFlightRef.current.get(cacheKey);
+    if (request) {
+      setLoadingDepartmentKeys((prev) => new Set(prev).add(cacheKey));
+    } else {
+      request = fetchWorkspaceDepartments(schoolId, majorCodes).then((departments) => {
+        if (departmentsCacheGenerationRef.current === generation) {
+          departmentsCacheRef.current.set(cacheKey, departments);
+        }
+        return departments;
       });
+      departmentsInFlightRef.current.set(cacheKey, request);
+      setLoadingDepartmentKeys((prev) => new Set(prev).add(cacheKey));
+      const settledRequest = request;
+      const clearLoading = () => {
+        if (departmentsInFlightRef.current.get(cacheKey) === settledRequest) {
+          departmentsInFlightRef.current.delete(cacheKey);
+          setLoadingDepartmentKeys((prev) => {
+            const next = new Set(prev);
+            next.delete(cacheKey);
+            return next;
+          });
+        }
+      };
+      void settledRequest.then(clearLoading, clearLoading);
+    }
+
+    try {
+      const departments = await request;
+      if (
+        activeMajorCodesKeyRef.current === majorCodesKey &&
+        departmentsCacheRef.current.get(cacheKey) === departments
+      ) {
+        setDepartmentsBySchool((prev) => ({ ...prev, [schoolId]: departments }));
+      }
+    } catch (err) {
+      if (
+        activeMajorCodesKeyRef.current === majorCodesKey &&
+        departmentsCacheGenerationRef.current === generation
+      ) {
+        reportError(
+          err instanceof Error ? err.message : '加载院系详情失败',
+          () => loadSchoolDepartments(schoolId)
+        );
+      }
     }
   };
 
   // 从 localStorage 恢复展开：兼容旧版单个 school_id，也支持多个展开院校。
-  const restoreExpanded = (schoolsList: WorkspaceSchool[]) => {
-    const saved = typeof window !== 'undefined' ? window.localStorage.getItem(EXPANDED_KEY) : null;
-    if (!saved) return;
-    let ids: string[];
-    try {
-      const parsed = JSON.parse(saved);
-      ids = Array.isArray(parsed) ? parsed : [saved];
-    } catch {
-      ids = [saved];
+  const restoreExpanded = (schoolsList: WorkspaceSchool[], majorCodesKey = activeMajorCodesKey) => {
+    const saved = typeof window !== 'undefined'
+      ? window.localStorage.getItem(expandedStorageKey(majorCodesKey))
+      : null;
+    let ids: string[] = [];
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        ids = Array.isArray(parsed) ? parsed : [saved];
+      } catch {
+        ids = [saved];
+      }
     }
-    const validIds = ids.filter((id) => schoolsList.some((s) => s.school_id === id));
-    const next = new Set(validIds);
+    const next = new Set(ids);
     setExpandedSchoolIds(next);
-    persistExpanded(next);
-    validIds.forEach((id) => { void loadSchoolDepartments(id); });
+    const currentIds = new Set(schoolsList.map((school) => school.school_id));
+    ids.filter((id) => currentIds.has(id)).forEach((id) => { void loadSchoolDepartments(id); });
   };
 
   // UX-2.1：后台可取消刷新。sync 循环不再用 isLoading 阻塞整页（旧列表保持可见、可筛选），
@@ -560,9 +670,11 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
       });
     }
     setSyncFailures(failures);
+    // 同步可能更新院系与年份，失效所有专业组合的详情缓存。
+    clearDepartmentsCache();
     // 无论完成或取消，都重新加载已同步进 DB 的数据（DB 查询毫秒级，loadWorkspaceData 内部会短暂 isLoading）
     try {
-      const data = await loadWorkspaceData('');
+      const data = await loadWorkspaceData();
       // UX-4.1：刷新后若展开的院校仍在结果中，重新加载其院系（同步可能带来新数据）
       const expandedIds = Array.from(expandedSchoolIdsRef.current);
       await Promise.all(expandedIds
@@ -570,6 +682,7 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
         .map((id) => loadSchoolDepartments(id)));
       await loadFilterOptions();
       await loadFavorites();
+      if (viewMode === 'plan') setPlanReloadNonce((value) => value + 1);
     } catch (err) {
       reportError(
         err instanceof Error ? err.message : '刷新数据失败',
@@ -600,9 +713,11 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
         delete next[code];
         return next;
       });
-      await loadWorkspaceData('');
+      clearDepartmentsCache();
+      await loadWorkspaceData();
       await loadFilterOptions();
       await loadFavorites();
+      if (viewMode === 'plan') setPlanReloadNonce((value) => value + 1);
     } catch (syncErr) {
       const msg = syncErr instanceof Error ? syncErr.message : String(syncErr);
       setSyncFailures((prev) => ({ ...prev, [code]: { name: mName, error: msg } }));
@@ -626,15 +741,6 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
     }
   };
 
-  const resetAllFilters = () => {
-    setFilters({
-      sortBy: 'min_score',
-      sortOrder: 'desc',
-    });
-    setSearchQuery('');
-    setCurrentPageNum(1);
-  };
-
   // ISSUE-027：记录已 sync 过的专业代码，避免每次切换专业 Tab 都重新跑 Python sync。
   // sync_to_tauri.py 每个专业耗时 1-2 秒，重复 sync 会导致 Tab 切换明显卡顿。
   // 首次加载或管理显示专业新增专业时才 sync 新专业；Tab 切换只从 DB 查询（毫秒级）。
@@ -642,123 +748,213 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
   const syncedMajorsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
-    // ISSUE-027：切换专业 Tab 或首次进入工作区时刷新数据。
-    // 仅 sync 尚未 sync 过的专业（首次/新增专业），已 sync 的专业直接从 DB 查询。
-    if (activeMajorCodes.length === 0) return;
+    schoolRequestIdRef.current += 1;
+    planRequestIdRef.current += 1;
+    setDepartmentsBySchool({});
+    setLoadingDepartmentKeys(new Set());
+    setExpandedSchoolIds(new Set());
+    if (activeMajorCodes.length === 0) {
+      schoolsRef.current = [];
+      setSchools([]);
+      setSchoolTotal(0);
+      setIsLoading(false);
+      setIsSchoolRefreshing(false);
+      setIsPlanLoading(false);
+      setQueryReadyMajorKey('');
+      return;
+    }
+    const majorCodes = [...activeMajorCodes];
+    const majorCodesKey = activeMajorCodesKey;
+    const defaultFilters: WorkspaceFilters = { sortBy: 'min_score', sortOrder: 'desc' };
     const autoSync = async () => {
-      const showInitialLoading = schools.length === 0;
-      if (showInitialLoading) setIsLoading(true);
-      setError(null);
-      // UX-6.2：切换专业 Tab 时清空上一组专业的同步失败记录，避免残留红点
+      setIsLoading(schoolsRef.current.length === 0);
+      setIsRefreshing(true);
       setSyncFailures({});
       setRetryAction(null);
-      try {
-        // 只 sync syncedMajorsRef 里没有的专业
-        const toSync = activeMajorCodes.filter((code) => !syncedMajorsRef.current.has(code));
-        for (const code of toSync) {
-          try {
-            await syncWorkspaceData(code);
-            syncedMajorsRef.current.add(code);
-          } catch (syncErr) {
-            console.warn(`同步专业 ${code} 失败，使用现有数据:`, syncErr);
-          }
+      cancelRefreshRef.current = false;
+      const failures: Record<string, { name: string; error: string }> = {};
+      const toSync = majorCodes.filter((code) => !syncedMajorsRef.current.has(code));
+      setRefreshProgress(toSync.length > 0 ? { current: 0, total: toSync.length, failed: 0 } : null);
+      for (let index = 0; index < toSync.length; index += 1) {
+        if (cancelRefreshRef.current) break;
+        const code = toSync[index];
+        try {
+          await syncWorkspaceData(code);
+          syncedMajorsRef.current.add(code);
+        } catch (syncErr) {
+          const message = syncErr instanceof Error ? syncErr.message : String(syncErr);
+          failures[code] = { name: crawledMajors.find((m) => m.code === code)?.name ?? code, error: message };
         }
-        const data = await fetchWorkspaceData('', activeMajorCodes, {
-          sortBy: 'min_score',
-          sortOrder: 'desc',
-        });
-        setSchools(data.schools);
-        await loadFilterOptions();
-        await loadFavorites();
-        // UX-4.1：切换专业/刷新后恢复上次展开的院校（若仍在新结果中）
-        restoreExpanded(data.schools);
-        setExpandedDeptBySchool(Object.fromEntries(data.schools.map((s) => [s.school_id, 0])));
-        setActiveYearBySchool(Object.fromEntries(data.schools.map((s) => [s.school_id, 2026])));
-        setShowHistoricalBySchool({});
-        resetAllFilters();
-      } catch (err) {
-        // UX-6.1：刷新失败 → 横幅 + toast + 重试（重新拉取 DB 数据）
-        reportError(
-          err instanceof Error ? err.message : '刷新数据失败',
-          () => loadWorkspaceData('')
-        );
-      } finally {
-        if (showInitialLoading) setIsLoading(false);
+        if (activeMajorCodesKeyRef.current === majorCodesKey) {
+          setRefreshProgress({ current: index + 1, total: toSync.length, failed: Object.keys(failures).length });
+        }
+      }
+      if (activeMajorCodesKeyRef.current !== majorCodesKey) return;
+      if (toSync.length > 0) clearDepartmentsCache();
+      setSyncFailures(failures);
+      setExpandedPlanKeys(new Set());
+      setActiveYearByPlan({});
+      setHistoricalPlanKeys(new Set());
+      setFilters(defaultFilters);
+      setSearchQuery('');
+      setCurrentPageNum(1);
+      setQueryReadyMajorKey(majorCodesKey);
+      const [data] = await Promise.all([
+        loadWorkspaceData(majorCodes, defaultFilters, 1, pageSize),
+        loadFilterOptions(),
+        loadFavorites(),
+      ]);
+      if (data && activeMajorCodesKeyRef.current === majorCodesKey) {
+        restoreExpanded(data.schools, majorCodesKey);
       }
     };
-    autoSync();
+    void autoSync().finally(() => {
+      if (activeMajorCodesKeyRef.current === majorCodesKey) {
+        setIsLoading(false);
+        setIsRefreshing(false);
+        setRefreshProgress(null);
+      }
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeMajorCodesKey]);
 
   useEffect(() => {
-    if (!refreshNonce || refreshNonce === 0) return;
+    if (!refreshNonce || refreshNonce === 0 || activeMajorCodes.length === 0) return;
     const reload = async () => {
-      setIsLoading(true);
-      setError(null);
-      try {
-        const data = await fetchWorkspaceData('', activeMajorCodes, {
-          sortBy: 'min_score',
-          sortOrder: 'desc',
-        });
-        setSchools(data.schools);
-        await loadFilterOptions();
-        await loadFavorites();
-        // UX-4.1：切换专业/刷新后恢复上次展开的院校（若仍在新结果中）
-        restoreExpanded(data.schools);
-        setExpandedDeptBySchool(Object.fromEntries(data.schools.map((s) => [s.school_id, 0])));
-        setActiveYearBySchool(Object.fromEntries(data.schools.map((s) => [s.school_id, 2026])));
-        setShowHistoricalBySchool({});
-        resetAllFilters();
-      } catch (err) {
-        // UX-6.1：刷新失败 → 横幅 + toast + 重试（重新拉取 DB 数据）
-        reportError(
-          err instanceof Error ? err.message : '刷新数据失败',
-          () => loadWorkspaceData('')
-        );
-      } finally {
-        setIsLoading(false);
-      }
+      clearDepartmentsCache();
+      const defaultFilters: WorkspaceFilters = { sortBy: 'min_score', sortOrder: 'desc' };
+      setFilters(defaultFilters);
+      setSearchQuery('');
+      setCurrentPageNum(1);
+      const data = await loadWorkspaceData(activeMajorCodes, defaultFilters, 1, pageSize);
+      await Promise.all([loadFilterOptions(), loadFavorites()]);
+      if (data) restoreExpanded(data.schools);
+      if (viewMode === 'plan') setPlanReloadNonce((value) => value + 1);
     };
-    reload();
+    void reload();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshNonce]);
 
-  useEffect(() => {
-    loadWorkspaceData('');
-    // UX-4.1：筛选变化不强制收起展开的院校。若该院校被筛掉，渲染时自然不显示（无害）；
-    // 重新出现时仍保持展开（其院系数据对院校筛选不敏感，无需重载）。
-    setCurrentPageNum(1);
-  }, [filters]);
+  const schoolFilters = useMemo<WorkspaceFilters>(
+    () => ({ ...filters, searchQuery: searchQuery.trim() || undefined }),
+    [filters, searchQuery]
+  );
 
-  // ISSUE-027 阶段 2：招生计划视图加载。切到 plan 视图或切换专业/筛选时查询扁平行。
-  // 不触发 sync（sync 由院校视图的 autoSync effect 负责，已 sync 的专业直接查 DB）。
   useEffect(() => {
-    if (viewMode !== 'plan' || activeMajorCodes.length === 0) return;
+    setCurrentPageNum(1);
+  }, [activeMajorCodesKey, filters, searchQuery, pageSize]);
+
+  useEffect(() => {
+    if (
+      viewMode !== 'school' ||
+      activeMajorCodes.length === 0 ||
+      queryReadyMajorKey !== activeMajorCodesKey
+    ) return;
+    const queryKey = JSON.stringify([activeMajorCodes, schoolFilters, currentPageNum, pageSize]);
+    if (lastSchoolQueryKeyRef.current !== queryKey) {
+      void loadWorkspaceData(activeMajorCodes, schoolFilters, currentPageNum, pageSize);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewMode, schoolFilters, currentPageNum, pageSize, queryReadyMajorKey]);
+
+  const planFilters = useMemo<WorkspaceFilters>(
+    () => ({ ...filters, searchQuery: searchQuery.trim() || undefined }),
+    [filters, searchQuery]
+  );
+
+  useEffect(() => {
+    setPlanPageNum(1);
+    setSelectedPlanRows(new Map());
+  }, [activeMajorCodesKey, filters, searchQuery]);
+
+  useEffect(() => {
+    if (
+      viewMode !== 'plan'
+      || activeMajorCodes.length === 0
+      || queryReadyMajorKey !== activeMajorCodesKey
+    ) return;
+    const requestId = ++planRequestIdRef.current;
+    const hasData = plans.length > 0;
     const loadPlans = async () => {
-      setIsLoading(true);
+      setIsPlanLoading(true);
       setError(null);
+      setRetryAction(null);
       try {
-        const data = await fetchWorkspacePlans(activeMajorCodes, filters);
-        setPlans(data);
-        setPlanPageNum(1);
-        setExpandedPlanId(null);
+        const data = await fetchWorkspacePlansPage(
+          activeMajorCodes,
+          planFilters,
+          planPageNum,
+          planPageSize
+        );
+        if (requestId !== planRequestIdRef.current) return;
+        if (data.items.length === 0 && data.total > 0 && planPageNum > 1) {
+          setPlanPageNum(Math.max(1, Math.ceil(data.total / planPageSize)));
+          return;
+        }
+        setPlans(data.items);
+        setPlanTotal(data.total);
+        setExpandedPlanKeysInTable(new Set());
       } catch (err) {
-        // UX-6.1：招生计划加载失败 → 横幅 + toast + 重试
+        if (requestId !== planRequestIdRef.current) return;
+        const message = err instanceof Error ? err.message : '加载招生计划失败';
         reportError(
-          err instanceof Error ? err.message : '加载招生计划失败',
-          () => { void fetchWorkspacePlans(activeMajorCodes, filters).then(setPlans); }
+          getWorkspaceRefreshError(message, hasData),
+          () => { setPlanReloadNonce((value) => value + 1); }
         );
       } finally {
-        setIsLoading(false);
+        if (requestId === planRequestIdRef.current) setIsPlanLoading(false);
       }
     };
-    loadPlans();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewMode, activeMajorCodesKey, filters]);
+    void loadPlans();
+  }, [viewMode, activeMajorCodesKey, queryReadyMajorKey, planFilters, planPageNum, planPageSize, planReloadNonce]);
 
   useEffect(() => {
-    setCurrentPageNum(1);
-  }, [searchQuery, pageSize]);
+    if (viewMode === 'plan') void loadPlanFavorites();
+  }, [viewMode]);
+
+  useEffect(() => {
+    if (!isTauri) return;
+    let active = true;
+    const unlistens: Array<() => void> = [];
+    void (async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        const unlistenProgress = await listen<ExportProgress>('export-progress', (event) => {
+          if (!active) return;
+          setExportProgress(event.payload);
+          setIsExporting(event.payload.running);
+        });
+        const unlistenDone = await listen<ExportProgress>('export-done', (event) => {
+          if (!active) return;
+          const progress = event.payload;
+          setExportProgress(progress);
+          setIsExporting(false);
+          if (progress.error) {
+            toast.error(`导出失败：${progress.error}`);
+          } else if (progress.path) {
+            toast.success(`已导出 ${progress.current} 条到：${progress.path}`);
+          }
+        });
+        if (active) {
+          unlistens.push(unlistenProgress, unlistenDone);
+          const initial = await getExportProgress();
+          if (active) {
+            setExportProgress(initial);
+            setIsExporting(initial.running);
+          }
+        } else {
+          unlistenProgress();
+          unlistenDone();
+        }
+      } catch (err) {
+        if (active) console.error('监听导出进度失败:', err);
+      }
+    })();
+    return () => {
+      active = false;
+      unlistens.forEach((unlisten) => unlisten());
+    };
+  }, []);
 
   // ISSUE-027 多选：Tab 点击专业 toggle 选中。
   // 在 selectedMajorCodes 里 → 移除；不在 → 加入。全选自动清空（= 全部模式）避免歧义。
@@ -840,6 +1036,20 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
     }
   };
 
+  const togglePlanFavorite = async (plan: WorkspacePlanRow) => {
+    try {
+      const isFavorite = await togglePlanFavoriteApi(plan);
+      await loadPlanFavorites();
+      toast.success(isFavorite ? '已收藏该招生计划' : '已取消收藏该招生计划');
+    } catch (err) {
+      reportError(
+        err instanceof Error ? err.message : '计划收藏操作失败',
+        () => togglePlanFavorite(plan),
+        false
+      );
+    }
+  };
+
   const toggleCompare = (id: string) => {
     setSelectedForCompare(prev => {
       const next = new Set(prev);
@@ -852,6 +1062,18 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
     });
   };
 
+  const togglePlanCompare = (plan: WorkspacePlanRow) => {
+    setSelectedPlanRows((current) => {
+      const next = new Map(current);
+      if (next.has(plan.plan_key)) {
+        next.delete(plan.plan_key);
+      } else if (next.size < 3) {
+        next.set(plan.plan_key, plan);
+      }
+      return next;
+    });
+  };
+
   const handleToggleExpand = (id: string) => {
     setExpandedSchoolIds((prev) => {
       const next = new Set(prev);
@@ -859,9 +1081,6 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
         next.delete(id);
       } else {
         next.add(id);
-        setExpandedDeptBySchool((current) => ({ ...current, [id]: 0 }));
-        setActiveYearBySchool((current) => ({ ...current, [id]: 2026 }));
-        setShowHistoricalBySchool((current) => ({ ...current, [id]: false }));
         void loadSchoolDepartments(id);
         if (focusedMajorCode) {
           addRecentView(id, focusedMajorCode, focusedMajorName).catch(err => {
@@ -906,23 +1125,16 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
     return Array.from(map.values());
   }, [schools]);
 
-  const filteredData = aggregatedSchools.filter(item =>
-    item.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filteredData = aggregatedSchools;
+  const paginatedData = filteredData;
+  const totalPages = Math.max(1, Math.ceil(schoolTotal / pageSize));
 
-  const paginatedData = filteredData.slice((currentPageNum - 1) * pageSize, currentPageNum * pageSize);
-  const totalPages = Math.max(1, Math.ceil(filteredData.length / pageSize));
-
-  // ISSUE-027 阶段 2：招生计划视图分页。searchQuery 同样按院校名过滤。
-  const filteredPlans = plans.filter(p =>
-    p.school_name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
-  const paginatedPlans = filteredPlans.slice((planPageNum - 1) * planPageSize, planPageNum * planPageSize);
-  const planTotalPages = Math.max(1, Math.ceil(filteredPlans.length / planPageSize));
+  const planTotalPages = Math.max(1, Math.ceil(planTotal / planPageSize));
+  const selectedPlansForCompare = Array.from(selectedPlanRows.values());
   // UX-4.3：紧凑模式去掉「研究方向」「考试科目」两列（1.6fr × 2），减少小屏换行。
   const planGridCols = planCompact
-    ? 'grid-cols-[1.4fr_0.9fr_1.2fr_0.6fr_0.6fr_0.6fr_40px]'
-    : 'grid-cols-[1.4fr_0.9fr_1.2fr_1.6fr_1.6fr_0.6fr_0.6fr_0.6fr_40px]';
+    ? 'grid-cols-[40px_1.4fr_0.9fr_1.2fr_0.6fr_0.6fr_0.6fr_64px]'
+    : 'grid-cols-[40px_1.4fr_0.9fr_1.2fr_1.6fr_1.6fr_0.6fr_0.6fr_0.6fr_64px]';
 
   // ISSUE-028：导出格式下拉菜单 click-away 关闭
   useEffect(() => {
@@ -938,7 +1150,10 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
 
   // ISSUE-026/027/028：构建当前筛选结果的导出数据。CSV/Excel 共用 cellRows（已字符串化扁平行），
   // JSON 用 jsonRows（含完整原始字段 + major_name）。空数据返回 null。
-  const buildExportData = (vm: 'school' | 'plan'): ExportData | null => {
+  const buildExportData = (
+    vm: 'school' | 'plan',
+    rowsOverride?: WorkspacePlanRow[] | WorkspaceSchool[]
+  ): ExportData | null => {
     const majorNameOf = (code: string) =>
       crawledMajors.find((m) => m.code === code)?.name ?? code;
     const today = new Date();
@@ -953,19 +1168,18 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
     const majorCodes = activeMajorCodes;
 
     if (vm === 'plan') {
-      if (filteredPlans.length === 0) return null;
+      const planRows = (rowsOverride as WorkspacePlanRow[] | undefined) ?? plans;
+      if (planRows.length === 0) return null;
       const headers = [
         '院校代码', '院校名称', '专业代码', '专业名称', '省份', '层次',
         '院系', '研究方向', '考试科目', '学习方式', '考试方式', '特殊计划',
-        '最新年份', '最低分', '招生人数',
+        '院校来源', '院校更新时间', '计划来源', '计划更新时间',
+        '最新年份', '分数参考', '分数粒度', '招生人数', '分数来源', '分数更新时间', '匹配说明',
       ];
-      const cellRows: ExportCell[][] = filteredPlans.map(p => [
-        p.school_code, p.school_name, p.major_code, majorNameOf(p.major_code),
-        p.province, p.level, p.department_name, p.research_direction,
-        p.exam_subjects.join('; '), p.study_mode, p.exam_type,
-        p.special_plans.join('; '), p.latest_year, p.latest_min_score, p.latest_enroll_count,
-      ]);
-      const jsonRows = filteredPlans.map(p => ({ ...p, major_name: majorNameOf(p.major_code) }));
+      const cellRows: ExportCell[][] = planRows.map(p =>
+        getPlanExportCells(p, majorNameOf(p.major_code))
+      );
+      const jsonRows = planRows.map(p => ({ ...p, major_name: majorNameOf(p.major_code) }));
       return {
         headers, cellRows, jsonRows,
         filenameBase: `${defaultFilenamePrefix}_招生计划_${ymd}`,
@@ -974,33 +1188,32 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
     }
 
     // 院校视图
-    if (filteredData.length === 0) return null;
+    const schoolRows = (rowsOverride as WorkspaceSchool[] | undefined) ?? schools;
+    if (schoolRows.length === 0) return null;
     const headers = [
       '院校代码', '院校名称', '专业代码', '专业名称', '省份', '层次',
       '最低分', '招生人数', '自划线', '博士点',
       '双一流', '985', '211',
     ];
-    // ISSUE-027：每个 (school, major) 一行，用 _raw.flatMap 展开
-    const cellRows: ExportCell[][] = filteredData.flatMap((s) =>
-      s._raw.map((raw) => [
-        raw.school_code ?? '',
-        raw.name ?? '',
-        raw.major_code ?? '',
-        majorNameOf(raw.major_code),
-        raw.province ?? '',
-        raw.level ?? '',
-        raw.min_score ?? 0,
-        raw.enroll_count ?? 0,
-        raw.self_scoring ? '是' : '否',
-        raw.doctoral_program ? '是' : '否',
-        raw.double_first_class ? '是' : '否',
-        raw.is_985 ? '是' : '否',
-        raw.is_211 ? '是' : '否',
-      ])
-    );
-    const jsonRows = filteredData.flatMap((s) =>
-      s._raw.map((raw) => ({ ...raw, major_name: majorNameOf(raw.major_code) }))
-    );
+    const cellRows: ExportCell[][] = schoolRows.map((raw) => [
+      raw.school_code ?? '',
+      raw.name ?? '',
+      raw.major_code ?? '',
+      majorNameOf(raw.major_code),
+      raw.province ?? '',
+      raw.level ?? '',
+      raw.min_score ?? 0,
+      raw.enroll_count ?? 0,
+      raw.self_scoring ? '是' : '否',
+      raw.doctoral_program ? '是' : '否',
+      raw.double_first_class ? '是' : '否',
+      raw.is_985 ? '是' : '否',
+      raw.is_211 ? '是' : '否',
+    ]);
+    const jsonRows = schoolRows.map((raw) => ({
+      ...raw,
+      major_name: majorNameOf(raw.major_code),
+    }));
     return {
       headers, cellRows, jsonRows,
       filenameBase: `${defaultFilenamePrefix}_${ymd}`,
@@ -1071,28 +1284,51 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
     return invoke<string | null>('export_file', { defaultFilename: filename, content: jsonContent, ext: 'json' });
   };
 
-  // ISSUE-028：导出入口，按格式分发。UX-6.1：成功/失败改用 toast（瞬时通知，不留横幅）。
+  // ISSUE-028：导出入口，按格式分发。Tauri 计划视图交给 Rust 后台任务处理。
   const doExport = async (format: ExportFormat) => {
     setExportMenuOpen(false);
-    const d = buildExportData(viewMode);
-    if (!d) {
-      toast.warning('当前没有可导出的数据');
-      return;
-    }
+    if (isExporting) return;
+    setIsExporting(true);
+    let backgroundTaskStarted = false;
     try {
+      if (isTauri && viewMode === 'plan') {
+        const today = new Date();
+        const ymd = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}`;
+        const filenamePrefix = selectedMajorCodes.length === 0
+          ? 'all_全部专业'
+          : selectedMajorCodes.length === 1
+            ? `${focusedMajorCode}_${focusedMajorName}`
+            : `${selectedMajorCodes.join('+')}_多专业`;
+        const extension = format === 'excel' ? 'xlsx' : format;
+        backgroundTaskStarted = await startPlanExport(
+          activeMajorCodes,
+          planFilters,
+          format,
+          `${filenamePrefix}_招生计划_${ymd}.${extension}`
+        );
+        if (!backgroundTaskStarted) setIsExporting(false);
+        return;
+      }
+
+      const exportRows = viewMode === 'plan'
+        ? await fetchWorkspacePlans(activeMajorCodes, planFilters)
+        : (await fetchWorkspaceData('', activeMajorCodes, schoolFilters)).schools;
+      const d = buildExportData(viewMode, exportRows);
+      if (!d) {
+        toast.warning('当前没有可导出的数据');
+        return;
+      }
       const result =
         format === 'csv' ? await exportAsCsv(d)
           : format === 'excel' ? await exportAsExcel(d)
             : await exportAsJson(d);
-      if (result === null) {
-        // 浏览器下载完成 / 用户取消保存（Tauri），无需额外提示
-        if (isTauri) return;
-        return;
-      }
+      if (result === null) return;
       const fmtLabel = format === 'csv' ? 'CSV' : format === 'excel' ? 'Excel' : 'JSON';
       toast.success(`已导出 ${d.cellRows.length} 条${format === 'excel' ? '(xlsx)' : `(${fmtLabel})`} 到：${result}`);
     } catch (e) {
       toast.error(`导出失败: ${e}`, { label: '重试', onClick: () => { void doExport(format); } });
+    } finally {
+      if (!backgroundTaskStarted) setIsExporting(false);
     }
   };
 
@@ -1186,7 +1422,7 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="搜索学校名称"
+                placeholder={viewMode === 'plan' ? '搜索院校、代码、院系或方向' : '搜索学校名称'}
                 disabled={activeMajorCodes.length === 0}
                 className="pl-4 pr-10 py-2 border border-gray-200 rounded-lg text-sm w-48 focus:outline-none focus:border-[#1e3a5f] disabled:bg-gray-50"
               />
@@ -1227,15 +1463,17 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
             <div className="relative" ref={exportMenuRef}>
               <motion.button
                 onClick={() => setExportMenuOpen((o) => !o)}
-                disabled={activeMajorCodes.length === 0 || (viewMode === 'plan' ? filteredPlans.length === 0 : filteredData.length === 0)}
+                disabled={isExporting || activeMajorCodes.length === 0 || (viewMode === 'plan' ? planTotal === 0 : schoolTotal === 0)}
                 className="flex items-center gap-1 text-gray-600 hover:text-gray-800 text-sm disabled:opacity-40 disabled:cursor-not-allowed"
                 whileHover={activeMajorCodes.length > 0 ? { scale: 1.02 } : undefined}
                 whileTap={activeMajorCodes.length > 0 ? { scale: 0.97 } : undefined}
                 title="导出当前筛选结果"
               >
-                <Download size={14} />
-                导出
-                <ChevronDown size={14} />
+                {isExporting ? <RefreshCw size={14} className="animate-spin" /> : <Download size={14} />}
+                {isExporting && viewMode === 'plan'
+                  ? `导出中${exportProgress?.total ? ` ${exportProgress.current}/${exportProgress.total}` : '…'}`
+                  : '导出'}
+                {!isExporting && <ChevronDown size={14} />}
               </motion.button>
               <AnimatePresence>
                 {exportMenuOpen && (
@@ -1322,14 +1560,21 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
               options={filterOptions}
               filters={filters}
               onChange={setFilters}
-              resultCount={viewMode === 'plan' ? filteredPlans.length : filteredData.length}
+              resultCount={viewMode === 'plan' ? planTotal : schoolTotal}
+              viewMode={viewMode}
             />
 
             {/* Loading / Error */}
-            {isLoading && (
+            {isLoading && schools.length === 0 && viewMode === 'school' && (
               <div className="flex items-center justify-center py-8 text-gray-500 text-sm">
                 <RefreshCw size={16} className="animate-spin mr-2" />
                 加载中…
+              </div>
+            )}
+            {isSchoolRefreshing && schools.length > 0 && (
+              <div className="flex items-center justify-end mb-2 text-xs text-gray-500" role="status">
+                <RefreshCw size={13} className="animate-spin mr-1.5" />
+                正在刷新院校结果…
               </div>
             )}
             {/* UX-6.1：错误横幅（兜底）+ 局部「重试」按钮。toast 在右上角同步提示。 */}
@@ -1379,18 +1624,12 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
           {/* Table Body */}
           {paginatedData.map((item, index) => {
             const schoolDepartments = departmentsBySchool[item.school_id] ?? [];
-            const schoolIsLoading = loadingSchoolIds.has(item.school_id);
-            const schoolExpandedDeptIndex = expandedDeptBySchool[item.school_id] ?? 0;
-            const schoolExpandedDept = schoolDepartments[schoolExpandedDeptIndex];
-            const schoolActiveYear = activeYearBySchool[item.school_id] ?? 2026;
-            const schoolShowHistorical = showHistoricalBySchool[item.school_id] ?? false;
-            const schoolYearData = schoolExpandedDept?.years.find(y => y.year === schoolActiveYear) || schoolExpandedDept?.years[0];
+            const schoolIsLoading = loadingDepartmentKeys.has(`${activeMajorCodesKey}|${item.school_id}`);
             const schoolDepartmentsByMajor = (() => {
               const map = new Map<string, WorkspaceDepartment[]>();
               schoolDepartments.forEach((d) => map.set(d.major_code, [...(map.get(d.major_code) ?? []), d]));
               return visibleMajors.filter((m) => map.has(m.code)).map((m) => ({ major: m, depts: map.get(m.code)! }));
             })();
-            const schoolDeptOffset = (groupIdx: number) => schoolDepartmentsByMajor.slice(0, groupIdx).reduce((sum, g) => sum + g.depts.length, 0);
             return (
             <div key={item.school_id}>
               <motion.div
@@ -1515,15 +1754,11 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                           </div>
                           <div className="flex items-center gap-3 text-gray-600 text-sm">
                             <BookOpen size={16} className="text-gray-400" />
-                            <span>学费：8000 元/年</span>
+                            <span>院校来源：{item.source || '暂无'}</span>
                           </div>
                           <div className="flex items-center gap-3 text-gray-600 text-sm">
                             <Clock size={16} className="text-gray-400" />
-                            <span>学制：3 年</span>
-                          </div>
-                          <div className="flex items-center gap-3 text-gray-600 text-sm">
-                            <Clock size={16} className="text-gray-400" />
-                            <span>更新时间：2025-05-20</span>
+                            <span>更新时间：{item.updated_at || '暂无'}</span>
                           </div>
                         </div>
                         <div className="mt-6 space-y-2">
@@ -1558,8 +1793,7 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                           </div>
                         )}
                         {/* ISSUE-027：按专业分组渲染院系，多专业模式每组带专业标题 */}
-                        {schoolDepartmentsByMajor.map((group, groupIdx) => {
-                          const offset = schoolDeptOffset(groupIdx);
+                        {schoolDepartmentsByMajor.map((group) => {
                           return (
                           <div key={group.major.code}>
                             {/* UX-5.1：专业分组标题 + 单专业收藏星。单专业模式也显示，
@@ -1590,25 +1824,30 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                             </div>
                             {(() => {
                               const seenDepartmentNames = new Set<string>();
-                              return group.depts.map((dept, deptIdx) => {
-                              const flatIdx = offset + deptIdx;
+                              return group.depts.map((dept) => {
+                              const isExpanded = expandedPlanKeys.has(dept.plan_key);
+                              const activeYear = activeYearByPlan[dept.plan_key] ?? dept.years[0]?.year ?? 2026;
+                              const showHistorical = historicalPlanKeys.has(dept.plan_key);
+                              const yearData = dept.years.find((year) => year.year === activeYear) || dept.years[0];
                               const isFirstInDepartment = !seenDepartmentNames.has(dept.name);
                               seenDepartmentNames.add(dept.name);
-                              const directionLabel = dept.research_direction.trim()
-                                || dept.exam_subjects.join(' / ')
-                                || dept.special_plans.join(' / ')
-                                || '未注明研究方向';
+                              const directionLabel = getDirectionLabel(dept);
                               return (
-                          <div key={dept.department_id} className="mb-2">
+                          <div key={dept.plan_key} className="mb-2">
                             {/* Department Header */}
                             <motion.button
-                              onClick={() => setExpandedDeptBySchool((current) => ({ ...current, [item.school_id]: schoolExpandedDeptIndex === flatIdx ? -1 : flatIdx }))}
+                              onClick={() => setExpandedPlanKeys((current) => {
+                                const next = new Set(current);
+                                if (next.has(dept.plan_key)) next.delete(dept.plan_key);
+                                else next.add(dept.plan_key);
+                                return next;
+                              })}
                               className="w-full flex items-center justify-between px-3 py-2 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
                               whileTap={{ scale: 0.995 }}
                             >
                               <span className="font-medium text-gray-900 text-sm flex items-center min-w-0">
                                 <motion.span
-                                  animate={{ rotate: schoolExpandedDeptIndex === flatIdx ? 90 : 0 }}
+                                  animate={{ rotate: isExpanded ? 90 : 0 }}
                                   transition={{ duration: 0.2 }}
                                   className="inline-block mr-2"
                                 >
@@ -1622,13 +1861,13 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                                   const latest = dept.years[0];
                                   return latest ? (
                                     <span className="ml-3 text-[11px] font-normal text-gray-400">
-                                      最低分 {latest.min_score} · 招生 {latest.enroll_count}
+                                      {getScoreScopeLabel(latest)} {latest.min_score} · 招生 {latest.enroll_count}
                                     </span>
                                   ) : null;
                                 })()}
                               </span>
                               <motion.span
-                                animate={{ rotate: schoolExpandedDeptIndex === flatIdx ? 180 : 0 }}
+                                animate={{ rotate: isExpanded ? 180 : 0 }}
                                 transition={{ duration: 0.2 }}
                                 className="inline-block"
                               >
@@ -1638,7 +1877,7 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
 
                             {/* Department Content */}
                             <AnimatePresence>
-                              {schoolExpandedDeptIndex === flatIdx && (
+                              {isExpanded && (
                                 <motion.div
                                   initial={{ height: 0, opacity: 0 }}
                                   animate={{ height: 'auto', opacity: 1 }}
@@ -1655,14 +1894,16 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                                     {/* Research Direction */}
                                     <div className="mb-4">
                                       <h4 className="text-xs font-medium text-gray-500 mb-1">研究方向</h4>
-                                      <p className="text-sm text-gray-700">{schoolExpandedDept?.research_direction ?? '—'}</p>
+                                      <p className="text-sm text-gray-700">
+                                        {getDirectionLabel(dept)}
+                                      </p>
                                     </div>
 
                                     {/* Exam Subjects */}
                                     <div className="mb-4">
                                       <h4 className="text-xs font-medium text-gray-500 mb-1">考试科目</h4>
                                       <div className="flex flex-wrap gap-2 text-sm text-gray-600">
-                                        {(schoolExpandedDept?.exam_subjects ?? []).map((subject, i) => (
+                                        {dept.exam_subjects.map((subject, i) => (
                                           <span key={i}>{subject}</span>
                                         ))}
                                       </div>
@@ -1670,15 +1911,19 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
 
                                     {/* Year Tabs */}
                                     <div className="flex items-center gap-3 mb-3 border-b border-gray-200">
-                                      {(schoolExpandedDept?.years ?? []).map((y) => (
+                                      {dept.years.map((y) => (
                                         <button
                                           key={y.year}
                                           onClick={() => {
-                                              setActiveYearBySchool((current) => ({ ...current, [item.school_id]: y.year }));
-                                              setShowHistoricalBySchool((current) => ({ ...current, [item.school_id]: false }));
+                                              setActiveYearByPlan((current) => ({ ...current, [dept.plan_key]: y.year }));
+                                              setHistoricalPlanKeys((current) => {
+                                                const next = new Set(current);
+                                                next.delete(dept.plan_key);
+                                                return next;
+                                              });
                                             }}
                                             className={`pb-2 text-sm font-medium transition-colors ${
-                                              schoolActiveYear === y.year && !schoolShowHistorical
+                                              activeYear === y.year && !showHistorical
                                               ? 'text-[#1e3a5f] border-b-2 border-[#1e3a5f]'
                                               : 'text-gray-500 hover:text-gray-700'
                                           }`}
@@ -1687,9 +1932,9 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                                         </button>
                                       ))}
                                       <button
-                                        onClick={() => setShowHistoricalBySchool((current) => ({ ...current, [item.school_id]: true }))}
+                                        onClick={() => setHistoricalPlanKeys((current) => new Set(current).add(dept.plan_key))}
                                         className={`pb-2 text-sm font-medium transition-colors ${
-                                          schoolShowHistorical
+                                          showHistorical
                                             ? 'text-[#1e3a5f] border-b-2 border-[#1e3a5f]'
                                             : 'text-gray-500 hover:text-gray-700'
                                         }`}
@@ -1700,7 +1945,7 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
 
                                     <AnimatePresence mode="wait">
                                       {/* Year Data */}
-                                      {schoolYearData && !schoolShowHistorical && (
+                                      {yearData && !showHistorical && (
                                         <motion.div
                                           key="year-data"
                                           initial={{ opacity: 0, x: -10 }}
@@ -1711,33 +1956,33 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                                         >
                                           <div className="flex justify-between py-1.5 border-b border-gray-100">
                                             <span className="text-gray-500">招生人数</span>
-                                            <span className="text-gray-900">{schoolYearData.enroll_count}</span>
+                                            <span className="text-gray-900">{yearData.enroll_count}</span>
                                           </div>
                                           <div className="flex justify-between py-1.5 border-b border-gray-100">
                                             <span className="text-gray-500">最低分</span>
-                                            <span className="text-gray-900 font-medium">{schoolYearData.min_score}</span>
+                                            <span className="text-gray-900 font-medium">{yearData.min_score}</span>
                                           </div>
                                           <div className="flex justify-between py-1.5 border-b border-gray-100">
                                             <span className="text-gray-500">政治</span>
-                                            <span className="text-gray-900">{schoolYearData.politics}</span>
+                                            <span className="text-gray-900">{yearData.politics}</span>
                                           </div>
                                           <div className="flex justify-between py-1.5 border-b border-gray-100">
                                             <span className="text-gray-500">英语</span>
-                                            <span className="text-gray-900">{schoolYearData.english}</span>
+                                            <span className="text-gray-900">{yearData.english}</span>
                                           </div>
                                           <div className="flex justify-between py-1.5 border-b border-gray-100">
                                             <span className="text-gray-500">数学</span>
-                                            <span className="text-gray-900">{schoolYearData.math}</span>
+                                            <span className="text-gray-900">{yearData.math}</span>
                                           </div>
                                           <div className="flex justify-between py-1.5">
                                             <span className="text-gray-500">专业课</span>
-                                            <span className="text-gray-900">{schoolYearData.specialized}</span>
+                                            <span className="text-gray-900">{yearData.specialized}</span>
                                           </div>
                                         </motion.div>
                                       )}
 
                                       {/* Historical Analysis */}
-                                      {schoolShowHistorical && (
+                                      {showHistorical && (
                                         <motion.div
                                           key="historical"
                                           initial={{ opacity: 0, x: 10 }}
@@ -1747,7 +1992,7 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                                         >
                                           {/* 动态图高：数据少则图小，避免浪费空间 */}
                                           {(() => {
-                                            const yearCount = schoolExpandedDept?.years.length ?? 0;
+                                            const yearCount = dept.years.length;
                                             const chartHeight = yearCount <= 4 ? 120 : yearCount <= 6 ? 180 : 220;
                                             return (
                                               <>
@@ -1764,7 +2009,7 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                                             </tr>
                                           </thead>
                                           <tbody>
-                                            {(schoolExpandedDept?.years ?? []).map((y) => (
+                                            {dept.years.map((y) => (
                                               <tr key={y.year} className="border-b border-gray-100">
                                                 <td className="py-1.5 text-gray-900">{y.year}</td>
                                                 <td className="py-1.5 text-right text-gray-900">{y.enroll_count}</td>
@@ -1781,13 +2026,13 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                                         {/* Charts */}
                                         <div className="grid grid-cols-2 gap-3">
                                           <TrendChart
-                                            years={schoolExpandedDept?.years ?? []}
+                                            years={dept.years}
                                             dataKey="min_score"
                                             title="最低分趋势"
                                             chartHeight={chartHeight}
                                           />
                                           <TrendChart
-                                            years={schoolExpandedDept?.years ?? []}
+                                            years={dept.years}
                                             dataKey="enroll_count"
                                             title="招生人数趋势"
                                             chartHeight={chartHeight}
@@ -1822,7 +2067,7 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
 
         {/* Pagination */}
         <div className="flex items-center justify-between mt-4">
-          <span className="text-sm text-gray-500">共 {filteredData.length} 条</span>
+          <span className="text-sm text-gray-500">共 {schoolTotal} 条</span>
           <div className="flex items-center gap-2">
             <motion.button
               onClick={() => setCurrentPageNum(Math.max(1, currentPageNum - 1))}
@@ -1902,9 +2147,16 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                   {planCompact ? '舒适视图' : '紧凑视图'}
                 </button>
               </div>
-              <div className="border border-gray-200 rounded-lg overflow-hidden">
+              <div className="relative border border-gray-200 rounded-lg overflow-hidden">
+                {isPlanLoading && plans.length > 0 && (
+                  <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-center py-1.5 bg-white/90 text-xs text-gray-600 border-b border-gray-200" role="status">
+                    <RefreshCw size={13} className="animate-spin mr-1.5" />
+                    正在刷新招生计划…
+                  </div>
+                )}
                 {/* Plan Table Header */}
                 <div className={`grid ${planGridCols} gap-3 px-4 py-3 bg-gray-50 text-xs text-gray-500 font-medium border-b border-gray-200`}>
+                  <div className="text-center">比较</div>
                   <div>院校</div>
                   <div>专业</div>
                   <div>院系</div>
@@ -1917,16 +2169,27 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                 </div>
 
                 {/* Plan Table Body */}
-                {paginatedPlans.map((p, idx) => (
-                  <div key={`${p.school_id}-${p.department_id}`}>
+                {plans.map((p, idx) => (
+                  <div key={p.plan_key}>
                     <motion.div
                       initial={{ opacity: 0, y: 6 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: Math.min(idx * 0.02, 0.3) }}
                       className={`grid ${planGridCols} gap-3 px-4 py-3 border-b border-gray-100 hover:bg-gray-50 transition-colors items-center text-sm ${
-                        expandedPlanId === p.department_id ? 'bg-blue-50' : ''
+                        expandedPlanKeysInTable.has(p.plan_key) ? 'bg-blue-50' : ''
                       }`}
                     >
+                      {/* 比较选择 */}
+                      <div className="flex items-center justify-center">
+                        <input
+                          type="checkbox"
+                          checked={selectedPlanRows.has(p.plan_key)}
+                          disabled={!selectedPlanRows.has(p.plan_key) && selectedPlanRows.size >= 3}
+                          onChange={() => togglePlanCompare(p)}
+                          aria-label={`选择比较 ${p.school_name} ${p.department_name}`}
+                          className="w-4 h-4 rounded border-gray-300 text-[#1e3a5f] focus:ring-[#1e3a5f] disabled:opacity-40 disabled:cursor-not-allowed"
+                        />
+                      </div>
                       {/* 院校 */}
                       <div className="min-w-0">
                         <div className="font-medium text-gray-900 truncate">{p.school_name}</div>
@@ -1947,8 +2210,8 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                       </div>
                       {/* 研究方向（紧凑模式隐藏，展开行仍可见） */}
                       {!planCompact && (
-                        <div className="text-gray-500 text-xs min-w-0 line-clamp-2" title={p.research_direction}>
-                          {p.research_direction || '—'}
+                        <div className="text-gray-500 text-xs min-w-0 line-clamp-2" title={getDirectionLabel(p)}>
+                          {getDirectionLabel(p)}
                         </div>
                       )}
                       {/* 考试科目（紧凑模式隐藏，展开行仍可见） */}
@@ -1964,14 +2227,37 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                       {/* 招生 */}
                       <div className="text-center text-gray-600 text-xs">{p.latest_enroll_count || '—'}</div>
                       {/* 操作 */}
-                      <div className="flex items-center justify-center">
+                      <div className="flex items-center justify-center gap-1">
                         <motion.button
-                          onClick={() => setExpandedPlanId(expandedPlanId === p.department_id ? null : p.department_id)}
+                          onClick={() => { void togglePlanFavorite(p); }}
+                          className={`p-1 transition-colors ${
+                            planFavorites.has(planFavoriteKey(p))
+                              ? 'text-yellow-500'
+                              : 'text-gray-400 hover:text-yellow-500'
+                          }`}
+                          title={planFavorites.has(planFavoriteKey(p)) ? '取消收藏该计划' : '收藏该计划'}
+                          aria-label={planFavorites.has(planFavoriteKey(p)) ? '取消收藏该计划' : '收藏该计划'}
+                          whileTap={{ scale: 0.9 }}
+                        >
+                          <Star
+                            size={16}
+                            fill={planFavorites.has(planFavoriteKey(p)) ? 'currentColor' : 'none'}
+                          />
+                        </motion.button>
+                        <motion.button
+                          onClick={() => setExpandedPlanKeysInTable((current) => {
+                            const next = new Set(current);
+                            if (next.has(p.plan_key)) next.delete(p.plan_key);
+                            else next.add(p.plan_key);
+                            return next;
+                          })}
                           className="p-1 text-gray-400 hover:text-[#1e3a5f] transition-colors"
+                          title={expandedPlanKeysInTable.has(p.plan_key) ? '收起计划详情' : '展开计划详情'}
+                          aria-label={expandedPlanKeysInTable.has(p.plan_key) ? '收起计划详情' : '展开计划详情'}
                           whileTap={{ scale: 0.9 }}
                         >
                           <motion.span
-                            animate={{ rotate: expandedPlanId === p.department_id ? 90 : 0 }}
+                            animate={{ rotate: expandedPlanKeysInTable.has(p.plan_key) ? 90 : 0 }}
                             transition={{ duration: 0.2 }}
                             className="inline-block"
                           >
@@ -1983,7 +2269,7 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
 
                     {/* 展开行：多年分数表 */}
                     <AnimatePresence>
-                      {expandedPlanId === p.department_id && (
+                      {expandedPlanKeysInTable.has(p.plan_key) && (
                         <motion.div
                           initial={{ height: 0, opacity: 0 }}
                           animate={{ height: 'auto', opacity: 1 }}
@@ -2027,6 +2313,8 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                               <p className="text-xs text-gray-400">暂无历年分数数据</p>
                             )}
                             <div className="mt-3 flex flex-wrap gap-2 text-[10px] text-gray-500">
+                              <span>计划来源：{p.department_source || '—'}</span>
+                              <span>更新时间：{p.department_updated_at || '—'}</span>
                               <span>学习方式：{p.study_mode || '—'}</span>
                               <span>考试方式：{p.exam_type || '—'}</span>
                               {p.special_plans.length > 0 && <span>专项：{p.special_plans.join('、')}</span>}
@@ -2038,8 +2326,14 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                   </div>
                 ))}
 
+                {plans.length === 0 && (isPlanLoading || queryReadyMajorKey !== activeMajorCodesKey) && (
+                  <div className="flex items-center justify-center py-12 text-gray-500 text-sm" role="status">
+                    <RefreshCw size={16} className="animate-spin mr-2" />
+                    加载招生计划中…
+                  </div>
+                )}
                 {/* 空状态 */}
-                {paginatedPlans.length === 0 && !isLoading && (
+                {plans.length === 0 && !isPlanLoading && queryReadyMajorKey === activeMajorCodesKey && (
                   <div className="py-12 text-center text-gray-400 text-sm">暂无招生计划数据</div>
                 )}
               </div>
@@ -2047,9 +2341,9 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
             )}
 
             {/* ISSUE-027 阶段 2：招生计划视图分页 */}
-            {viewMode === 'plan' && filteredPlans.length > 0 && (
+            {viewMode === 'plan' && planTotal > 0 && (
               <div className="flex items-center justify-between mt-4">
-                <span className="text-sm text-gray-500">共 {filteredPlans.length} 条</span>
+                <span className="text-sm text-gray-500">共 {planTotal} 条</span>
                 <div className="flex items-center gap-2">
                   <motion.button
                     onClick={() => setPlanPageNum(Math.max(1, planPageNum - 1))}
@@ -2132,19 +2426,19 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
           </div>
         )}
 
-        {/* Compare Floating Button */}
+        {/* Compare Floating Button：仅计划视图使用真实方向行比较 */}
         <AnimatePresence>
-          {selectedForCompare.size > 0 && (
+          {viewMode === 'plan' && selectedPlansForCompare.length > 0 && (
             <motion.button
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 20 }}
-              onClick={onOpenCompare}
+              onClick={() => onOpenCompare?.(selectedPlansForCompare)}
               className="fixed bottom-12 right-4 px-4 py-2 bg-[#1e3a5f] text-white rounded-lg shadow-lg hover:bg-[#162d4a] transition-colors"
               whileHover={{ scale: 1.05 }}
               whileTap={{ scale: 0.95 }}
             >
-              对比 ({selectedForCompare.size})
+              对比方向/计划 ({selectedPlansForCompare.length})
             </motion.button>
           )}
         </AnimatePresence>

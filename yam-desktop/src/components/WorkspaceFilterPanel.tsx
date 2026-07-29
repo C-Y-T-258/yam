@@ -25,6 +25,7 @@ interface WorkspaceFilterPanelProps {
   filters: WorkspaceFilters;
   onChange: (filters: WorkspaceFilters) => void;
   resultCount?: number;
+  viewMode?: 'school' | 'plan';
 }
 
 export function WorkspaceFilterPanel({
@@ -32,6 +33,7 @@ export function WorkspaceFilterPanel({
   filters,
   onChange,
   resultCount,
+  viewMode = 'school',
 }: WorkspaceFilterPanelProps) {
   const [showProvincePanel, setShowProvincePanel] = useState(false);
   const [showLevelPanel, setShowLevelPanel] = useState(false);
@@ -46,6 +48,7 @@ export function WorkspaceFilterPanel({
     enrollCountMin: '',
     enrollCountMax: '',
     departmentName: '',
+    researchDirection: '',
     englishMin: '',
     englishMax: '',
     businessOneMin: '',
@@ -193,6 +196,7 @@ export function WorkspaceFilterPanel({
       enrollCountMin: parseNumber(moreFiltersDraft.enrollCountMin),
       enrollCountMax: parseNumber(moreFiltersDraft.enrollCountMax),
       departmentName: moreFiltersDraft.departmentName.trim() || undefined,
+      researchDirection: moreFiltersDraft.researchDirection.trim() || undefined,
       englishMin: parseNumber(moreFiltersDraft.englishMin),
       englishMax: parseNumber(moreFiltersDraft.englishMax),
       businessOneMin: parseNumber(moreFiltersDraft.businessOneMin),
@@ -210,6 +214,7 @@ export function WorkspaceFilterPanel({
       enrollCountMin: '',
       enrollCountMax: '',
       departmentName: '',
+      researchDirection: '',
       englishMin: '',
       englishMax: '',
       businessOneMin: '',
@@ -224,6 +229,7 @@ export function WorkspaceFilterPanel({
       enrollCountMin: undefined,
       enrollCountMax: undefined,
       departmentName: undefined,
+      researchDirection: undefined,
       englishMin: undefined,
       englishMax: undefined,
       businessOneMin: undefined,
@@ -244,6 +250,7 @@ export function WorkspaceFilterPanel({
           enrollCountMin: filters.enrollCountMin?.toString() ?? '',
           enrollCountMax: filters.enrollCountMax?.toString() ?? '',
           departmentName: filters.departmentName ?? '',
+          researchDirection: filters.researchDirection ?? '',
           englishMin: filters.englishMin?.toString() ?? '',
           englishMax: filters.englishMax?.toString() ?? '',
           businessOneMin: filters.businessOneMin?.toString() ?? '',
@@ -270,6 +277,7 @@ export function WorkspaceFilterPanel({
     filters.enrollCountMin !== undefined ||
     filters.enrollCountMax !== undefined ||
     filters.departmentName !== undefined ||
+    filters.researchDirection !== undefined ||
     filters.englishMin !== undefined ||
     filters.englishMax !== undefined ||
     filters.businessOneMin !== undefined ||
@@ -774,6 +782,8 @@ export function WorkspaceFilterPanel({
             <option value="enroll_count-desc">按招生人数从多到少</option>
             <option value="enroll_count-asc">按招生人数从少到多</option>
             <option value="name-asc">按学校名称</option>
+            {viewMode === 'plan' && <option value="department_name-asc">按院系名称</option>}
+            {viewMode === 'plan' && <option value="research_direction-asc">按研究方向</option>}
             <option value="default-asc">默认排序（掌上考研）</option>
             <option value="school_code-asc">按国标代码排序（研招网）</option>
           </select>
@@ -977,6 +987,22 @@ export function WorkspaceFilterPanel({
                         value={moreFiltersDraft.departmentName}
                         onChange={(e) =>
                           setMoreFiltersDraft((prev) => ({ ...prev, departmentName: e.target.value }))
+                        }
+                        className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-[#1e3a5f]"
+                      />
+                    ),
+                  },
+                  {
+                    key: 'direction',
+                    label: '研究方向关键词',
+                    summary: moreFiltersDraft.researchDirection || undefined,
+                    content: (
+                      <input
+                        type="text"
+                        placeholder="例如：人工智能"
+                        value={moreFiltersDraft.researchDirection}
+                        onChange={(e) =>
+                          setMoreFiltersDraft((prev) => ({ ...prev, researchDirection: e.target.value }))
                         }
                         className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-[#1e3a5f]"
                       />

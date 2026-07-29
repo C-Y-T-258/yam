@@ -110,6 +110,12 @@ CREATE TABLE IF NOT EXISTS recent_views (
 
 CREATE INDEX IF NOT EXISTS idx_schools_filter
 ON schools (major_code, province, level, name);
+
+CREATE INDEX IF NOT EXISTS idx_score_lines_school_major_year
+ON score_lines (school_id, major_code, year DESC);
+
+CREATE INDEX IF NOT EXISTS idx_departments_major_school
+ON departments (major_code, school_id);
 """
 
 

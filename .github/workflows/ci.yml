@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: yam-desktop/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: yam-desktop/src-tauri -> target
+
+      - name: Install frontend dependencies
+        working-directory: yam-desktop
+        run: npm ci
+
+      - name: Install Python package
+        run: pip install -e .
+
+      - name: Compile Python sources
+        run: python -m compileall yam
+
+      - name: Run release automation tests
+        working-directory: yam-desktop
+        run: npm run test:release:auto

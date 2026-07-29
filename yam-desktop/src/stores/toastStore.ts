@@ -33,7 +33,7 @@ export const useToastStore = create<ToastState>((set, get) => ({
   showToast: (t) => {
     const id = t.id ?? `toast-${Date.now()}-${++counter}`;
     // 先展开 t（可能含 duration/type），再用计算出的 id 兜底，避免 t.id 为 undefined 覆盖
-    const toast: Toast = { duration: 4000, type: 'info', ...t, id };
+    const toast: Toast = { ...t, id };
     set((s) => ({ toasts: [...s.toasts, toast] }));
     if (toast.duration > 0) {
       setTimeout(() => get().dismissToast(id), toast.duration);
