@@ -103,6 +103,9 @@ CREATE TABLE IF NOT EXISTS workspace_plans (
     exam_type TEXT NOT NULL DEFAULT '',
     special_plans TEXT NOT NULL DEFAULT '[]',
     enrollment_count INTEGER NOT NULL DEFAULT 0,
+    enrollment_count_status TEXT NOT NULL DEFAULT 'unknown'
+        CHECK(enrollment_count_status IN ('provided', 'unknown')),
+    enrollment_text TEXT NOT NULL DEFAULT '',
     source TEXT NOT NULL DEFAULT '',
     source_record_kind TEXT NOT NULL DEFAULT 'yanzhao_department_derived',
     updated_at TEXT NOT NULL DEFAULT ''
@@ -127,6 +130,9 @@ CREATE TABLE IF NOT EXISTS workspace_plan_snapshots (
     exam_type TEXT NOT NULL DEFAULT '',
     special_plans TEXT NOT NULL DEFAULT '[]',
     enrollment_count INTEGER NOT NULL DEFAULT 0,
+    enrollment_count_status TEXT NOT NULL DEFAULT 'unknown'
+        CHECK(enrollment_count_status IN ('provided', 'unknown')),
+    enrollment_text TEXT NOT NULL DEFAULT '',
     source TEXT NOT NULL DEFAULT '',
     source_record_kind TEXT NOT NULL DEFAULT 'yanzhao_department_derived',
     UNIQUE(plan_key, observed_at)
@@ -216,7 +222,7 @@ CREATE TABLE IF NOT EXISTS workspace_score_request_status (
 
 CREATE TABLE IF NOT EXISTS workspace_model_state (
     major_code TEXT PRIMARY KEY,
-    model_version INTEGER NOT NULL DEFAULT 6,
+    model_version INTEGER NOT NULL DEFAULT 7,
     status TEXT NOT NULL CHECK(status IN ('writing','ready','failed')),
     old_plan_count INTEGER NOT NULL DEFAULT 0,
     new_plan_count INTEGER NOT NULL DEFAULT 0,
@@ -318,6 +324,18 @@ def ensure_target_schema(conn: sqlite3.Connection) -> None:
     add_if_missing("workspace_plan_snapshots", "source_department_id", "TEXT NOT NULL DEFAULT ''")
     add_if_missing("workspace_plan_snapshots", "department_name", "TEXT NOT NULL DEFAULT ''")
     add_if_missing("workspace_plan_snapshots", "plan_identity_version", "INTEGER NOT NULL DEFAULT 1")
+    add_if_missing(
+        "workspace_plans",
+        "enrollment_count_status",
+        "TEXT NOT NULL DEFAULT 'unknown'",
+    )
+    add_if_missing("workspace_plans", "enrollment_text", "TEXT NOT NULL DEFAULT ''")
+    add_if_missing(
+        "workspace_plan_snapshots",
+        "enrollment_count_status",
+        "TEXT NOT NULL DEFAULT 'unknown'",
+    )
+    add_if_missing("workspace_plan_snapshots", "enrollment_text", "TEXT NOT NULL DEFAULT ''")
     add_if_missing("workspace_score_evidence", "source_entity_key", "TEXT NOT NULL DEFAULT ''")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_workspace_schools_major_code "
@@ -739,12 +757,18 @@ def load_departments(conn: sqlite3.Connection, school_id: str, major_code: str) 
     source_expr = "COALESCE(source, '')" if _source_has_column(conn, "departments", "source") else "''"
     updated_at_expr = "COALESCE(updated_at, '')" if _source_has_column(conn, "departments", "updated_at") else "''"
     catalog_year_expr = "catalog_year" if _source_has_column(conn, "departments", "catalog_year") else "NULL"
+    enrollment_text_expr = (
+        "COALESCE(enrollment_text, '')"
+        if _source_has_column(conn, "departments", "enrollment_text")
+        else "''"
+    )
     cur = conn.execute(
         f"""
         SELECT department_id, name, research_direction, enrollment_count,
                exam_subjects, exam_type, study_mode, special_plans,
                {source_expr} AS source, {updated_at_expr} AS updated_at,
-               {catalog_year_expr} AS catalog_year
+               {catalog_year_expr} AS catalog_year,
+               {enrollment_text_expr} AS enrollment_text
         FROM departments
         WHERE school_id = ? AND major_code = ?
         ORDER BY name
@@ -759,6 +783,18 @@ def load_departments(conn: sqlite3.Connection, school_id: str, major_code: str) 
         item["special_plans"] = json.loads(item.get("special_plans") or "[]")
         result.append(item)
     return result
+
+
+def enrollment_snapshot_fields(dept: dict[str, Any]) -> tuple[int, str, str]:
+    raw_count = dept.get("enrollment_count")
+    enrollment_text = str(dept.get("enrollment_text") or "").strip()
+    status = "provided" if raw_count is not None or enrollment_text else "unknown"
+    try:
+        count = int(raw_count) if raw_count is not None else 0
+    except (TypeError, ValueError):
+        count = 0
+        status = "unknown" if not enrollment_text else "provided"
+    return count, status, enrollment_text
 
 
 def load_score_lines(
@@ -821,6 +857,7 @@ def insert_department(
     exam_type = str(dept.get("exam_type") or "").strip()
     source = str(dept.get("source") or "")
     updated_at = str(dept.get("updated_at") or "")
+    enrollment_count, enrollment_count_status, enrollment_text = enrollment_snapshot_fields(dept)
     exam_subjects_text = ",".join(exam_subjects)
     special_plans_text = json.dumps(special_plans, ensure_ascii=False)
     department_key = _department_key(school_id, major_code, source_department_id, name)
@@ -853,13 +890,14 @@ def insert_department(
         """
         INSERT INTO workspace_plans
         (plan_id, plan_key, department_key, school_id, major_code, research_direction,
-         exam_subjects, study_mode, exam_type, special_plans, enrollment_count, source,
+         exam_subjects, study_mode, exam_type, special_plans, enrollment_count,
+         enrollment_count_status, enrollment_text, source,
          source_record_kind, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yanzhao_department_derived', ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yanzhao_department_derived', ?)
         """,
         (department_id, plan_key, department_key, school_id, major_code, research_direction,
          exam_subjects_text, study_mode, exam_type, special_plans_text,
-         dept.get("enrollment_count") or 0, source, updated_at),
+         enrollment_count, enrollment_count_status, enrollment_text, source, updated_at),
     )
     catalog_year = int(dept.get("catalog_year") or 0) or None
     catalog_year_status = "provided" if catalog_year is not None else "unknown"
@@ -870,8 +908,8 @@ def insert_department(
         (snapshot_key, plan_key, department_key, school_id, major_code, source_department_id,
          department_name, plan_identity_version, catalog_year, catalog_year_status, observed_at,
          research_direction, exam_subjects, study_mode, exam_type, special_plans,
-         enrollment_count, source, source_record_kind)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 2, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yanzhao_department_derived')
+         enrollment_count, enrollment_count_status, enrollment_text, source, source_record_kind)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 2, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yanzhao_department_derived')
         ON CONFLICT(plan_key, observed_at) DO UPDATE SET
             department_key=excluded.department_key,
             source_department_id=excluded.source_department_id,
@@ -885,6 +923,8 @@ def insert_department(
             exam_type=excluded.exam_type,
             special_plans=excluded.special_plans,
             enrollment_count=excluded.enrollment_count,
+            enrollment_count_status=excluded.enrollment_count_status,
+            enrollment_text=excluded.enrollment_text,
             source=excluded.source
         """,
         (
@@ -903,7 +943,9 @@ def insert_department(
             study_mode,
             exam_type,
             special_plans_text,
-            dept.get("enrollment_count") or 0,
+            enrollment_count,
+            enrollment_count_status,
+            enrollment_text,
             source,
         ),
     )
@@ -1105,7 +1147,7 @@ def sync_major(source: sqlite3.Connection, target: sqlite3.Connection, major_cod
          str(major_info.get("discipline_name") or ""), major_source, now_str),
     )
     target.execute(
-        "INSERT INTO workspace_model_state (major_code, model_version, status) VALUES (?, 6, 'writing')",
+        "INSERT INTO workspace_model_state (major_code, model_version, status) VALUES (?, 7, 'writing')",
         (major_code,),
     )
 

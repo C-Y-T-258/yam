@@ -4,6 +4,7 @@ import {
   getDirectionInfo,
   getDirectionLabel,
   getLatestScoreYear,
+  getPlanEnrollmentLabel,
   getPlanExportCells,
   getScoreScopeLabel,
   getSchoolScoreStatus,
@@ -59,6 +60,8 @@ const basePlan: WorkspacePlanRow = {
   latest_score_year: 2025,
   latest_min_score: 338,
   latest_enroll_count: 24,
+  latest_enroll_count_status: 'provided',
+  latest_enroll_text: '专业：24(不含推免)',
   years: [baseYear],
 };
 
@@ -127,6 +130,24 @@ describe('getLatestScoreYear', () => {
   });
 });
 
+describe('getPlanEnrollmentLabel', () => {
+  it('保留来源明确提供的 0，不显示为未提供', () => {
+    expect(getPlanEnrollmentLabel({
+      ...basePlan,
+      latest_enroll_count: 0,
+      latest_enroll_count_status: 'provided',
+    })).toBe(0);
+  });
+
+  it('仅在状态未知时显示未提供', () => {
+    expect(getPlanEnrollmentLabel({
+      ...basePlan,
+      latest_enroll_count: 0,
+      latest_enroll_count_status: 'unknown',
+    })).toBe('未提供');
+  });
+});
+
 describe('getSchoolScoreStatus', () => {
   const school = {
     school_id: 'school-1', major_code: '085410', name: '测试大学', province: '湖北', level: '',
@@ -173,13 +194,16 @@ describe('getTrendScaleDomain', () => {
 describe('getPlanExportCells', () => {
   it('导出方向、目录年份状态、快照时间、粒度和来源元数据', () => {
     const cells = getPlanExportCells(basePlan, '电子信息');
-    expect(cells).toHaveLength(28);
+    expect(cells).toHaveLength(30);
     expect(cells[7]).toBe('人工智能');
     expect(cells[8]).toBe('direction');
     expect(cells[18]).toBe(2025);
     expect(cells.slice(18, 22)).toEqual([2025, 'provided', '2026-06-15T08:00:00Z', 2025]);
     expect(cells[23]).toBe('方向分数线');
-    expect(cells.slice(25)).toEqual(['score-source', '2026-07-01T08:00:00Z', '按方向精确匹配']);
+    expect(cells[24]).toBe(24);
+    expect(cells[25]).toBe('provided');
+    expect(cells[26]).toBe('专业：24(不含推免)');
+    expect(cells.slice(27)).toEqual(['score-source', '2026-07-01T08:00:00Z', '按方向精确匹配']);
     expect(cells.slice(14, 18)).toEqual([
       'school-source',
       '2026-06-01T08:00:00Z',
@@ -199,6 +223,6 @@ describe('getPlanExportCells', () => {
     const cells = getPlanExportCells(plan, '电子信息');
     expect(cells[7]).toBe('408计算机学科专业基础');
     expect(cells[23]).toBe('分数参考');
-    expect(cells.slice(25)).toEqual(['', '', '']);
+    expect(cells.slice(27)).toEqual(['', '', '']);
   });
 });

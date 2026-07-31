@@ -56,6 +56,12 @@ export function getLatestScoreYear(plan: Pick<WorkspacePlanRow, 'years'> & Parti
     || plan.years.find((year) => year.score_scope !== 'first_level_reference' && year.score_scope !== 'category_reference');
 }
 
+export function getPlanEnrollmentLabel(
+  plan: Pick<WorkspacePlanRow, 'latest_enroll_count' | 'latest_enroll_count_status'>,
+): string | number {
+  return plan.latest_enroll_count_status === 'unknown' ? '未提供' : plan.latest_enroll_count;
+}
+
 export function getSchoolScoreStatus(school: WorkspaceSchool): string {
   if (school.min_score > 0) return `${school.min_score}`;
   if (school.latest_request_status === 'api_error') {
@@ -118,7 +124,9 @@ export function getPlanExportCells(plan: WorkspacePlanRow, majorName: string): E
     plan.special_plans.join('; '), plan.school_source, plan.school_updated_at,
     plan.department_source, plan.department_updated_at, plan.latest_plan_year, plan.plan_year_status,
     plan.plan_snapshot_at, plan.latest_score_year,
-    plan.latest_min_score, getScoreScopeLabel(latestYear), plan.latest_enroll_count, latestYear?.source || '',
+    plan.latest_min_score, getScoreScopeLabel(latestYear), plan.latest_enroll_count,
+    plan.latest_enroll_count_status, plan.latest_enroll_text,
+    latestYear?.source || '',
     latestYear?.updated_at || '', latestYear?.match_note || '',
   ];
 }

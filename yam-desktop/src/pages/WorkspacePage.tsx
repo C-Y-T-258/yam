@@ -39,6 +39,7 @@ import {
   getDirectionInfo,
   getDirectionLabel,
   getLatestScoreYear,
+  getPlanEnrollmentLabel,
   getPlanExportCells,
   getScoreScopeLabel,
   getSchoolScoreNote,
@@ -1198,7 +1199,8 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
         '院校代码', '院校名称', '专业代码', '专业名称', '省份', '层次',
         '院系', '研究方向', '方向标签类型', '方向是否回退', '考试科目', '学习方式', '考试方式', '特殊计划',
         '院校来源', '院校更新时间', '计划来源', '计划更新时间',
-        '目录年份', '计划年份状态', '计划快照时间', '最新分数年份', '分数线', '分数粒度', '招生人数', '分数来源', '分数更新时间', '匹配说明',
+        '目录年份', '计划年份状态', '计划快照时间', '最新分数年份', '分数线', '分数粒度',
+        '招生人数', '招生人数状态', '招生人数原文', '分数来源', '分数更新时间', '匹配说明',
       ];
       const cellRows: ExportCell[][] = planRows.map(p =>
         getPlanExportCells(p, majorNameOf(p.major_code))
@@ -2314,7 +2316,9 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                         {!p.latest_score_year && <div className="text-[10px] text-amber-600">最新计划暂无可用分数</div>}
                       </div>
                       {/* 招生 */}
-                      <div className="text-center text-gray-600 text-xs">{p.latest_enroll_count || '未提供'}</div>
+                      <div className="text-center text-gray-600 text-xs" title={p.latest_enroll_text || undefined}>
+                        {getPlanEnrollmentLabel(p)}
+                      </div>
                       {/* 操作 */}
                       <div className="flex items-center justify-center gap-1">
                         <motion.button

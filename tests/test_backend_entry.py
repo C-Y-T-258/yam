@@ -15,6 +15,7 @@ from yam.scripts.sync_to_tauri import (
     TARGET_SCHEMA,
     _legacy_plan_key,
     clear_major,
+    enrollment_snapshot_fields,
     insert_department,
     insert_department_years,
     insert_shared_score_evidence,
@@ -71,6 +72,44 @@ def test_sync_arguments_are_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(sys.modules, "yam.scripts.sync_to_tauri", fake_module)
     assert backend_entry.main(["sync-to-tauri", "--major-code", "081200", "--clear"]) == 0
     assert captured["args"] == ["--major-code", "081200", "--clear"]
+
+
+def test_enrollment_zero_is_provided_not_unknown() -> None:
+    target = sqlite3.connect(":memory:")
+    target.row_factory = sqlite3.Row
+    target.executescript(TARGET_SCHEMA)
+
+    explicit_zero = {
+        "department_id": "dept-zero",
+        "name": "Computer School",
+        "research_direction": "AI",
+        "exam_subjects": [],
+        "special_plans": [],
+        "study_mode": "full-time",
+        "exam_type": "unified",
+        "enrollment_count": 0,
+        "enrollment_text": "major:0(no recommendation)",
+        "source": "yanzhao",
+        "updated_at": "2026-08-01T08:00:00Z",
+    }
+    insert_department(target, "school-1", "085410", explicit_zero)
+    plan = target.execute(
+        """SELECT enrollment_count, enrollment_count_status, enrollment_text
+           FROM workspace_plans WHERE school_id='school-1' AND major_code='085410'"""
+    ).fetchone()
+    snapshot = target.execute(
+        """SELECT enrollment_count, enrollment_count_status, enrollment_text
+           FROM workspace_plan_snapshots WHERE source_department_id='dept-zero'"""
+    ).fetchone()
+    assert tuple(plan) == (0, "provided", "major:0(no recommendation)")
+    assert tuple(snapshot) == (0, "provided", "major:0(no recommendation)")
+
+    assert enrollment_snapshot_fields({"enrollment_count": None, "enrollment_text": ""}) == (
+        0,
+        "unknown",
+        "",
+    )
+    target.close()
 
 
 def test_search_arguments_are_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:

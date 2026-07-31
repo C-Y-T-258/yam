@@ -454,6 +454,8 @@ export interface WorkspacePlanRow {
   latest_score_year: number;
   latest_min_score: number;
   latest_enroll_count: number;
+  latest_enroll_count_status: 'provided' | 'unknown';
+  latest_enroll_text: string;
   // 多年（展开用）
   years: WorkspaceYear[];
 }
@@ -1148,7 +1150,7 @@ function getMockWorkspacePlans(): WorkspacePlanRow[] {
       exam_subjects: ['① 101 思想政治理论', '② 201 英语（一）', '③ 301 数学（一）', '④ 408 计算机学科专业基础'],
       study_mode: '全日制', exam_type: '统考', special_plans: [],
       department_source: 'yanzhao', department_updated_at: '2026-07-28',
-      latest_year: 2026, latest_plan_year: 2026, plan_year_status: 'provided', plan_snapshot_at: '2026-07-28', latest_score_year: 2026, latest_min_score: 681, latest_enroll_count: 28,
+      latest_year: 2026, latest_plan_year: 2026, plan_year_status: 'provided', plan_snapshot_at: '2026-07-28', latest_score_year: 2026, latest_min_score: 681, latest_enroll_count: 28, latest_enroll_count_status: 'provided', latest_enroll_text: '专业：28(不含推免)',
       years: [
         { year: 2026, enroll_count: 28, min_score: 681, politics: 70, english: 70, math: 110, specialized: 120 },
         { year: 2025, enroll_count: 26, min_score: 672, politics: 68, english: 68, math: 105, specialized: 115 },
@@ -1164,7 +1166,7 @@ function getMockWorkspacePlans(): WorkspacePlanRow[] {
       exam_subjects: ['① 101 思想政治理论', '② 204 英语（二）', '③ 302 数学（二）', '④ 408 计算机学科专业基础'],
       study_mode: '全日制', exam_type: '统考', special_plans: [],
       department_source: 'yanzhao', department_updated_at: '2026-07-28',
-      latest_year: 2026, latest_plan_year: 2026, plan_year_status: 'provided', plan_snapshot_at: '2026-07-28', latest_score_year: 2026, latest_min_score: 670, latest_enroll_count: 45,
+      latest_year: 2026, latest_plan_year: 2026, plan_year_status: 'provided', plan_snapshot_at: '2026-07-28', latest_score_year: 2026, latest_min_score: 670, latest_enroll_count: 45, latest_enroll_count_status: 'provided', latest_enroll_text: '专业：45(不含推免)',
       years: [
         { year: 2026, enroll_count: 45, min_score: 670, politics: 68, english: 68, math: 105, specialized: 115 },
       ],
@@ -1179,7 +1181,7 @@ function getMockWorkspacePlans(): WorkspacePlanRow[] {
       exam_subjects: ['① 101 思想政治理论', '② 201 英语（一）', '③ 301 数学（一）', '④ 408 计算机学科专业基础'],
       study_mode: '全日制', exam_type: '统考', special_plans: [],
       department_source: 'yanzhao', department_updated_at: '2026-07-28',
-      latest_year: 2026, latest_plan_year: 2026, plan_year_status: 'provided', plan_snapshot_at: '2026-07-28', latest_score_year: 2026, latest_min_score: 675, latest_enroll_count: 30,
+      latest_year: 2026, latest_plan_year: 2026, plan_year_status: 'provided', plan_snapshot_at: '2026-07-28', latest_score_year: 2026, latest_min_score: 675, latest_enroll_count: 30, latest_enroll_count_status: 'provided', latest_enroll_text: '专业：30(不含推免)',
       years: [
         { year: 2026, enroll_count: 30, min_score: 675, politics: 70, english: 70, math: 110, specialized: 118 },
       ],

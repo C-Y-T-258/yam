@@ -2676,7 +2676,7 @@ fn preferred_export_path(
     resolve_preferred_export_path(&settings, default_filename, ext)
 }
 
-const PLAN_EXPORT_HEADERS: [&str; 28] = [
+const PLAN_EXPORT_HEADERS: [&str; 30] = [
     "院校代码",
     "院校名称",
     "专业代码",
@@ -2702,6 +2702,8 @@ const PLAN_EXPORT_HEADERS: [&str; 28] = [
     "分数线",
     "分数粒度",
     "招生人数",
+    "招生人数状态",
+    "招生人数原文",
     "分数来源",
     "分数更新时间",
     "匹配说明",
@@ -2868,6 +2870,8 @@ fn plan_export_row(row: &WorkspacePlanRow, major_name: &str) -> Vec<Value> {
         json!(row.latest_min_score),
         json!(score_scope_label(row)),
         json!(row.latest_enroll_count),
+        json!(row.latest_enroll_count_status),
+        json!(row.latest_enroll_text),
         json!(latest_year.map(|year| year.source.as_str()).unwrap_or("")),
         json!(latest_year
             .map(|year| year.updated_at.as_str())
@@ -2990,7 +2994,8 @@ where
                     .map_err(|_| "设置 Excel 冻结窗格失败".to_string())?;
                 for (column, width) in [
                     14.0, 28.0, 12.0, 20.0, 8.0, 10.0, 22.0, 24.0, 30.0, 10.0, 10.0, 14.0, 18.0,
-                    20.0, 18.0, 20.0, 10.0, 10.0, 16.0, 10.0, 18.0, 20.0, 28.0,
+                    20.0, 18.0, 20.0, 10.0, 10.0, 16.0, 10.0, 18.0, 20.0, 10.0, 14.0, 10.0, 14.0,
+                    18.0, 20.0, 28.0, 28.0,
                 ]
                 .iter()
                 .enumerate()
@@ -3429,6 +3434,8 @@ mod tests {
             latest_score_year: 2026,
             latest_min_score: 350,
             latest_enroll_count: 20,
+            latest_enroll_count_status: "provided".to_string(),
+            latest_enroll_text: "专业：20(不含推免)".to_string(),
             years: vec![crate::db::WorkspaceYear {
                 year: 2026,
                 enroll_count: 20,
@@ -3447,9 +3454,9 @@ mod tests {
 
     #[test]
     fn plan_export_headers_and_row_have_semantic_columns() {
-        assert_eq!(PLAN_EXPORT_HEADERS.len(), 28);
+        assert_eq!(PLAN_EXPORT_HEADERS.len(), 30);
         let row = plan_export_row(&sample_plan_row(), "计算机科学与技术");
-        assert_eq!(row.len(), 28);
+        assert_eq!(row.len(), 30);
         assert_eq!(row[7], json!("人工智能"));
         assert_eq!(row[8], json!("direction"));
         assert_eq!(row[18], json!(2026));
@@ -3457,7 +3464,10 @@ mod tests {
         assert_eq!(row[20], json!("2026-07-02T08:00:00Z"));
         assert_eq!(row[21], json!(2026));
         assert_eq!(row[23], json!("方向分数线"));
-        assert_eq!(row[25], json!("score-source"));
+        assert_eq!(row[24], json!(20));
+        assert_eq!(row[25], json!("provided"));
+        assert_eq!(row[26], json!("专业：20(不含推免)"));
+        assert_eq!(row[27], json!("score-source"));
     }
 
     #[test]

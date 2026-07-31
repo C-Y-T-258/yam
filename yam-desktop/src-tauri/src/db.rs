@@ -272,6 +272,8 @@ pub struct WorkspacePlanRow {
     pub latest_score_year: i32,
     pub latest_min_score: i32,
     pub latest_enroll_count: i32,
+    pub latest_enroll_count_status: String,
+    pub latest_enroll_text: String,
     // 多年分数（供展开用）
     pub years: Vec<WorkspaceYear>,
 }
@@ -448,6 +450,30 @@ pub fn migrate_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
     )?;
     add_if_missing(
         conn,
+        "workspace_plans",
+        "enrollment_count_status",
+        "TEXT NOT NULL DEFAULT 'unknown'",
+    )?;
+    add_if_missing(
+        conn,
+        "workspace_plans",
+        "enrollment_text",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    add_if_missing(
+        conn,
+        "workspace_plan_snapshots",
+        "enrollment_count_status",
+        "TEXT NOT NULL DEFAULT 'unknown'",
+    )?;
+    add_if_missing(
+        conn,
+        "workspace_plan_snapshots",
+        "enrollment_text",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    add_if_missing(
+        conn,
         "workspace_score_evidence",
         "source_entity_key",
         "TEXT NOT NULL DEFAULT ''",
@@ -573,6 +599,8 @@ const SCHEMA: &str = "
         school_id TEXT NOT NULL, major_code TEXT NOT NULL, research_direction TEXT NOT NULL,
         exam_subjects TEXT NOT NULL, study_mode TEXT NOT NULL DEFAULT '', exam_type TEXT NOT NULL DEFAULT '',
         special_plans TEXT NOT NULL DEFAULT '[]', enrollment_count INTEGER NOT NULL DEFAULT 0,
+        enrollment_count_status TEXT NOT NULL DEFAULT 'unknown',
+        enrollment_text TEXT NOT NULL DEFAULT '',
         source TEXT NOT NULL DEFAULT '', source_record_kind TEXT NOT NULL DEFAULT 'yanzhao_department_derived',
         updated_at TEXT NOT NULL DEFAULT ''
     );
@@ -586,7 +614,10 @@ const SCHEMA: &str = "
         observed_at TEXT NOT NULL, research_direction TEXT NOT NULL,
         exam_subjects TEXT NOT NULL, study_mode TEXT NOT NULL DEFAULT '',
         exam_type TEXT NOT NULL DEFAULT '', special_plans TEXT NOT NULL DEFAULT '[]',
-        enrollment_count INTEGER NOT NULL DEFAULT 0, source TEXT NOT NULL DEFAULT '',
+        enrollment_count INTEGER NOT NULL DEFAULT 0,
+        enrollment_count_status TEXT NOT NULL DEFAULT 'unknown',
+        enrollment_text TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL DEFAULT '',
         source_record_kind TEXT NOT NULL DEFAULT 'yanzhao_department_derived',
         UNIQUE(plan_key, observed_at)
     );
@@ -637,7 +668,7 @@ const SCHEMA: &str = "
         PRIMARY KEY (major_code, school_id, requested_year, source)
     );
     CREATE TABLE IF NOT EXISTS workspace_model_state (
-        major_code TEXT PRIMARY KEY, model_version INTEGER NOT NULL DEFAULT 6,
+        major_code TEXT PRIMARY KEY, model_version INTEGER NOT NULL DEFAULT 7,
         status TEXT NOT NULL CHECK(status IN ('writing','ready','failed')),
         old_plan_count INTEGER NOT NULL DEFAULT 0, new_plan_count INTEGER NOT NULL DEFAULT 0,
         old_year_count INTEGER NOT NULL DEFAULT 0, new_year_count INTEGER NOT NULL DEFAULT 0,
@@ -1694,13 +1725,16 @@ fn workspace_departments_source(normalized: bool) -> &'static str {
     if normalized {
         "(SELECT p.plan_id AS department_id, d.source_department_id, p.plan_key,
                  p.school_id, p.major_code, d.name, p.research_direction, p.exam_subjects,
-                 p.study_mode, p.exam_type, p.special_plans, p.enrollment_count, p.source, p.updated_at
+                 p.study_mode, p.exam_type, p.special_plans, p.enrollment_count,
+                 p.enrollment_count_status, p.enrollment_text, p.source, p.updated_at
           FROM workspace_plans p JOIN workspace_department_entities d
             ON d.department_key = p.department_key)"
     } else {
         "(SELECT d.department_id, d.source_department_id, d.plan_key, d.school_id, d.major_code,
                  d.name, d.research_direction, d.exam_subjects, d.study_mode, d.exam_type,
                  d.special_plans, COALESCE(p.enrollment_count, 0) AS enrollment_count,
+                 COALESCE(p.enrollment_count_status, 'unknown') AS enrollment_count_status,
+                 COALESCE(p.enrollment_text, '') AS enrollment_text,
                  d.source, d.updated_at
           FROM workspace_departments d LEFT JOIN workspace_plans p ON p.plan_key = d.plan_key)"
     }
@@ -2328,7 +2362,8 @@ fn get_workspace_plan_base_rows(
                 s.double_first_class, s.self_scoring, s.doctoral_program, s.display_order,
                 s.source, s.updated_at, s.major_code,
                 d.department_id, d.source_department_id, d.plan_key, d.name, d.research_direction,
-                d.exam_subjects, d.study_mode, d.exam_type, d.special_plans, d.enrollment_count, d.source, d.updated_at,
+                d.exam_subjects, d.study_mode, d.exam_type, d.special_plans, d.enrollment_count,
+                d.enrollment_count_status, d.enrollment_text, d.source, d.updated_at,
                 COALESCE((SELECT ps.catalog_year FROM workspace_plan_snapshots ps WHERE ps.plan_key = d.plan_key ORDER BY ps.observed_at DESC LIMIT 1), 0),
                 COALESCE((SELECT ps.catalog_year_status FROM workspace_plan_snapshots ps WHERE ps.plan_key = d.plan_key ORDER BY ps.observed_at DESC LIMIT 1), 'unknown'),
                 COALESCE((SELECT ps.observed_at FROM workspace_plan_snapshots ps WHERE ps.plan_key = d.plan_key ORDER BY ps.observed_at DESC LIMIT 1), d.updated_at),
@@ -2382,15 +2417,17 @@ fn get_workspace_plan_base_rows(
                 study_mode: row.get(20)?,
                 exam_type: row.get(21)?,
                 special_plans,
-                department_source: row.get(24)?,
-                department_updated_at: row.get(25)?,
-                latest_year: row.get(26)?,
-                latest_plan_year: row.get(26)?,
-                plan_year_status: row.get(27)?,
-                plan_snapshot_at: row.get(28)?,
-                latest_score_year: row.get(29)?,
-                latest_min_score: row.get(30)?,
+                department_source: row.get(26)?,
+                department_updated_at: row.get(27)?,
+                latest_year: row.get(28)?,
+                latest_plan_year: row.get(28)?,
+                plan_year_status: row.get(29)?,
+                plan_snapshot_at: row.get(30)?,
+                latest_score_year: row.get(31)?,
+                latest_min_score: row.get(32)?,
                 latest_enroll_count: row.get(23)?,
+                latest_enroll_count_status: row.get(24)?,
+                latest_enroll_text: row.get(25)?,
                 years: Vec::new(),
             })
         })
