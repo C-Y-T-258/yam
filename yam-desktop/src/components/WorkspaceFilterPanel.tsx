@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, type ReactNode } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   SlidersHorizontal,
@@ -26,6 +26,7 @@ interface WorkspaceFilterPanelProps {
   onChange: (filters: WorkspaceFilters) => void;
   resultCount?: number;
   viewMode?: 'school' | 'plan';
+  resultToolbar?: ReactNode;
 }
 
 export function WorkspaceFilterPanel({
@@ -34,6 +35,7 @@ export function WorkspaceFilterPanel({
   onChange,
   resultCount,
   viewMode = 'school',
+  resultToolbar,
 }: WorkspaceFilterPanelProps) {
   const [showProvincePanel, setShowProvincePanel] = useState(false);
   const [showLevelPanel, setShowLevelPanel] = useState(false);
@@ -824,17 +826,19 @@ export function WorkspaceFilterPanel({
               >
                 清除全部
               </button>
-              <span className="text-xs text-gray-400 ml-auto">
+              <span className="ml-auto text-xs text-gray-400">
                 共 {resultCount ?? 0} 条结果
               </span>
+              {resultToolbar && <span>{resultToolbar}</span>}
             </div>
           </motion.div>
         )}
       </AnimatePresence>
 
       {!activeChips.length && resultCount !== undefined && (
-        <div className="text-xs text-gray-400 mt-3 pt-3 border-t border-gray-100">
-          共 {resultCount} 条结果
+        <div className="flex items-center gap-2 text-xs text-gray-400 mt-3 pt-3 border-t border-gray-100">
+          <span>共 {resultCount} 条结果</span>
+          <span className="ml-auto">{resultToolbar}</span>
         </div>
       )}
 

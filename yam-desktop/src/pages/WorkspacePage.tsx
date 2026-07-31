@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Search, RefreshCw, Download,
@@ -36,9 +36,13 @@ import {
   type WorkspaceFilters,
 } from '../lib/db';
 import {
+  getDirectionInfo,
   getDirectionLabel,
+  getLatestScoreYear,
   getPlanExportCells,
   getScoreScopeLabel,
+  getSchoolScoreNote,
+  getSchoolScoreStatus,
   getTrendScaleDomain,
   getWorkspaceLoadingMode,
   getWorkspaceRefreshError,
@@ -406,6 +410,7 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
   // UX-4.3：招生计划视图紧凑/舒适切换。紧凑模式隐藏低频列（研究方向、考试科目），
   // 展开行仍可见全部信息。默认舒适视图。
   const [planCompact, setPlanCompact] = useState(false);
+  const [schoolScoreDetailed, setSchoolScoreDetailed] = useState(false);
   // ISSUE-028：导出格式下拉菜单
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const exportMenuRef = useRef<HTMLDivElement>(null);
@@ -1127,6 +1132,25 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
 
   const filteredData = aggregatedSchools;
   const paginatedData = filteredData;
+
+  const getSchoolMinimumScore = (item: AggregatedSchool) => {
+    const exactScores = item._raw
+      .filter((school) => school.min_score > 0)
+      .map((school) => ({ school, score: school.min_score, label: '专业分数线' }));
+    if (exactScores.length > 0) {
+      return exactScores.reduce((lowest, current) => current.score < lowest.score ? current : lowest);
+    }
+    const referenceScores = item._raw
+      .filter((school) => school.reference_score > 0)
+      .map((school) => ({
+        school,
+        score: school.reference_score,
+        label: school.reference_scope === 'category_reference' ? '门类参考线' : '一级学科参考线',
+      }));
+    return referenceScores.length > 0
+      ? referenceScores.reduce((lowest, current) => current.score < lowest.score ? current : lowest)
+      : undefined;
+  };
   const totalPages = Math.max(1, Math.ceil(schoolTotal / pageSize));
 
   const planTotalPages = Math.max(1, Math.ceil(planTotal / planPageSize));
@@ -1172,9 +1196,9 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
       if (planRows.length === 0) return null;
       const headers = [
         '院校代码', '院校名称', '专业代码', '专业名称', '省份', '层次',
-        '院系', '研究方向', '考试科目', '学习方式', '考试方式', '特殊计划',
+        '院系', '研究方向', '方向标签类型', '方向是否回退', '考试科目', '学习方式', '考试方式', '特殊计划',
         '院校来源', '院校更新时间', '计划来源', '计划更新时间',
-        '最新年份', '分数参考', '分数粒度', '招生人数', '分数来源', '分数更新时间', '匹配说明',
+        '最新计划年份', '最新分数年份', '分数线', '分数粒度', '招生人数', '分数来源', '分数更新时间', '匹配说明',
       ];
       const cellRows: ExportCell[][] = planRows.map(p =>
         getPlanExportCells(p, majorNameOf(p.major_code))
@@ -1562,6 +1586,23 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
               onChange={setFilters}
               resultCount={viewMode === 'plan' ? planTotal : schoolTotal}
               viewMode={viewMode}
+              resultToolbar={viewMode === 'school' ? (
+                <button
+                  onClick={() => setSchoolScoreDetailed((current) => !current)}
+                  className="text-xs text-gray-600 hover:text-[#1e3a5f] border border-gray-200 rounded px-2 py-1 hover:bg-gray-50 transition-colors"
+                  title={schoolScoreDetailed ? '切换到最低分视图' : '切换到详细状态视图'}
+                >
+                  {schoolScoreDetailed ? '最低分' : '详细状态'}
+                </button>
+              ) : (
+                <button
+                  onClick={() => setPlanCompact((current) => !current)}
+                  className="text-xs text-gray-600 hover:text-[#1e3a5f] border border-gray-200 rounded px-2 py-1 hover:bg-gray-50 transition-colors"
+                  title={planCompact ? '切换到舒适视图（显示研究方向、考试科目列）' : '切换到紧凑视图（隐藏低频列）'}
+                >
+                  {planCompact ? '舒适视图' : '紧凑视图'}
+                </button>
+              )}
             />
 
             {/* Loading / Error */}
@@ -1616,7 +1657,7 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
             <div>学校名称</div>
             <div className="w-40 text-center">院校层次</div>
             <div className="w-20 text-center">地区</div>
-            <div className="w-20 text-center">最低分</div>
+            <div className="w-52 text-center">各专业分数线状态</div>
             <div className="w-20 text-center">招生人数</div>
             <div className="w-16 text-center">操作</div>
           </div>
@@ -1696,11 +1737,38 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                 {/* Region */}
                 <div className="w-20 text-center text-gray-600">{item.province}</div>
 
-                {/* Min Score */}
-                <div className="w-20 text-center text-gray-900 font-medium">{item.min_score}</div>
+                {/* Score status */}
+                {schoolScoreDetailed ? (
+                   <div className="w-52 min-w-0 text-[11px] leading-4">
+                     {item._raw.map((school) => (
+                       <div
+                         key={school.major_code}
+                         className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.35fr)] gap-1 text-left"
+                         title={[getSchoolScoreStatus(school), getSchoolScoreNote(school), school.latest_request_error].filter(Boolean).join('；')}
+                       >
+                         <span className="truncate text-gray-500">{crawledMajors.find((major) => major.code === school.major_code)?.name ?? school.major_code}</span>
+                         <span className={school.min_score > 0 ? 'text-gray-900 font-medium' : 'text-amber-700'}>
+                           {getSchoolScoreStatus(school)}
+                         </span>
+                       </div>
+                     ))}
+                   </div>
+                 ) : (() => {
+                   const minimum = getSchoolMinimumScore(item);
+                   return (
+                     <div className="w-52 min-w-0 text-center text-[11px] leading-4" title={minimum?.school ? getSchoolScoreNote(minimum.school) : '尚未取得该专业分数线'}>
+                       <div className={minimum ? 'text-gray-900 font-medium' : 'text-amber-700'}>
+                         {minimum ? minimum.score : '暂无专业分数线'}
+                       </div>
+                       {minimum && (
+                         <div className="text-[10px] text-gray-500">{minimum.label}</div>
+                       )}
+                     </div>
+                   );
+                 })()}
 
                 {/* Enrollment Count */}
-                <div className="w-20 text-center text-gray-600">{item.enroll_count}</div>
+                <div className="w-20 text-center text-gray-600">{item.enroll_count || '未提供'}</div>
 
                 {/* Actions */}
                 <div className="w-16 flex items-center justify-center">
@@ -1760,6 +1828,15 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                             <Clock size={16} className="text-gray-400" />
                             <span>更新时间：{item.updated_at || '暂无'}</span>
                           </div>
+                          {(item.min_score === 0 || getSchoolScoreNote(item)) && (
+                            <div className="flex items-start gap-3 text-amber-700 text-sm">
+                              <AlertCircle size={16} className="mt-0.5 flex-shrink-0" />
+                              <span>
+                                {item.min_score === 0 ? getSchoolScoreStatus(item) : getSchoolScoreNote(item)}
+                                {item.latest_request_error ? `（掌上考研接口：${item.latest_request_error}）` : ''}
+                              </span>
+                            </div>
+                          )}
                         </div>
                         <div className="mt-6 space-y-2">
                           <motion.button
@@ -1804,6 +1881,14 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                                 {isAllMajors && (
                                   <span className="text-gray-400 font-normal">（{new Set(group.depts.map((d) => d.name)).size} 个院系）</span>
                                 )}
+                                {(() => {
+                                  const raw = item._raw.find((school) => school.major_code === group.major.code);
+                                  return raw ? (
+                                    <span className={`ml-2 text-[11px] font-normal ${raw.min_score > 0 ? 'text-gray-500' : 'text-amber-700'}`}>
+                                      {getSchoolScoreStatus(raw)}{getSchoolScoreNote(raw) ? `；${getSchoolScoreNote(raw)}` : ''}
+                                    </span>
+                                  ) : null;
+                                })()}
                               </h4>
                               {(() => {
                                 const favKey = `${item.school_id}|${group.major.code}`;
@@ -1826,9 +1911,10 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                               const seenDepartmentNames = new Set<string>();
                               return group.depts.map((dept) => {
                               const isExpanded = expandedPlanKeys.has(dept.plan_key);
-                              const activeYear = activeYearByPlan[dept.plan_key] ?? dept.years[0]?.year ?? 2026;
+                              const latestScore = getLatestScoreYear(dept);
+                              const activeYear = activeYearByPlan[dept.plan_key] ?? latestScore?.year ?? dept.years[0]?.year ?? 2026;
                               const showHistorical = historicalPlanKeys.has(dept.plan_key);
-                              const yearData = dept.years.find((year) => year.year === activeYear) || dept.years[0];
+                              const yearData = dept.years.find((year) => year.year === activeYear) || latestScore || dept.years[0];
                               const isFirstInDepartment = !seenDepartmentNames.has(dept.name);
                               seenDepartmentNames.add(dept.name);
                               const directionLabel = getDirectionLabel(dept);
@@ -1857,14 +1943,16 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                                 {isFirstInDepartment && directionLabel !== '未注明研究方向' && (
                                   <span className="ml-3 text-[11px] font-normal text-gray-500 truncate">{directionLabel}</span>
                                 )}
-                                {(() => {
-                                  const latest = dept.years[0];
-                                  return latest ? (
-                                    <span className="ml-3 text-[11px] font-normal text-gray-400">
-                                      {getScoreScopeLabel(latest)} {latest.min_score} · 招生 {latest.enroll_count}
-                                    </span>
-                                  ) : null;
-                                })()}
+                                {dept.study_mode && (
+                                  <span className={`ml-2 px-1.5 py-0.5 rounded text-[10px] font-medium ${dept.study_mode === '非全日制' ? 'bg-amber-50 text-amber-700 border border-amber-200' : 'bg-blue-50 text-blue-700 border border-blue-200'}`}>
+                                    {dept.study_mode}
+                                  </span>
+                                )}
+                                {latestScore ? (
+                                  <span className="ml-3 text-[11px] font-normal text-gray-400">
+                                    {getScoreScopeLabel(latestScore)} {latestScore.min_score} · 招生 {dept.enrollment_count || '未提供'}
+                                  </span>
+                                ) : null}
                               </span>
                               <motion.span
                                 animate={{ rotate: isExpanded ? 180 : 0 }}
@@ -1955,8 +2043,8 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                                           className="space-y-1 text-sm"
                                         >
                                           <div className="flex justify-between py-1.5 border-b border-gray-100">
-                                            <span className="text-gray-500">招生人数</span>
-                                            <span className="text-gray-900">{yearData.enroll_count}</span>
+                                            <span className="text-gray-500">当前计划招生人数</span>
+                                            <span className="text-gray-900">{dept.enrollment_count || '未提供'}</span>
                                           </div>
                                           <div className="flex justify-between py-1.5 border-b border-gray-100">
                                             <span className="text-gray-500">最低分</span>
@@ -2000,7 +2088,6 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                                           <thead>
                                             <tr className="border-b border-gray-200">
                                               <th className="text-left py-1.5 text-gray-500 font-medium">年份</th>
-                                              <th className="text-right py-1.5 text-gray-500 font-medium">招生人数</th>
                                               <th className="text-right py-1.5 text-gray-500 font-medium">最低分</th>
                                               <th className="text-right py-1.5 text-gray-500 font-medium">政治</th>
                                               <th className="text-right py-1.5 text-gray-500 font-medium">英语</th>
@@ -2012,7 +2099,6 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                                             {dept.years.map((y) => (
                                               <tr key={y.year} className="border-b border-gray-100">
                                                 <td className="py-1.5 text-gray-900">{y.year}</td>
-                                                <td className="py-1.5 text-right text-gray-900">{y.enroll_count}</td>
                                                 <td className="py-1.5 text-right text-gray-900 font-medium">{y.min_score}</td>
                                                 <td className="py-1.5 text-right text-gray-900">{y.politics}</td>
                                                 <td className="py-1.5 text-right text-gray-900">{y.english}</td>
@@ -2023,21 +2109,12 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                                           </tbody>
                                         </table>
 
-                                        {/* Charts */}
-                                        <div className="grid grid-cols-2 gap-3">
-                                          <TrendChart
-                                            years={dept.years}
-                                            dataKey="min_score"
-                                            title="最低分趋势"
-                                            chartHeight={chartHeight}
-                                          />
-                                          <TrendChart
-                                            years={dept.years}
-                                            dataKey="enroll_count"
-                                            title="招生人数趋势"
-                                            chartHeight={chartHeight}
-                                          />
-                                        </div>
+                                        <TrendChart
+                                          years={dept.years}
+                                          dataKey="min_score"
+                                          title="分数线趋势"
+                                          chartHeight={chartHeight}
+                                        />
                                               </>
                                             );
                                           })()}
@@ -2137,16 +2214,6 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
             {/* ISSUE-027 阶段 2：招生计划视图表格（viewMode === 'plan'） */}
             {viewMode === 'plan' && (
               <>
-              {/* UX-4.3：紧凑/舒适视图切换。紧凑模式隐藏研究方向、考试科目列，展开行仍可见。 */}
-              <div className="flex justify-end mb-2">
-                <button
-                  onClick={() => setPlanCompact((c) => !c)}
-                  className="text-xs text-gray-600 hover:text-[#1e3a5f] border border-gray-200 rounded px-2 py-1 hover:bg-gray-50 transition-colors"
-                  title={planCompact ? '切换到舒适视图（显示研究方向、考试科目列）' : '切换到紧凑视图（隐藏低频列）'}
-                >
-                  {planCompact ? '舒适视图' : '紧凑视图'}
-                </button>
-              </div>
               <div className="relative border border-gray-200 rounded-lg overflow-hidden">
                 {isPlanLoading && plans.length > 0 && (
                   <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-center py-1.5 bg-white/90 text-xs text-gray-600 border-b border-gray-200" role="status">
@@ -2162,8 +2229,8 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                   <div>院系</div>
                   {!planCompact && <div>研究方向</div>}
                   {!planCompact && <div>考试科目</div>}
-                  <div className="text-center">年份</div>
-                  <div className="text-center">最低分</div>
+                  <div className="text-center">计划年</div>
+                  <div className="text-center">分数线</div>
                   <div className="text-center">招生</div>
                   <div className="text-center">操作</div>
                 </div>
@@ -2205,27 +2272,42 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                         {crawledMajors.find(m => m.code === p.major_code)?.name ?? p.major_code}
                       </div>
                       {/* 院系 */}
-                      <div className="text-gray-700 text-xs min-w-0 truncate" title={p.department_name}>
-                        {p.department_name}
+                      <div className="text-gray-700 text-xs min-w-0" title={`${p.department_name} ${p.study_mode}`}>
+                        <div className="truncate">{p.department_name}</div>
+                        {p.study_mode && (
+                          <span className={`inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] font-medium ${p.study_mode === '非全日制' ? 'bg-amber-50 text-amber-700 border border-amber-200' : 'bg-blue-50 text-blue-700 border border-blue-200'}`}>
+                            {p.study_mode}
+                          </span>
+                        )}
                       </div>
                       {/* 研究方向（紧凑模式隐藏，展开行仍可见） */}
-                      {!planCompact && (
-                        <div className="text-gray-500 text-xs min-w-0 line-clamp-2" title={getDirectionLabel(p)}>
-                          {getDirectionLabel(p)}
-                        </div>
-                      )}
+                      {!planCompact && (() => {
+                        const direction = getDirectionInfo(p);
+                        return (
+                          <div className="text-gray-500 text-xs min-w-0 line-clamp-2" title={direction.label}>
+                            {direction.label} · {direction.label_type}
+                          </div>
+                        );
+                      })()}
                       {/* 考试科目（紧凑模式隐藏，展开行仍可见） */}
                       {!planCompact && (
                         <div className="text-gray-500 text-xs min-w-0 line-clamp-2" title={p.exam_subjects.join('；')}>
                           {p.exam_subjects.join('；') || '—'}
                         </div>
                       )}
-                      {/* 年份 */}
-                      <div className="text-center text-gray-500 text-xs">{p.latest_year || '—'}</div>
-                      {/* 最低分 */}
-                      <div className="text-center text-gray-900 font-medium">{p.latest_min_score || '—'}</div>
+                      {/* 计划年份与分数年份分开显示 */}
+                      <div className="text-center text-gray-500 text-xs">{p.latest_plan_year || '—'}</div>
+                      <div className="text-center min-w-0">
+                        <div className="text-gray-900 font-medium">{p.latest_min_score || '暂无'}</div>
+                        {getLatestScoreYear(p) && (
+                          <div className="text-[10px] text-gray-400 mt-0.5" title={[getLatestScoreYear(p)?.source, getLatestScoreYear(p)?.match_note].filter(Boolean).join(' · ')}>
+                            {p.latest_score_year || '无分数年份'}年 · {getScoreScopeLabel(getLatestScoreYear(p))}
+                          </div>
+                        )}
+                        {!p.latest_score_year && <div className="text-[10px] text-amber-600">最新计划暂无可用分数</div>}
+                      </div>
                       {/* 招生 */}
-                      <div className="text-center text-gray-600 text-xs">{p.latest_enroll_count || '—'}</div>
+                      <div className="text-center text-gray-600 text-xs">{p.latest_enroll_count || '未提供'}</div>
                       {/* 操作 */}
                       <div className="flex items-center justify-center gap-1">
                         <motion.button
@@ -2286,8 +2368,8 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                                   <thead>
                                     <tr className="text-gray-500 border-b border-gray-200">
                                       <th className="py-1.5 px-2 text-left">年份</th>
-                                      <th className="py-1.5 px-2 text-center">招生人数</th>
-                                      <th className="py-1.5 px-2 text-center">最低分</th>
+                                      <th className="py-1.5 px-2 text-center">分数线</th>
+                                      <th className="py-1.5 px-2 text-center">粒度</th>
                                       <th className="py-1.5 px-2 text-center">政治</th>
                                       <th className="py-1.5 px-2 text-center">英语</th>
                                       <th className="py-1.5 px-2 text-center">数学</th>
@@ -2298,8 +2380,8 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                                     {p.years.map(y => (
                                       <tr key={y.year} className="border-b border-gray-100">
                                         <td className="py-1.5 px-2 text-gray-700 font-medium">{y.year}</td>
-                                        <td className="py-1.5 px-2 text-center text-gray-600">{y.enroll_count}</td>
                                         <td className="py-1.5 px-2 text-center text-gray-900 font-medium">{y.min_score}</td>
+                                        <td className="py-1.5 px-2 text-center text-gray-500" title={y.match_note || getScoreScopeLabel(y)}>{getScoreScopeLabel(y)}</td>
                                         <td className="py-1.5 px-2 text-center text-gray-600">{y.politics}</td>
                                         <td className="py-1.5 px-2 text-center text-gray-600">{y.english}</td>
                                         <td className="py-1.5 px-2 text-center text-gray-600">{y.math}</td>

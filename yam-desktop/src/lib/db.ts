@@ -355,6 +355,12 @@ export interface WorkspaceSchool {
   province: string;
   level: string;
   min_score: number;
+  reference_score: number;
+  reference_year: number;
+  reference_scope: string;
+  latest_request_year: number;
+  latest_request_status: string;
+  latest_request_error: string;
   enroll_count: number;
   self_scoring: boolean;
   doctoral_program: boolean;
@@ -394,6 +400,7 @@ export interface WorkspaceDepartment {
   study_mode: string;
   exam_type: string;
   special_plans: string[];
+  enrollment_count: number;
   source: string;
   updated_at: string;
   years: WorkspaceYear[];
@@ -439,8 +446,10 @@ export interface WorkspacePlanRow {
   special_plans: string[];
   department_source: string;
   department_updated_at: string;
-  // 最新年份分数
+  // 兼容旧字段；计划年份与分数年份明确分离
   latest_year: number;
+  latest_plan_year: number;
+  latest_score_year: number;
   latest_min_score: number;
   latest_enroll_count: number;
   // 多年（展开用）
@@ -1137,7 +1146,7 @@ function getMockWorkspacePlans(): WorkspacePlanRow[] {
       exam_subjects: ['① 101 思想政治理论', '② 201 英语（一）', '③ 301 数学（一）', '④ 408 计算机学科专业基础'],
       study_mode: '全日制', exam_type: '统考', special_plans: [],
       department_source: 'yanzhao', department_updated_at: '2026-07-28',
-      latest_year: 2026, latest_min_score: 681, latest_enroll_count: 28,
+      latest_year: 2026, latest_plan_year: 2026, latest_score_year: 2026, latest_min_score: 681, latest_enroll_count: 28,
       years: [
         { year: 2026, enroll_count: 28, min_score: 681, politics: 70, english: 70, math: 110, specialized: 120 },
         { year: 2025, enroll_count: 26, min_score: 672, politics: 68, english: 68, math: 105, specialized: 115 },
@@ -1153,7 +1162,7 @@ function getMockWorkspacePlans(): WorkspacePlanRow[] {
       exam_subjects: ['① 101 思想政治理论', '② 204 英语（二）', '③ 302 数学（二）', '④ 408 计算机学科专业基础'],
       study_mode: '全日制', exam_type: '统考', special_plans: [],
       department_source: 'yanzhao', department_updated_at: '2026-07-28',
-      latest_year: 2026, latest_min_score: 670, latest_enroll_count: 45,
+      latest_year: 2026, latest_plan_year: 2026, latest_score_year: 2026, latest_min_score: 670, latest_enroll_count: 45,
       years: [
         { year: 2026, enroll_count: 45, min_score: 670, politics: 68, english: 68, math: 105, specialized: 115 },
       ],
@@ -1168,7 +1177,7 @@ function getMockWorkspacePlans(): WorkspacePlanRow[] {
       exam_subjects: ['① 101 思想政治理论', '② 201 英语（一）', '③ 301 数学（一）', '④ 408 计算机学科专业基础'],
       study_mode: '全日制', exam_type: '统考', special_plans: [],
       department_source: 'yanzhao', department_updated_at: '2026-07-28',
-      latest_year: 2026, latest_min_score: 675, latest_enroll_count: 30,
+      latest_year: 2026, latest_plan_year: 2026, latest_score_year: 2026, latest_min_score: 675, latest_enroll_count: 30,
       years: [
         { year: 2026, enroll_count: 30, min_score: 675, politics: 70, english: 70, math: 110, specialized: 118 },
       ],
@@ -1189,7 +1198,17 @@ function getMockWorkspaceData(filters: WorkspaceFilters = {}): WorkspaceData {
     { school_id: '8', major_code: '085400', name: '北京航空航天大学', province: '北京', level: '985 / 211 / 双一流', min_score: 641, enroll_count: 55, self_scoring: true, doctoral_program: true, double_first_class: true, school_code: '10006', province_code: '11', is_985: true, is_211: true, display_order: 7 },
     { school_id: '9', major_code: '085400', name: '同济大学', province: '上海', level: '985 / 211 / 双一流', min_score: 637, enroll_count: 45, self_scoring: true, doctoral_program: true, double_first_class: true, school_code: '10247', province_code: '31', is_985: true, is_211: true, display_order: 8 },
     { school_id: '10', major_code: '085400', name: '华中科技大学', province: '湖北', level: '985 / 211 / 双一流', min_score: 635, enroll_count: 50, self_scoring: false, doctoral_program: true, double_first_class: true, school_code: '10487', province_code: '42', is_985: true, is_211: true, display_order: 9 },
-  ].map((school) => ({ ...school, source: 'yanzhao', updated_at: '2026-07-28' }));
+  ].map((school) => ({
+    ...school,
+    reference_score: 0,
+    reference_year: 0,
+    reference_scope: '',
+    latest_request_year: 2026,
+    latest_request_status: 'success_with_data',
+    latest_request_error: '',
+    source: 'yanzhao',
+    updated_at: '2026-07-28',
+  }));
 
   if (filters.provinces && filters.provinces.length > 0) {
     schools = schools.filter((s) => filters.provinces!.includes(s.province));
@@ -1259,6 +1278,7 @@ function getMockWorkspaceData(filters: WorkspaceFilters = {}): WorkspaceData {
       study_mode: '全日制',
       exam_type: '统考',
       special_plans: [],
+      enrollment_count: 28,
       source: 'yanzhao',
       updated_at: '2026-07-28',
       years: [
@@ -1280,6 +1300,7 @@ function getMockWorkspaceData(filters: WorkspaceFilters = {}): WorkspaceData {
       study_mode: '全日制',
       exam_type: '统考',
       special_plans: [],
+      enrollment_count: 45,
       source: 'yanzhao',
       updated_at: '2026-07-28',
       years: [
@@ -1298,6 +1319,7 @@ function getMockWorkspaceData(filters: WorkspaceFilters = {}): WorkspaceData {
       study_mode: '全日制',
       exam_type: '统考',
       special_plans: ['退役大学生士兵'],
+      enrollment_count: 35,
       source: 'yanzhao',
       updated_at: '2026-07-28',
       years: [
@@ -1316,6 +1338,7 @@ function getMockWorkspaceData(filters: WorkspaceFilters = {}): WorkspaceData {
       study_mode: '全日制',
       exam_type: '统考',
       special_plans: [],
+      enrollment_count: 22,
       source: 'yanzhao',
       updated_at: '2026-07-28',
       years: [

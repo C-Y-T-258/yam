@@ -2678,7 +2678,7 @@ fn preferred_export_path(
     resolve_preferred_export_path(&settings, default_filename, ext)
 }
 
-const PLAN_EXPORT_HEADERS: [&str; 23] = [
+const PLAN_EXPORT_HEADERS: [&str; 26] = [
     "院校代码",
     "院校名称",
     "专业代码",
@@ -2687,6 +2687,8 @@ const PLAN_EXPORT_HEADERS: [&str; 23] = [
     "层次",
     "院系",
     "研究方向",
+    "方向标签类型",
+    "方向是否回退",
     "考试科目",
     "学习方式",
     "考试方式",
@@ -2695,8 +2697,9 @@ const PLAN_EXPORT_HEADERS: [&str; 23] = [
     "院校更新时间",
     "计划来源",
     "计划更新时间",
-    "最新年份",
-    "分数参考",
+    "最新计划年份",
+    "最新分数年份",
+    "分数线",
     "分数粒度",
     "招生人数",
     "分数来源",
@@ -2779,8 +2782,13 @@ fn csv_field(value: &Value) -> String {
     }
 }
 
+fn latest_score_year(row: &WorkspacePlanRow) -> Option<&crate::db::WorkspaceYear> {
+    row.years.iter().find(|year| year.year == row.latest_score_year)
+        .or_else(|| row.years.iter().find(|year| !matches!(year.score_scope.as_str(), "first_level_reference" | "category_reference")))
+}
+
 fn score_scope_label(row: &WorkspacePlanRow) -> &'static str {
-    match row.years.first().map(|year| year.score_scope.as_str()) {
+    match latest_score_year(row).map(|year| year.score_scope.as_str()) {
         Some("exact_direction") => "方向分数线",
         Some("department") => "院系分数线",
         Some("school_major") => "院校专业参考线",
@@ -2790,9 +2798,9 @@ fn score_scope_label(row: &WorkspacePlanRow) -> &'static str {
     }
 }
 
-fn plan_direction_label(row: &WorkspacePlanRow) -> String {
+fn plan_direction_label(row: &WorkspacePlanRow) -> (String, &'static str, bool) {
     if !row.research_direction.trim().is_empty() {
-        row.research_direction.trim().to_string()
+        (row.research_direction.trim().to_string(), "direction", false)
     } else {
         let subjects = row
             .exam_subjects
@@ -2801,7 +2809,7 @@ fn plan_direction_label(row: &WorkspacePlanRow) -> String {
             .cloned()
             .collect::<Vec<_>>();
         if !subjects.is_empty() {
-            subjects.join(" / ")
+            (subjects.join(" / "), "exam_subject", true)
         } else {
             let plans = row
                 .special_plans
@@ -2810,16 +2818,17 @@ fn plan_direction_label(row: &WorkspacePlanRow) -> String {
                 .cloned()
                 .collect::<Vec<_>>();
             if plans.is_empty() {
-                "未注明研究方向".to_string()
+                ("未注明研究方向".to_string(), "unspecified", true)
             } else {
-                plans.join(" / ")
+                (plans.join(" / "), "special_plan", true)
             }
         }
     }
 }
 
 fn plan_export_row(row: &WorkspacePlanRow, major_name: &str) -> Vec<Value> {
-    let latest_year = row.years.first();
+    let latest_year = latest_score_year(row);
+    let (direction, direction_type, direction_fallback) = plan_direction_label(row);
     vec![
         json!(row.school_code),
         json!(row.school_name),
@@ -2828,7 +2837,9 @@ fn plan_export_row(row: &WorkspacePlanRow, major_name: &str) -> Vec<Value> {
         json!(row.province),
         json!(row.level),
         json!(row.department_name),
-        json!(plan_direction_label(row)),
+        json!(direction),
+        json!(direction_type),
+        json!(direction_fallback),
         json!(row.exam_subjects.join("; ")),
         json!(row.study_mode),
         json!(row.exam_type),
@@ -2837,7 +2848,8 @@ fn plan_export_row(row: &WorkspacePlanRow, major_name: &str) -> Vec<Value> {
         json!(row.school_updated_at),
         json!(row.department_source),
         json!(row.department_updated_at),
-        json!(row.latest_year),
+        json!(row.latest_plan_year),
+        json!(row.latest_score_year),
         json!(row.latest_min_score),
         json!(score_scope_label(row)),
         json!(row.latest_enroll_count),
@@ -3396,6 +3408,8 @@ mod tests {
             department_source: "plan-source".to_string(),
             department_updated_at: "2026-07-02T08:00:00Z".to_string(),
             latest_year: 2026,
+            latest_plan_year: 2026,
+            latest_score_year: 2026,
             latest_min_score: 350,
             latest_enroll_count: 20,
             years: vec![crate::db::WorkspaceYear {
@@ -3415,13 +3429,15 @@ mod tests {
     }
 
     #[test]
-    fn plan_export_headers_and_row_have_23_columns() {
-        assert_eq!(PLAN_EXPORT_HEADERS.len(), 23);
+    fn plan_export_headers_and_row_have_semantic_columns() {
+        assert_eq!(PLAN_EXPORT_HEADERS.len(), 26);
         let row = plan_export_row(&sample_plan_row(), "计算机科学与技术");
-        assert_eq!(row.len(), 23);
+        assert_eq!(row.len(), 26);
         assert_eq!(row[7], json!("人工智能"));
-        assert_eq!(row[18], json!("方向分数线"));
-        assert_eq!(row[20], json!("score-source"));
+        assert_eq!(row[8], json!("direction"));
+        assert_eq!(row[19], json!(2026));
+        assert_eq!(row[21], json!("方向分数线"));
+        assert_eq!(row[23], json!("score-source"));
     }
 
     #[test]

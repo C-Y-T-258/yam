@@ -81,4 +81,21 @@ describe('WorkspaceFilterPanel', () => {
     await user.click(screen.getByRole('button', { name: '重置' }));
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ researchDirection: undefined }));
   });
+
+  it('有筛选标签时保持标签在左、结果数和视图按钮在右', () => {
+    render(
+      <WorkspaceFilterPanel
+        options={options}
+        filters={{ ...filters, provinces: ['北京'] }}
+        onChange={vi.fn()}
+        resultCount={12}
+        resultToolbar={<button>详细状态</button>}
+      />
+    );
+
+    const resultCount = screen.getByText('共 12 条结果');
+    const row = resultCount.parentElement;
+    expect(row).not.toBeNull();
+    expect(row?.textContent).toMatch(/^北京.*清除全部.*共 12 条结果.*详细状态$/);
+  });
 });

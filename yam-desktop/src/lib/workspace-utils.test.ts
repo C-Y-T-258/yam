@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { WorkspacePlanRow, WorkspaceYear } from './db';
 import {
+  getDirectionInfo,
   getDirectionLabel,
+  getLatestScoreYear,
   getPlanExportCells,
   getScoreScopeLabel,
+  getSchoolScoreStatus,
   getTrendScaleDomain,
   getWorkspaceLoadingMode,
   getWorkspaceRefreshError,
@@ -50,6 +53,8 @@ const basePlan: WorkspacePlanRow = {
   department_source: 'plan-source',
   department_updated_at: '2026-06-15T08:00:00Z',
   latest_year: 2025,
+  latest_plan_year: 2025,
+  latest_score_year: 2025,
   latest_min_score: 338,
   latest_enroll_count: 24,
   years: [baseYear],
@@ -82,6 +87,15 @@ describe('getDirectionLabel', () => {
   ])('按方向、科目、专项、默认值依次 fallback', (item, expected) => {
     expect(getDirectionLabel(item)).toBe(expected);
   });
+
+  it('为 fallback 显式返回类型且真实方向优先', () => {
+    expect(getDirectionInfo({ research_direction: '方向', exam_subjects: ['科目'], special_plans: [] }))
+      .toMatchObject({ label: '方向', label_type: 'direction', is_fallback: false });
+    expect(getDirectionInfo({ research_direction: '', exam_subjects: ['科目'], special_plans: [] }))
+      .toMatchObject({ label_type: 'exam_subject', is_fallback: true });
+    expect(getDirectionInfo({ research_direction: '', exam_subjects: [], special_plans: [] }))
+      .toMatchObject({ label: '未注明研究方向', label_type: 'unspecified', is_fallback: true });
+  });
 });
 
 describe('getScoreScopeLabel', () => {
@@ -93,6 +107,41 @@ describe('getScoreScopeLabel', () => {
     ['category_reference', '门类参考线'],
   ] as const)('映射 %s', (scoreScope, expected) => {
     expect(getScoreScopeLabel({ ...baseYear, score_scope: scoreScope })).toBe(expected);
+  });
+});
+
+describe('getLatestScoreYear', () => {
+  it('优先返回最新专业级分数，不被最新参考线覆盖', () => {
+    const plan = {
+      ...basePlan,
+      latest_score_year: 2024,
+      latest_min_score: 335,
+      years: [
+        { ...baseYear, year: 2025, min_score: 285, score_scope: 'first_level_reference' as const },
+        { ...baseYear, year: 2024, min_score: 335, score_scope: 'school_major' as const },
+      ],
+    };
+    expect(getLatestScoreYear(plan)).toMatchObject({ year: 2024, min_score: 335, score_scope: 'school_major' });
+  });
+});
+
+describe('getSchoolScoreStatus', () => {
+  const school = {
+    school_id: 'school-1', major_code: '085410', name: '测试大学', province: '湖北', level: '',
+    min_score: 0, reference_score: 0, reference_year: 0, reference_scope: '',
+    latest_request_year: 2026, latest_request_status: '', latest_request_error: '', enroll_count: 0,
+    self_scoring: false, doctoral_program: false, double_first_class: false,
+    school_code: '', province_code: '', is_985: false, is_211: false, display_order: 0,
+    source: 'yanzhao', updated_at: '',
+  };
+
+  it('解释API失败、一级学科参考线和门类参考线', () => {
+    expect(getSchoolScoreStatus({ ...school, latest_request_status: 'api_error' }))
+      .toBe('2026专业分数线获取失败');
+    expect(getSchoolScoreStatus({ ...school, reference_score: 320, reference_year: 2026, reference_scope: 'first_level_reference' }))
+      .toBe('暂无该专业分数线；2026年一级学科参考线320');
+    expect(getSchoolScoreStatus({ ...school, reference_score: 300, reference_year: 2026, reference_scope: 'category_reference' }))
+      .toBe('暂无该专业分数线；2026年门类参考线300');
   });
 });
 
@@ -122,11 +171,13 @@ describe('getTrendScaleDomain', () => {
 describe('getPlanExportCells', () => {
   it('导出全部 23 列及方向、粒度和来源元数据', () => {
     const cells = getPlanExportCells(basePlan, '电子信息');
-    expect(cells).toHaveLength(23);
+    expect(cells).toHaveLength(26);
     expect(cells[7]).toBe('人工智能');
-    expect(cells[18]).toBe('方向分数线');
-    expect(cells.slice(20)).toEqual(['score-source', '2026-07-01T08:00:00Z', '按方向精确匹配']);
-    expect(cells.slice(12, 16)).toEqual([
+    expect(cells[8]).toBe('direction');
+    expect(cells[18]).toBe(2025);
+    expect(cells[21]).toBe('方向分数线');
+    expect(cells.slice(23)).toEqual(['score-source', '2026-07-01T08:00:00Z', '按方向精确匹配']);
+    expect(cells.slice(14, 18)).toEqual([
       'school-source',
       '2026-06-01T08:00:00Z',
       'plan-source',
@@ -144,7 +195,7 @@ describe('getPlanExportCells', () => {
     };
     const cells = getPlanExportCells(plan, '电子信息');
     expect(cells[7]).toBe('408计算机学科专业基础');
-    expect(cells[18]).toBe('分数参考');
-    expect(cells.slice(20)).toEqual(['', '', '']);
+    expect(cells[21]).toBe('分数参考');
+    expect(cells.slice(23)).toEqual(['', '', '']);
   });
 });

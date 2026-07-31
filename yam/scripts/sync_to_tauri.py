@@ -125,6 +125,17 @@ CREATE TABLE IF NOT EXISTS workspace_plan_years (
     UNIQUE(plan_key, year)
 );
 
+CREATE TABLE IF NOT EXISTS workspace_score_request_status (
+    major_code TEXT NOT NULL,
+    school_id TEXT NOT NULL,
+    requested_year INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error_message TEXT NOT NULL DEFAULT '',
+    retrieved_at TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (major_code, school_id, requested_year, source)
+);
+
 CREATE TABLE IF NOT EXISTS workspace_model_state (
     major_code TEXT PRIMARY KEY,
     model_version INTEGER NOT NULL DEFAULT 2,
@@ -270,6 +281,7 @@ def clear_major(conn: sqlite3.Connection, major_code: str) -> None:
     )
     conn.execute("DELETE FROM workspace_plans WHERE major_code = ?", (major_code,))
     conn.execute("DELETE FROM workspace_department_entities WHERE major_code = ?", (major_code,))
+    conn.execute("DELETE FROM workspace_score_request_status WHERE major_code = ?", (major_code,))
     conn.execute("DELETE FROM workspace_model_state WHERE major_code = ?", (major_code,))
     conn.execute("DELETE FROM workspace_majors WHERE major_code = ?", (major_code,))
     conn.execute(
@@ -441,39 +453,46 @@ def load_departments(conn: sqlite3.Connection, school_id: str, major_code: str) 
 def load_score_lines(
     conn: sqlite3.Connection, school_id: str, department_name: str, major_code: str
 ) -> list[dict[str, Any]]:
-    """加载该校该专业历年分数线（按年聚合取最低分）.
-
-    ISSUE-025 修复：
-    - 原实现通过 admission_plans 表做 department_name → department_id 映射，但
-      admission_plans 只在早期采集 085410 时写入，导致 081200/083500 等专业的
-      分数线无法同步。
-    - score_lines 表的 department_id 字段是掌上考研院系编号，与研招网 departments
-      表的 department_id（研招网院系编号）是两套不同体系，无法直接关联。
-    - 同一校同年可能有多个院系的分数线（不同 total），因此按 year 分组取 MIN(total)
-      作为该专业该年的最低录取分。同年同专业的公共课线（politics/english 等）通常
-      相同（国家线），取 MIN 不影响准确性。
-
-    后续优化方向：score_lines 表增加 department_name 列，实现院系级别精确匹配。
-    """
-    cur = conn.execute(
-        """
-        SELECT sl.year,
-               MIN(sl.total) as total,
-               MIN(sl.politics) as politics,
-               MIN(sl.english) as english,
-               MIN(sl.special_one) as special_one,
-               MIN(sl.special_two) as special_two,
-               COALESCE(MAX(sl.source), '') as source,
-               COALESCE(MAX(sl.updated_at), '') as updated_at,
-               COALESCE(MAX(sl.note), '') as note
+    """每年选择一条完整来源记录，禁止按列 MIN 拼接不存在的分数线。"""
+    optional_columns = {
+        name for name in (
+            "raw_code", "raw_department_name", "metric_type", "match_scope",
+            "confidence", "raw_evidence_json",
+        ) if _source_has_column(conn, "score_lines", name)
+    }
+    select_optional = ", ".join(f"sl.{name}" for name in sorted(optional_columns))
+    if select_optional:
+        select_optional = ", " + select_optional
+    rows = conn.execute(
+        f"""
+        SELECT sl.department_id, sl.year, sl.total, sl.politics, sl.english,
+               sl.special_one, sl.special_two, COALESCE(sl.source, '') source,
+               COALESCE(sl.updated_at, '') updated_at, COALESCE(sl.note, '') note
+               {select_optional}
         FROM score_lines sl
         WHERE sl.school_id = ? AND sl.major_code = ?
-        GROUP BY sl.year
-        ORDER BY sl.year DESC
+        ORDER BY sl.year DESC,
+                 CASE WHEN sl.total IS NULL THEN 1 ELSE 0 END,
+                 sl.total ASC, sl.department_id ASC
         """,
         (school_id, major_code),
-    )
-    return [dict(r) for r in cur.fetchall()]
+    ).fetchall()
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for row in rows:
+        item = dict(row)
+        grouped.setdefault(int(item["year"]), []).append(item)
+
+    result: list[dict[str, Any]] = []
+    for year in sorted(grouped, reverse=True):
+        candidates = grouped[year]
+        selected = dict(candidates[0])
+        selected["source_record_count"] = len(candidates)
+        selected["selected_department_id"] = selected.get("department_id") or ""
+        if len(candidates) > 1:
+            detail = f"同校同专业同年{len(candidates)}条来源记录，完整保留最低总分记录"
+            selected["note"] = " | ".join(v for v in (selected.get("note") or "", detail) if v)
+        result.append(selected)
+    return result
 
 
 def insert_department(
@@ -554,26 +573,25 @@ def insert_department_years(
     dept_enrollment_count: int | None,
     score_lines: list[dict[str, Any]],
 ) -> int:
-    """写入年份数据，返回该院系聚合后的 min_score."""
-    dept_min_score: int | None = None
+    """写入分数年份，返回最新可用的专业级分数线。"""
+    latest_main_score = 0
     for score in score_lines:
         total = score.get("total")
-        if total is not None:
-            if dept_min_score is None or total < dept_min_score:
-                dept_min_score = total
-
         note = score.get("note") or ""
-        if "一级学科参考线" in note:
+        match_scope = str(score.get("match_scope") or "")
+        if match_scope in ("discipline", "first_level") or "一级学科参考线" in note:
             score_scope = "first_level_reference"
-        elif "门类级参考线" in note:
+        elif match_scope == "category" or "门类级参考线" in note:
             score_scope = "category_reference"
         else:
-            # 当前同步按 school_id + major_code + year 聚合，不能标为方向精确分数线。
+            # 来源院系无法与研招网计划稳定对应，只能标为学校专业级分数线。
             score_scope = "school_major"
+        if latest_main_score == 0 and total is not None and score_scope == "school_major":
+            latest_main_score = int(total)
 
         year_values = (
             score.get("year") or 0,
-            dept_enrollment_count or 0,
+            0,  # 当前招生人数不是历史年份人数，禁止复制到每个分数年份。
             total or 0,
             score.get("politics") or 0,
             score.get("english") or 0,
@@ -605,7 +623,25 @@ def insert_department_years(
             """,
             (plan_key, *year_values),
         )
-    return dept_min_score or 0
+    return latest_main_score
+
+
+def unique_plan_enrollment_total(departments: list[dict[str, Any]]) -> int:
+    seen: set[tuple[str, str, str, int]] = set()
+    total = 0
+    for dept in departments:
+        count = int(dept.get("enrollment_count") or 0)
+        key = (
+            str(dept.get("department_id") or "").strip(),
+            str(dept.get("study_mode") or "").strip(),
+            str(dept.get("exam_type") or "").strip(),
+            count,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        total += count
+    return total
 
 
 def sync_major(source: sqlite3.Connection, target: sqlite3.Connection, major_code: str) -> dict[str, int]:
@@ -634,6 +670,20 @@ def sync_major(source: sqlite3.Connection, target: sqlite3.Connection, major_cod
         "INSERT INTO workspace_model_state (major_code, status) VALUES (?, 'writing')",
         (major_code,),
     )
+
+    if _source_has_column(source, "score_request_status", "status"):
+        status_rows = source.execute(
+            """SELECT major_code, school_id, requested_year, source, status,
+                      COALESCE(error_message, ''), COALESCE(retrieved_at, '')
+               FROM score_request_status WHERE major_code = ?""",
+            (major_code,),
+        ).fetchall()
+        target.executemany(
+            """INSERT INTO workspace_score_request_status
+               (major_code, school_id, requested_year, source, status, error_message, retrieved_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            [tuple(row) for row in status_rows],
+        )
 
     schools = load_schools(source, major_code)
     # 从种子文件回填 school_code/province_code/is_985/is_211 并修正科研院所 level
@@ -667,23 +717,23 @@ def sync_major(source: sqlite3.Connection, target: sqlite3.Connection, major_cod
         # 当前分数按学校+专业+年份聚合，每所学校只需查询一次并复用到各计划。
         score_lines = load_score_lines(source, school_id, "", major_code)
 
-        school_enroll_count = 0
+        school_enroll_count = unique_plan_enrollment_total(departments)
         school_min_score: int | None = None
 
         for dept in departments:
             dept_enrollment_count = dept.get("enrollment_count") or 0
-            school_enroll_count += dept_enrollment_count
 
             target_dept_id = insert_department(target, school_id, major_code, dept)
             inserted_departments += 1
 
-            dept_min_score = insert_department_years(
+            latest_dept_score = insert_department_years(
                 target, target_dept_id, dept_enrollment_count, score_lines
             )
             inserted_years += len(score_lines)
 
-            if dept_min_score > 0 and (school_min_score is None or dept_min_score < school_min_score):
-                school_min_score = dept_min_score
+            if latest_dept_score > 0 and school_min_score is None:
+                # 所有计划共享同一学校专业参考层，院校主分数取最新可用专业级记录。
+                school_min_score = latest_dept_score
 
         target.execute(
             """

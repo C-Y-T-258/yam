@@ -174,6 +174,12 @@ pub struct WorkspaceSchool {
     pub province: String,
     pub level: String,
     pub min_score: i32,
+    pub reference_score: i32,
+    pub reference_year: i32,
+    pub reference_scope: String,
+    pub latest_request_year: i32,
+    pub latest_request_status: String,
+    pub latest_request_error: String,
     pub enroll_count: i32,
     pub self_scoring: bool,
     pub doctoral_program: bool,
@@ -206,6 +212,7 @@ pub struct WorkspaceDepartment {
     pub study_mode: String,
     pub exam_type: String,
     pub special_plans: Vec<String>,
+    pub enrollment_count: i32,
     pub source: String,
     pub updated_at: String,
     pub years: Vec<WorkspaceYear>,
@@ -257,8 +264,10 @@ pub struct WorkspacePlanRow {
     pub special_plans: Vec<String>,
     pub department_source: String,
     pub department_updated_at: String,
-    // 最新年份分数（years[0]，years 按 year DESC 排序）
+    // 兼容旧调用：latest_year 等同最新计划年份；分数年份单独由 latest_score_year 表示。
     pub latest_year: i32,
+    pub latest_plan_year: i32,
+    pub latest_score_year: i32,
     pub latest_min_score: i32,
     pub latest_enroll_count: i32,
     // 多年分数（供展开用）
@@ -547,6 +556,12 @@ const SCHEMA: &str = "
         english INTEGER NOT NULL, math INTEGER NOT NULL, specialized INTEGER NOT NULL,
         score_scope TEXT NOT NULL DEFAULT 'school_major', source TEXT NOT NULL DEFAULT '',
         updated_at TEXT NOT NULL DEFAULT '', match_note TEXT NOT NULL DEFAULT '', UNIQUE(plan_key, year)
+    );
+    CREATE TABLE IF NOT EXISTS workspace_score_request_status (
+        major_code TEXT NOT NULL, school_id TEXT NOT NULL, requested_year INTEGER NOT NULL,
+        source TEXT NOT NULL, status TEXT NOT NULL, error_message TEXT NOT NULL DEFAULT '',
+        retrieved_at TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (major_code, school_id, requested_year, source)
     );
     CREATE TABLE IF NOT EXISTS workspace_model_state (
         major_code TEXT PRIMARY KEY, model_version INTEGER NOT NULL DEFAULT 2,
@@ -1410,8 +1425,14 @@ pub fn get_workspace_schools(
     let where_sql = conditions.join(" AND ");
 
     let sql = format!(
-        "SELECT DISTINCT s.school_id, s.major_code, s.name, s.province, s.level, s.min_score, s.enroll_count,
-                s.self_scoring, s.doctoral_program, s.double_first_class,
+        "SELECT DISTINCT s.school_id, s.major_code, s.name, s.province, s.level, s.min_score,
+                COALESCE((SELECT y.min_score FROM {years_ref} y JOIN {departments_ref} rd ON rd.department_id = y.department_id WHERE rd.school_id = s.school_id AND rd.major_code = s.major_code AND y.score_scope IN ('first_level_reference', 'category_reference') ORDER BY y.year DESC, CASE y.score_scope WHEN 'first_level_reference' THEN 0 ELSE 1 END LIMIT 1), 0),
+                COALESCE((SELECT y.year FROM {years_ref} y JOIN {departments_ref} rd ON rd.department_id = y.department_id WHERE rd.school_id = s.school_id AND rd.major_code = s.major_code AND y.score_scope IN ('first_level_reference', 'category_reference') ORDER BY y.year DESC, CASE y.score_scope WHEN 'first_level_reference' THEN 0 ELSE 1 END LIMIT 1), 0),
+                COALESCE((SELECT y.score_scope FROM {years_ref} y JOIN {departments_ref} rd ON rd.department_id = y.department_id WHERE rd.school_id = s.school_id AND rd.major_code = s.major_code AND y.score_scope IN ('first_level_reference', 'category_reference') ORDER BY y.year DESC, CASE y.score_scope WHEN 'first_level_reference' THEN 0 ELSE 1 END LIMIT 1), ''),
+                COALESCE((SELECT r.requested_year FROM workspace_score_request_status r WHERE r.school_id = s.school_id AND r.major_code = s.major_code ORDER BY r.requested_year DESC LIMIT 1), 0),
+                COALESCE((SELECT r.status FROM workspace_score_request_status r WHERE r.school_id = s.school_id AND r.major_code = s.major_code ORDER BY r.requested_year DESC LIMIT 1), ''),
+                COALESCE((SELECT r.error_message FROM workspace_score_request_status r WHERE r.school_id = s.school_id AND r.major_code = s.major_code ORDER BY r.requested_year DESC LIMIT 1), ''),
+                s.enroll_count, s.self_scoring, s.doctoral_program, s.double_first_class,
                 s.school_code, s.province_code, s.is_985, s.is_211, s.display_order,
                 s.source, s.updated_at
          FROM workspace_schools s
@@ -1419,7 +1440,9 @@ pub fn get_workspace_schools(
          LEFT JOIN {} y ON y.department_id = d.department_id
          WHERE {}
          ORDER BY {}",
-        departments_source, years_source, where_sql, order_sql
+        departments_source, years_source, where_sql, order_sql,
+        years_ref = years_source,
+        departments_ref = departments_source
     );
 
     let mut stmt = conn.prepare(&sql).unwrap();
@@ -1432,17 +1455,23 @@ pub fn get_workspace_schools(
                 province: row.get(3)?,
                 level: row.get(4)?,
                 min_score: row.get(5)?,
-                enroll_count: row.get(6)?,
-                self_scoring: row.get::<_, i32>(7)? != 0,
-                doctoral_program: row.get::<_, i32>(8)? != 0,
-                double_first_class: row.get::<_, i32>(9)? != 0,
-                school_code: row.get::<_, String>(10)?,
-                province_code: row.get::<_, String>(11)?,
-                is_985: row.get::<_, i32>(12)? != 0,
-                is_211: row.get::<_, i32>(13)? != 0,
-                display_order: row.get::<_, i32>(14)?,
-                source: row.get(15)?,
-                updated_at: row.get(16)?,
+                reference_score: row.get(6)?,
+                reference_year: row.get(7)?,
+                reference_scope: row.get(8)?,
+                latest_request_year: row.get(9)?,
+                latest_request_status: row.get(10)?,
+                latest_request_error: row.get(11)?,
+                enroll_count: row.get(12)?,
+                self_scoring: row.get::<_, i32>(13)? != 0,
+                doctoral_program: row.get::<_, i32>(14)? != 0,
+                double_first_class: row.get::<_, i32>(15)? != 0,
+                school_code: row.get::<_, String>(16)?,
+                province_code: row.get::<_, String>(17)?,
+                is_985: row.get::<_, i32>(18)? != 0,
+                is_211: row.get::<_, i32>(19)? != 0,
+                display_order: row.get::<_, i32>(20)?,
+                source: row.get(21)?,
+                updated_at: row.get(22)?,
             })
         })
         .unwrap();
@@ -1586,11 +1615,15 @@ fn workspace_departments_source(normalized: bool) -> &'static str {
     if normalized {
         "(SELECT p.plan_id AS department_id, d.source_department_id, p.plan_key,
                  p.school_id, p.major_code, d.name, p.research_direction, p.exam_subjects,
-                 p.study_mode, p.exam_type, p.special_plans, p.source, p.updated_at
+                 p.study_mode, p.exam_type, p.special_plans, p.enrollment_count, p.source, p.updated_at
           FROM workspace_plans p JOIN workspace_department_entities d
             ON d.department_key = p.department_key)"
     } else {
-        "workspace_departments"
+        "(SELECT d.department_id, d.source_department_id, d.plan_key, d.school_id, d.major_code,
+                 d.name, d.research_direction, d.exam_subjects, d.study_mode, d.exam_type,
+                 d.special_plans, COALESCE(p.enrollment_count, 0) AS enrollment_count,
+                 d.source, d.updated_at
+          FROM workspace_departments d LEFT JOIN workspace_plans p ON p.plan_key = d.plan_key)"
     }
 }
 
@@ -1864,7 +1897,7 @@ pub fn get_workspace_departments(
     let sql = format!(
         "SELECT department_id, source_department_id, plan_key, school_id, major_code, name,
                 research_direction, exam_subjects, study_mode, exam_type, special_plans,
-                source, updated_at
+                enrollment_count, source, updated_at
          FROM {}
          WHERE school_id = ?1 AND major_code IN ({})
          ORDER BY major_code, department_id",
@@ -1902,8 +1935,9 @@ pub fn get_workspace_departments(
                 study_mode: row.get(8)?,
                 exam_type: row.get(9)?,
                 special_plans,
-                source: row.get(11)?,
-                updated_at: row.get(12)?,
+                enrollment_count: row.get(11)?,
+                source: row.get(12)?,
+                updated_at: row.get(13)?,
                 years: Vec::new(),
             })
         })
@@ -2159,41 +2193,43 @@ fn get_workspace_plan_base_rows(
         }
     }
 
-    // 单科分数筛选：EXISTS 子查询查 workspace_department_years（任一年份匹配即保留该院系，避免行重复）
+    // 单科范围必须由同一年份行同时满足，避免跨年拼接。
+    let mut year_conditions = Vec::new();
     if let Some(v) = params.english_min {
-        conditions.push(format!("EXISTS(SELECT 1 FROM {} y WHERE y.department_id = d.department_id AND y.english >= ?{})", years_source, idx));
+        year_conditions.push(format!("y.english >= ?{}", idx));
         values.push(rusqlite::types::Value::Integer(v as i64));
         idx += 1;
     }
     if let Some(v) = params.english_max {
-        conditions.push(format!("EXISTS(SELECT 1 FROM {} y WHERE y.department_id = d.department_id AND y.english <= ?{})", years_source, idx));
+        year_conditions.push(format!("y.english <= ?{}", idx));
         values.push(rusqlite::types::Value::Integer(v as i64));
         idx += 1;
     }
     if let Some(v) = params.business_one_min {
-        conditions.push(format!(
-            "EXISTS(SELECT 1 FROM {} y WHERE y.department_id = d.department_id AND y.math >= ?{})",
-            years_source, idx
-        ));
+        year_conditions.push(format!("y.math >= ?{}", idx));
         values.push(rusqlite::types::Value::Integer(v as i64));
         idx += 1;
     }
     if let Some(v) = params.business_one_max {
-        conditions.push(format!(
-            "EXISTS(SELECT 1 FROM {} y WHERE y.department_id = d.department_id AND y.math <= ?{})",
-            years_source, idx
-        ));
+        year_conditions.push(format!("y.math <= ?{}", idx));
         values.push(rusqlite::types::Value::Integer(v as i64));
         idx += 1;
     }
     if let Some(v) = params.business_two_min {
-        conditions.push(format!("EXISTS(SELECT 1 FROM {} y WHERE y.department_id = d.department_id AND y.specialized >= ?{})", years_source, idx));
+        year_conditions.push(format!("y.specialized >= ?{}", idx));
         values.push(rusqlite::types::Value::Integer(v as i64));
         idx += 1;
     }
     if let Some(v) = params.business_two_max {
-        conditions.push(format!("EXISTS(SELECT 1 FROM {} y WHERE y.department_id = d.department_id AND y.specialized <= ?{})", years_source, idx));
+        year_conditions.push(format!("y.specialized <= ?{}", idx));
         values.push(rusqlite::types::Value::Integer(v as i64));
+    }
+    if !year_conditions.is_empty() {
+        conditions.push(format!(
+            "EXISTS(SELECT 1 FROM {} y WHERE y.department_id = d.department_id AND {})",
+            years_source,
+            year_conditions.join(" AND ")
+        ));
     }
 
     let where_sql = if conditions.is_empty() {
@@ -2206,9 +2242,10 @@ fn get_workspace_plan_base_rows(
                 s.double_first_class, s.self_scoring, s.doctoral_program, s.display_order,
                 s.source, s.updated_at, s.major_code,
                 d.department_id, d.source_department_id, d.plan_key, d.name, d.research_direction,
-                d.exam_subjects, d.study_mode, d.exam_type, d.special_plans, d.source, d.updated_at,
+                d.exam_subjects, d.study_mode, d.exam_type, d.special_plans, d.enrollment_count, d.source, d.updated_at,
                 COALESCE((SELECT y.year FROM {years} y WHERE y.department_id = d.department_id ORDER BY y.year DESC LIMIT 1), 0),
-                COALESCE((SELECT y.min_score FROM {years} y WHERE y.department_id = d.department_id ORDER BY y.year DESC LIMIT 1), 0),
+                COALESCE((SELECT y.year FROM {years} y WHERE y.department_id = d.department_id AND y.score_scope NOT IN ('first_level_reference', 'category_reference') ORDER BY y.year DESC LIMIT 1), 0),
+                COALESCE((SELECT y.min_score FROM {years} y WHERE y.department_id = d.department_id AND y.score_scope NOT IN ('first_level_reference', 'category_reference') ORDER BY y.year DESC LIMIT 1), 0),
                 COALESCE((SELECT y.enroll_count FROM {years} y WHERE y.department_id = d.department_id ORDER BY y.year DESC LIMIT 1), 0)
          FROM workspace_schools s
          JOIN {departments} d ON d.school_id = s.school_id AND d.major_code = s.major_code
@@ -2257,11 +2294,13 @@ fn get_workspace_plan_base_rows(
                 study_mode: row.get(20)?,
                 exam_type: row.get(21)?,
                 special_plans,
-                department_source: row.get(23)?,
-                department_updated_at: row.get(24)?,
-                latest_year: row.get(25)?,
-                latest_min_score: row.get(26)?,
-                latest_enroll_count: row.get(27)?,
+                department_source: row.get(24)?,
+                department_updated_at: row.get(25)?,
+                latest_year: row.get(26)?,
+                latest_plan_year: row.get(26)?,
+                latest_score_year: row.get(27)?,
+                latest_min_score: row.get(28)?,
+                latest_enroll_count: row.get(23)?,
                 years: Vec::new(),
             })
         })
@@ -3072,6 +3111,19 @@ mod tests {
     }
 
     #[test]
+    fn workspace_plan_subject_filters_use_one_year_row() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute("INSERT INTO workspace_schools (school_id, major_code, name, province, level, min_score, enroll_count) VALUES ('s', '081200', '测试', '北京', '普通', 300, 1)", []).unwrap();
+        conn.execute("INSERT INTO workspace_departments (department_id, plan_key, school_id, major_code, name, research_direction, exam_subjects) VALUES (1, 'p', 's', '081200', '院系', '真实方向', '')", []).unwrap();
+        conn.execute("INSERT INTO workspace_department_years (department_id, year, enroll_count, min_score, politics, english, math, specialized) VALUES (1, 2024, 1, 300, 0, 60, 80, 90), (1, 2025, 1, 300, 0, 70, 90, 80)", []).unwrap();
+        let mut filters = empty_filters();
+        filters.english_min = Some(65);
+        filters.business_two_min = Some(85);
+        assert!(get_workspace_plans(&conn, &["081200"], filters).is_empty());
+    }
+
+    #[test]
     fn workspace_plan_pagination_is_stable_and_loads_only_page_years() {
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
@@ -3137,6 +3189,18 @@ mod tests {
         let filtered = get_workspace_plans_page(&conn, &["081200"], search_filters, 1, 20);
         assert_eq!(filtered.total, 1);
         assert_eq!(filtered.items[0].plan_key, "plan-3");
+
+        let mut direction_filters = empty_filters();
+        direction_filters.research_direction = Some("方向3");
+        let direction_filtered = get_workspace_plans_page(&conn, &["081200"], direction_filters, 1, 20);
+        assert_eq!(direction_filtered.total, 1);
+        assert_eq!(direction_filtered.items[0].plan_key, "plan-3");
+
+        let mut missing_direction_filters = empty_filters();
+        missing_direction_filters.research_direction = Some("不存在方向");
+        let missing_direction = get_workspace_plans_page(&conn, &["081200"], missing_direction_filters, 1, 20);
+        assert_eq!(missing_direction.total, 0);
+        assert!(missing_direction.items.is_empty());
 
         let clamped = get_workspace_plans_page(&conn, &["081200"], empty_filters(), 1, 500);
         assert_eq!(clamped.items.len(), 5);

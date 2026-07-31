@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -10,6 +11,8 @@ from unittest import mock
 import pytest
 
 from yam import backend_entry
+from yam.scripts.sync_to_tauri import load_score_lines, unique_plan_enrollment_total
+from yam.storage.db import Database
 
 
 @pytest.mark.parametrize(
@@ -100,3 +103,122 @@ print(config.realtime_majors_file)
     assert result.returncode == 0, result.stderr
     assert str(home / ".yam" / "data" / "majors_realtime.json") in result.stdout
     assert not (resource_data / "majors_realtime.json").exists()
+
+
+def test_score_evidence_schema_migrates_and_persists_raw_record(tmp_path: Path) -> None:
+    db_path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """CREATE TABLE score_lines (
+        school_id TEXT NOT NULL, department_id TEXT NOT NULL, major_code TEXT NOT NULL,
+        year INTEGER NOT NULL, total INTEGER, politics INTEGER, english INTEGER,
+        special_one INTEGER, special_two INTEGER, note TEXT, source TEXT, updated_at TEXT,
+        PRIMARY KEY (school_id, department_id, major_code, year))"""
+    )
+    conn.execute("PRAGMA user_version = 3")
+    conn.commit()
+    conn.close()
+
+    with Database(db_path) as db:
+        db.save_score_line(
+            "085410",
+            "school-1",
+            "department-1",
+            2025,
+            {
+                "total": 285,
+                "raw_code": "0854",
+                "raw_department_name": "电子信息学院",
+                "metric_type": "score_line",
+                "match_scope": "discipline",
+                "confidence": 0.8,
+                "raw_evidence": {"code": "0854", "total": "285"},
+            },
+            "zhangshangkaoyan",
+            "2026-07-30T00:00:00Z",
+        )
+        db.conn.commit()
+        row = db.conn.execute(
+            "SELECT raw_code, raw_department_name, metric_type, match_scope, confidence, raw_evidence_json FROM score_lines"
+        ).fetchone()
+
+    assert tuple(row[:5]) == ("0854", "电子信息学院", "score_line", "discipline", 0.8)
+    assert json.loads(row[5]) == {"code": "0854", "total": "285"}
+
+
+def test_score_request_status_drives_year_level_retry(tmp_path: Path) -> None:
+    with Database(tmp_path / "status.db") as db:
+        db.save_score_request_status("085410", "school-1", 2026, "source", "success_with_data")
+        db.save_score_request_status("085410", "school-1", 2025, "source", "success_empty")
+        db.save_score_request_status("085410", "school-1", 2024, "source", "api_error", "timeout")
+
+        assert db.get_pending_score_years(
+            "085410", "school-1", [2026, 2025, 2024, 2023], "source"
+        ) == [2025, 2024, 2023]
+
+        db.save_score_request_status("085410", "school-1", 2025, "source", "api_error", "temporary")
+        statuses = db.get_score_request_statuses("085410", "school-1", "source")
+
+    assert statuses == {2024: "api_error", 2025: "success_empty", 2026: "success_with_data"}
+
+
+def test_clear_fetch_state_resets_only_target_major(tmp_path: Path) -> None:
+    with Database(tmp_path / "force.db") as db:
+        for major_code in ("085410", "081200"):
+            db.log_fetch(major_code, "school-1", "score_lines", "success")
+            db.save_score_request_status(
+                major_code, "school-1", 2026, "source", "success_with_data"
+            )
+
+        db.clear_fetch_state("085410")
+        remaining_logs = db.conn.execute(
+            "SELECT major_code FROM fetch_log ORDER BY major_code"
+        ).fetchall()
+        remaining_statuses = db.conn.execute(
+            "SELECT major_code FROM score_request_status ORDER BY major_code"
+        ).fetchall()
+
+    assert [row[0] for row in remaining_logs] == ["081200"]
+    assert [row[0] for row in remaining_statuses] == ["081200"]
+
+
+def test_unique_plan_enrollment_total_deduplicates_directions() -> None:
+    departments = [
+        {"department_id": "010", "study_mode": "全日制", "exam_type": "统考", "enrollment_count": 10},
+        {"department_id": "010", "study_mode": "全日制", "exam_type": "统考", "enrollment_count": 10},
+        {"department_id": "010", "study_mode": "非全日制", "exam_type": "统考", "enrollment_count": 30},
+    ]
+    assert unique_plan_enrollment_total(departments) == 40
+
+
+def test_load_score_lines_keeps_one_complete_source_record() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """CREATE TABLE score_lines (
+        school_id TEXT NOT NULL, department_id TEXT NOT NULL, major_code TEXT NOT NULL,
+        year INTEGER NOT NULL, total INTEGER, politics INTEGER, english INTEGER,
+        special_one INTEGER, special_two INTEGER, note TEXT, source TEXT, updated_at TEXT,
+        PRIMARY KEY (school_id, department_id, major_code, year))"""
+    )
+    conn.executemany(
+        "INSERT INTO score_lines VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            ("whu", "a", "085410", 2025, 285, 50, 50, 80, 90, "", "source", "t1"),
+            ("whu", "b", "085410", 2025, 350, 50, 50, 100, 85, "", "source", "t2"),
+        ],
+    )
+
+    rows = load_score_lines(conn, "whu", "", "085410")
+    conn.close()
+
+    assert len(rows) == 1
+    assert tuple(rows[0][key] for key in ("total", "politics", "english", "special_one", "special_two")) == (
+        285,
+        50,
+        50,
+        80,
+        90,
+    )
+    assert rows[0]["source_record_count"] == 2
+    assert rows[0]["selected_department_id"] == "a"

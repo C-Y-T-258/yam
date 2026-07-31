@@ -53,7 +53,24 @@ CREATE TABLE IF NOT EXISTS score_lines (
     note TEXT,
     source TEXT,
     updated_at TEXT,
+    raw_code TEXT,
+    raw_department_name TEXT,
+    metric_type TEXT,
+    match_scope TEXT,
+    confidence REAL,
+    raw_evidence_json TEXT,
     PRIMARY KEY (school_id, department_id, major_code, year)
+);
+
+CREATE TABLE IF NOT EXISTS score_request_status (
+    major_code TEXT NOT NULL,
+    school_id TEXT NOT NULL,
+    requested_year INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error_message TEXT,
+    retrieved_at TEXT,
+    PRIMARY KEY (major_code, school_id, requested_year, source)
 );
 
 CREATE TABLE IF NOT EXISTS admission_plans (
@@ -195,6 +212,23 @@ class Database:
             self.conn.execute("PRAGMA user_version = 3")
             self.conn.commit()
 
+        def _has_column(table: str, column: str) -> bool:
+            return any(r["name"] == column for r in self.conn.execute(f"PRAGMA table_info({table})"))
+
+        for column, column_type in (("raw_code", "TEXT"), ("raw_department_name", "TEXT"),
+                                    ("metric_type", "TEXT"), ("match_scope", "TEXT"),
+                                    ("confidence", "REAL"), ("raw_evidence_json", "TEXT")):
+            if not _has_column("score_lines", column):
+                self.conn.execute(f"ALTER TABLE score_lines ADD COLUMN {column} {column_type}")
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS score_request_status (
+                major_code TEXT NOT NULL, school_id TEXT NOT NULL,
+                requested_year INTEGER NOT NULL, source TEXT NOT NULL,
+                status TEXT NOT NULL, error_message TEXT, retrieved_at TEXT,
+                PRIMARY KEY (major_code, school_id, requested_year, source))
+        """)
+        self.conn.commit()
+
     def close(self) -> None:
         self.conn.close()
 
@@ -275,8 +309,10 @@ class Database:
             """
             INSERT OR REPLACE INTO score_lines
             (school_id, department_id, major_code, year, total, politics, english,
-             special_one, special_two, note, source, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             special_one, special_two, note, source, updated_at, raw_code,
+             raw_department_name, metric_type, match_scope, confidence,
+             raw_evidence_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 school_id,
@@ -291,8 +327,55 @@ class Database:
                 score.get("note"),
                 source,
                 updated_at,
+                score.get("raw_code", ""),
+                score.get("raw_department_name", ""),
+                score.get("metric_type", "score_line"),
+                score.get("match_scope", ""),
+                score.get("confidence"),
+                json.dumps(
+                    score.get("raw_evidence", score.get("raw_evidence_json", score)),
+                    ensure_ascii=False,
+                ),
             ),
         )
+
+    def save_score_request_status(
+        self, major_code: str, school_id: str, requested_year: int, source: str,
+        status: str, error_message: Optional[str] = None, retrieved_at: Optional[str] = None,
+    ) -> None:
+        from yam.utils import now_str
+        existing = self.conn.execute(
+            "SELECT status FROM score_request_status WHERE major_code = ? AND school_id = ? AND requested_year = ? AND source = ?",
+            (major_code, school_id, requested_year, source),
+        ).fetchone()
+        if existing and existing["status"] == "success_empty" and status == "api_error":
+            return
+        self.conn.execute(
+            """INSERT OR REPLACE INTO score_request_status
+            (major_code, school_id, requested_year, source, status, error_message, retrieved_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (major_code, school_id, requested_year, source, status, error_message, retrieved_at or now_str()),
+        )
+        self.conn.commit()
+
+    def get_score_request_statuses(self, major_code: str, school_id: str, source: str) -> dict[int, str]:
+        rows = self.conn.execute(
+            "SELECT requested_year, status FROM score_request_status WHERE major_code = ? AND school_id = ? AND source = ?",
+            (major_code, school_id, source),
+        ).fetchall()
+        return {int(row["requested_year"]): row["status"] for row in rows}
+
+    def get_pending_score_years(
+        self, major_code: str, school_id: str, years: list[int], source: str
+    ) -> list[int]:
+        """返回仍需采集的年份；只有已有数据的年份可以跳过。"""
+        statuses = self.get_score_request_statuses(major_code, school_id, source)
+        return [year for year in years if statuses.get(year) != "success_with_data"]
+
+    def clear_fetch_state(self, major_code: str) -> None:
+        self.conn.execute("DELETE FROM fetch_log WHERE major_code = ?", (major_code,))
+        self.conn.execute("DELETE FROM score_request_status WHERE major_code = ?", (major_code,))
+        self.conn.commit()
 
     def save_admission_plan(
         self,
