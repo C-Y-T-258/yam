@@ -448,6 +448,12 @@ pub fn migrate_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
     )?;
     add_if_missing(
         conn,
+        "workspace_score_evidence",
+        "source_entity_key",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    add_if_missing(
+        conn,
         "workspace_department_years",
         "score_scope",
         "TEXT NOT NULL DEFAULT 'school_major'",
@@ -599,7 +605,25 @@ const SCHEMA: &str = "
         match_note TEXT NOT NULL DEFAULT '', raw_evidence_json TEXT NOT NULL DEFAULT '{}',
         source_record_count INTEGER NOT NULL DEFAULT 1,
         selected_department_id TEXT NOT NULL DEFAULT '',
+        source_entity_key TEXT NOT NULL DEFAULT '',
         UNIQUE(school_id, major_code, year, score_scope, source, selected_department_id)
+    );
+    CREATE TABLE IF NOT EXISTS workspace_source_entities (
+        source_entity_key TEXT PRIMARY KEY, source TEXT NOT NULL,
+        entity_type TEXT NOT NULL DEFAULT 'score_department',
+        school_id TEXT NOT NULL, major_code TEXT NOT NULL,
+        source_entity_id TEXT NOT NULL DEFAULT '', source_entity_name TEXT NOT NULL DEFAULT '',
+        raw_code TEXT NOT NULL DEFAULT '', observed_at TEXT NOT NULL DEFAULT '',
+        raw_evidence_json TEXT NOT NULL DEFAULT '{}',
+        UNIQUE(source, entity_type, school_id, major_code, source_entity_id, source_entity_name)
+    );
+    CREATE TABLE IF NOT EXISTS workspace_entity_mappings (
+        mapping_key TEXT PRIMARY KEY, source_entity_key TEXT NOT NULL,
+        target_entity_type TEXT NOT NULL, target_key TEXT NOT NULL,
+        mapping_status TEXT NOT NULL CHECK(mapping_status IN ('candidate', 'ambiguous', 'unmapped')),
+        mapping_rule TEXT NOT NULL DEFAULT '', confidence REAL,
+        mapped_at TEXT NOT NULL DEFAULT '',
+        UNIQUE(source_entity_key, target_entity_type, target_key)
     );
     CREATE TABLE IF NOT EXISTS workspace_plan_score_evidence (
         plan_key TEXT NOT NULL, evidence_key TEXT NOT NULL,
@@ -613,7 +637,7 @@ const SCHEMA: &str = "
         PRIMARY KEY (major_code, school_id, requested_year, source)
     );
     CREATE TABLE IF NOT EXISTS workspace_model_state (
-        major_code TEXT PRIMARY KEY, model_version INTEGER NOT NULL DEFAULT 5,
+        major_code TEXT PRIMARY KEY, model_version INTEGER NOT NULL DEFAULT 6,
         status TEXT NOT NULL CHECK(status IN ('writing','ready','failed')),
         old_plan_count INTEGER NOT NULL DEFAULT 0, new_plan_count INTEGER NOT NULL DEFAULT 0,
         old_year_count INTEGER NOT NULL DEFAULT 0, new_year_count INTEGER NOT NULL DEFAULT 0,
@@ -630,6 +654,8 @@ const SCHEMA: &str = "
     CREATE INDEX IF NOT EXISTS idx_workspace_plan_snapshots_major ON workspace_plan_snapshots(major_code, school_id, observed_at DESC);
     CREATE INDEX IF NOT EXISTS idx_workspace_plan_years_plan ON workspace_plan_years(plan_key, year DESC);
     CREATE INDEX IF NOT EXISTS idx_workspace_score_evidence_school ON workspace_score_evidence(major_code, school_id, year DESC);
+    CREATE INDEX IF NOT EXISTS idx_workspace_source_entities_major ON workspace_source_entities(major_code, school_id, source_entity_id);
+    CREATE INDEX IF NOT EXISTS idx_workspace_entity_mappings_source ON workspace_entity_mappings(source_entity_key);
     CREATE INDEX IF NOT EXISTS idx_workspace_plan_score_evidence_plan ON workspace_plan_score_evidence(plan_key);
 
     CREATE TABLE IF NOT EXISTS favorites (
@@ -3081,6 +3107,28 @@ mod tests {
             )
             .unwrap();
         assert_eq!(migrated, (String::new(), String::new(), 1));
+        let has_source_entity_key: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM pragma_table_info('workspace_score_evidence')
+                    WHERE name='source_entity_key'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let has_mapping_table: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sqlite_master WHERE type='table'
+                    AND name='workspace_entity_mappings'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(has_source_entity_key);
+        assert!(has_mapping_table);
     }
 
     fn empty_filters() -> WorkspaceFilterParams<'static> {

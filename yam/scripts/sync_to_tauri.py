@@ -166,7 +166,34 @@ CREATE TABLE IF NOT EXISTS workspace_score_evidence (
     raw_evidence_json TEXT NOT NULL DEFAULT '{}',
     source_record_count INTEGER NOT NULL DEFAULT 1,
     selected_department_id TEXT NOT NULL DEFAULT '',
+    source_entity_key TEXT NOT NULL DEFAULT '',
     UNIQUE(school_id, major_code, year, score_scope, source, selected_department_id)
+);
+
+CREATE TABLE IF NOT EXISTS workspace_source_entities (
+    source_entity_key TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    entity_type TEXT NOT NULL DEFAULT 'score_department',
+    school_id TEXT NOT NULL,
+    major_code TEXT NOT NULL,
+    source_entity_id TEXT NOT NULL DEFAULT '',
+    source_entity_name TEXT NOT NULL DEFAULT '',
+    raw_code TEXT NOT NULL DEFAULT '',
+    observed_at TEXT NOT NULL DEFAULT '',
+    raw_evidence_json TEXT NOT NULL DEFAULT '{}',
+    UNIQUE(source, entity_type, school_id, major_code, source_entity_id, source_entity_name)
+);
+
+CREATE TABLE IF NOT EXISTS workspace_entity_mappings (
+    mapping_key TEXT PRIMARY KEY,
+    source_entity_key TEXT NOT NULL,
+    target_entity_type TEXT NOT NULL,
+    target_key TEXT NOT NULL,
+    mapping_status TEXT NOT NULL CHECK(mapping_status IN ('candidate', 'ambiguous', 'unmapped')),
+    mapping_rule TEXT NOT NULL DEFAULT '',
+    confidence REAL,
+    mapped_at TEXT NOT NULL DEFAULT '',
+    UNIQUE(source_entity_key, target_entity_type, target_key)
 );
 
 CREATE TABLE IF NOT EXISTS workspace_plan_score_evidence (
@@ -189,7 +216,7 @@ CREATE TABLE IF NOT EXISTS workspace_score_request_status (
 
 CREATE TABLE IF NOT EXISTS workspace_model_state (
     major_code TEXT PRIMARY KEY,
-    model_version INTEGER NOT NULL DEFAULT 5,
+    model_version INTEGER NOT NULL DEFAULT 6,
     status TEXT NOT NULL CHECK(status IN ('writing','ready','failed')),
     old_plan_count INTEGER NOT NULL DEFAULT 0,
     new_plan_count INTEGER NOT NULL DEFAULT 0,
@@ -219,6 +246,10 @@ CREATE INDEX IF NOT EXISTS idx_workspace_plan_years_plan
 ON workspace_plan_years(plan_key, year DESC);
 CREATE INDEX IF NOT EXISTS idx_workspace_score_evidence_school
 ON workspace_score_evidence(major_code, school_id, year DESC);
+CREATE INDEX IF NOT EXISTS idx_workspace_source_entities_major
+ON workspace_source_entities(major_code, school_id, source_entity_id);
+CREATE INDEX IF NOT EXISTS idx_workspace_entity_mappings_source
+ON workspace_entity_mappings(source_entity_key);
 CREATE INDEX IF NOT EXISTS idx_workspace_plan_score_evidence_plan
 ON workspace_plan_score_evidence(plan_key);
 
@@ -287,6 +318,7 @@ def ensure_target_schema(conn: sqlite3.Connection) -> None:
     add_if_missing("workspace_plan_snapshots", "source_department_id", "TEXT NOT NULL DEFAULT ''")
     add_if_missing("workspace_plan_snapshots", "department_name", "TEXT NOT NULL DEFAULT ''")
     add_if_missing("workspace_plan_snapshots", "plan_identity_version", "INTEGER NOT NULL DEFAULT 1")
+    add_if_missing("workspace_score_evidence", "source_entity_key", "TEXT NOT NULL DEFAULT ''")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_workspace_schools_major_code "
         "ON workspace_schools(major_code, school_code, name)"
@@ -346,6 +378,12 @@ def clear_major(conn: sqlite3.Connection, major_code: str) -> None:
         "(SELECT plan_key FROM workspace_plans WHERE major_code = ?)", (major_code,),
     )
     conn.execute("DELETE FROM workspace_score_evidence WHERE major_code = ?", (major_code,))
+    conn.execute(
+        "DELETE FROM workspace_entity_mappings WHERE source_entity_key IN "
+        "(SELECT source_entity_key FROM workspace_source_entities WHERE major_code = ?)",
+        (major_code,),
+    )
+    conn.execute("DELETE FROM workspace_source_entities WHERE major_code = ?", (major_code,))
     conn.execute("DELETE FROM workspace_plans WHERE major_code = ?", (major_code,))
     conn.execute("DELETE FROM workspace_department_entities WHERE major_code = ?", (major_code,))
     conn.execute("DELETE FROM workspace_score_request_status WHERE major_code = ?", (major_code,))
@@ -484,6 +522,87 @@ def _score_evidence_key(
 ) -> str:
     identity = [school_id, major_code, year, score_scope, source, selected_department_id]
     return f"score-evidence:v1:{_identity_digest(identity)}"
+
+
+def _source_entity_key(
+    source: str, school_id: str, major_code: str, source_entity_id: str, source_entity_name: str
+) -> str:
+    identity = [source, "score_department", school_id, major_code, source_entity_id, source_entity_name]
+    return f"source-entity:v1:{_identity_digest(identity)}"
+
+
+def _school_major_key(school_id: str, major_code: str) -> str:
+    return f"school-major:v1:{_identity_digest([school_id, major_code])}"
+
+
+def _normalize_entity_name(name: str) -> str:
+    return name.replace("(", "（").replace(")", "）").replace(" ", "").strip()
+
+
+def map_score_source_entities(
+    target: sqlite3.Connection, school_id: str, major_code: str
+) -> dict[str, int]:
+    """保存来源院系到当前院系实体的可审计映射，不做模糊归并。"""
+    entities = target.execute(
+        """SELECT source_entity_key, source_entity_name
+           FROM workspace_source_entities WHERE school_id=? AND major_code=?""",
+        (school_id, major_code),
+    ).fetchall()
+    department_rows = target.execute(
+        """SELECT department_key, name FROM workspace_department_entities
+           WHERE school_id=? AND major_code=?""",
+        (school_id, major_code),
+    ).fetchall()
+    counts = {"candidate": 0, "ambiguous": 0, "unmapped": 0}
+    for source_entity_key, source_entity_name in entities:
+        name = str(source_entity_name or "")
+        normalized = _normalize_entity_name(name)
+        candidates = [
+            department_key
+            for department_key, department_name in department_rows
+            if normalized and _normalize_entity_name(department_name) == normalized
+        ]
+        if len(candidates) == 1:
+            status = "candidate"
+            rule = "exact_normalized_name"
+            confidence = 0.8
+            target_type = "department"
+            target_key = candidates[0]
+        elif len(candidates) > 1:
+            status = "ambiguous"
+            rule = "normalized_name_ambiguous"
+            confidence = 0.0
+            target_type = "school_major"
+            target_key = _school_major_key(school_id, major_code)
+        else:
+            status = "unmapped"
+            rule = "no_unique_department_name"
+            confidence = 0.0
+            target_type = "school_major"
+            target_key = _school_major_key(school_id, major_code)
+        target.execute(
+            "DELETE FROM workspace_entity_mappings WHERE source_entity_key=?",
+            (source_entity_key,),
+        )
+        mapping_key = f"entity-mapping:v1:{_identity_digest([source_entity_key, target_type, target_key])}"
+        target.execute(
+            """INSERT INTO workspace_entity_mappings
+               (mapping_key, source_entity_key, target_entity_type, target_key,
+                mapping_status, mapping_rule, confidence, mapped_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                mapping_key,
+                source_entity_key,
+                target_type,
+                target_key,
+                status,
+                rule,
+                confidence,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        counts[status] += 1
+    return counts
 
 
 def _plan_snapshot_key(plan_key: str, observed_at: str) -> str:
@@ -814,6 +933,34 @@ def insert_shared_score_evidence(
         score_scope = _score_scope(score)
         source = str(score.get("source") or "")
         selected_department_id = str(score.get("selected_department_id") or "")
+        source_entity_name = str(
+            score.get("raw_department_name") or score.get("department_name") or ""
+        ).strip()
+        source_entity_key = _source_entity_key(
+            source, school_id, major_code, selected_department_id, source_entity_name
+        )
+        target.execute(
+            """INSERT INTO workspace_source_entities
+               (source_entity_key, source, entity_type, school_id, major_code,
+                source_entity_id, source_entity_name, raw_code, observed_at, raw_evidence_json)
+               VALUES (?, ?, 'score_department', ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(source_entity_key) DO UPDATE SET
+                   source_entity_name=excluded.source_entity_name,
+                   raw_code=excluded.raw_code,
+                   observed_at=excluded.observed_at,
+                   raw_evidence_json=excluded.raw_evidence_json""",
+            (
+                source_entity_key,
+                source,
+                school_id,
+                major_code,
+                selected_department_id,
+                source_entity_name,
+                str(score.get("raw_code") or ""),
+                score.get("updated_at") or "",
+                score.get("raw_evidence_json") or "{}",
+            ),
+        )
         evidence_key = _score_evidence_key(
             school_id,
             major_code,
@@ -827,8 +974,8 @@ def insert_shared_score_evidence(
             INSERT INTO workspace_score_evidence
             (evidence_key, school_id, major_code, year, min_score, politics, english,
              math, specialized, score_scope, source, updated_at, match_note,
-             raw_evidence_json, source_record_count, selected_department_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             raw_evidence_json, source_record_count, selected_department_id, source_entity_key)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 evidence_key,
@@ -847,6 +994,7 @@ def insert_shared_score_evidence(
                 score.get("raw_evidence_json") or "{}",
                 int(score.get("source_record_count") or 1),
                 selected_department_id,
+                source_entity_key,
             ),
         )
         evidence_keys[year] = evidence_key
@@ -957,7 +1105,7 @@ def sync_major(source: sqlite3.Connection, target: sqlite3.Connection, major_cod
          str(major_info.get("discipline_name") or ""), major_source, now_str),
     )
     target.execute(
-        "INSERT INTO workspace_model_state (major_code, model_version, status) VALUES (?, 5, 'writing')",
+        "INSERT INTO workspace_model_state (major_code, model_version, status) VALUES (?, 6, 'writing')",
         (major_code,),
     )
 
@@ -1031,6 +1179,8 @@ def sync_major(source: sqlite3.Connection, target: sqlite3.Connection, major_cod
             if latest_dept_score > 0 and school_min_score is None:
                 # 所有计划共享同一学校专业参考层，院校主分数取最新可用专业级记录。
                 school_min_score = latest_dept_score
+
+        map_score_source_entities(target, school_id, major_code)
 
         target.execute(
             """
@@ -1114,6 +1264,12 @@ def sync_major(source: sqlite3.Connection, target: sqlite3.Connection, major_cod
            WHERE p.plan_key IS NULL OR e.evidence_key IS NULL
               OR p.school_id <> e.school_id OR p.major_code <> e.major_code"""
     ).fetchone()[0]
+    source_entities_without_mapping = target.execute(
+        """SELECT COUNT(*) FROM workspace_source_entities e
+           LEFT JOIN workspace_entity_mappings m ON m.source_entity_key=e.source_entity_key
+           WHERE e.major_code=? AND m.mapping_key IS NULL""",
+        (major_code,),
+    ).fetchone()[0]
     plans_without_snapshots = target.execute(
         """SELECT COUNT(*) FROM workspace_plans p
            LEFT JOIN workspace_plan_snapshots s ON s.plan_key = p.plan_key
@@ -1122,13 +1278,15 @@ def sync_major(source: sqlite3.Connection, target: sqlite3.Connection, major_cod
     ).fetchone()[0]
     if (old_plan_count != new_plan_count or old_year_count != new_year_count
             or invalid_plan_keys or duplicate_plan_keys or duplicate_years
-            or invalid_evidence_links or plans_without_snapshots):
+            or invalid_evidence_links or plans_without_snapshots
+            or source_entities_without_mapping):
         raise RuntimeError(
             f"规范化校验失败: plans={old_plan_count}/{new_plan_count}, "
             f"years={old_year_count}/{new_year_count}, empty_keys={invalid_plan_keys}, "
             f"duplicate_keys={duplicate_plan_keys}, duplicate_years={duplicate_years}, "
             f"invalid_evidence_links={invalid_evidence_links}, "
-            f"plans_without_snapshots={plans_without_snapshots}"
+            f"plans_without_snapshots={plans_without_snapshots}, "
+            f"source_entities_without_mapping={source_entities_without_mapping}"
         )
     target.execute(
         """UPDATE workspace_model_state SET status='ready', old_plan_count=?, new_plan_count=?,
@@ -1164,7 +1322,8 @@ def main() -> int:
             if args.clear and not args.major_code:
                 for table in [
                     "workspace_plan_score_evidence", "workspace_plan_years",
-                    "workspace_score_evidence", "workspace_plan_snapshots",
+                    "workspace_score_evidence", "workspace_entity_mappings",
+                    "workspace_source_entities", "workspace_plan_snapshots",
                     "workspace_plans", "workspace_department_entities",
                     "workspace_model_state", "workspace_majors", "workspace_department_years",
                     "workspace_departments", "workspace_schools",

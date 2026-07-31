@@ -19,6 +19,7 @@ from yam.scripts.sync_to_tauri import (
     insert_department_years,
     insert_shared_score_evidence,
     load_score_lines,
+    map_score_source_entities,
     migrate_plan_snapshot_identities,
     unique_plan_enrollment_total,
 )
@@ -252,6 +253,8 @@ def test_shared_score_evidence_is_stored_once_and_linked_to_plans() -> None:
             "selected_department_id": "source-dept",
             "source_record_count": 2,
             "raw_evidence_json": '{"code":"085410"}',
+            "raw_code": "085410",
+            "raw_department_name": "计算机学院",
         }
     ]
     evidence_keys = insert_shared_score_evidence(
@@ -280,6 +283,34 @@ def test_shared_score_evidence_is_stored_once_and_linked_to_plans() -> None:
         )
         insert_department_years(target, department_id, 10, score_lines, evidence_keys)
 
+    target.execute(
+        """INSERT INTO workspace_source_entities
+           (source_entity_key, source, school_id, major_code, source_entity_id,
+            source_entity_name)
+           VALUES ('unmatched-source', 'zhangshangkaoyan', 'school-1', '085410',
+                   'remote-2', '不存在学院')"""
+    )
+    insert_department(
+        target,
+        "school-1",
+        "085410",
+        {**department_payloads[0], "department_id": "dept-x", "name": "重复学院", "research_direction": "方向X"},
+    )
+    insert_department(
+        target,
+        "school-1",
+        "085410",
+        {**department_payloads[0], "department_id": "dept-y", "name": "重复学院", "research_direction": "方向Y"},
+    )
+    target.execute(
+        """INSERT INTO workspace_source_entities
+           (source_entity_key, source, school_id, major_code, source_entity_id,
+            source_entity_name)
+           VALUES ('ambiguous-source', 'zhangshangkaoyan', 'school-1', '085410',
+                   'remote-3', '重复学院')"""
+    )
+    mapping_counts = map_score_source_entities(target, "school-1", "085410")
+
     assert target.execute("SELECT COUNT(*) FROM workspace_score_evidence").fetchone()[0] == 1
     assert target.execute("SELECT COUNT(*) FROM workspace_plan_score_evidence").fetchone()[0] == 2
     assert target.execute("SELECT COUNT(*) FROM workspace_plan_years").fetchone()[0] == 0
@@ -287,11 +318,32 @@ def test_shared_score_evidence_is_stored_once_and_linked_to_plans() -> None:
     assert target.execute(
         "SELECT COUNT(DISTINCT evidence_key) FROM workspace_plan_score_evidence"
     ).fetchone()[0] == 1
+    assert mapping_counts == {"candidate": 1, "ambiguous": 1, "unmapped": 1}
+    mapped = target.execute(
+        """SELECT m.target_entity_type, m.mapping_status, m.mapping_rule, m.confidence
+           FROM workspace_score_evidence e
+           JOIN workspace_entity_mappings m ON m.source_entity_key=e.source_entity_key"""
+    ).fetchone()
+    assert tuple(mapped) == ("department", "candidate", "exact_normalized_name", 0.8)
+    unmapped = target.execute(
+        """SELECT target_entity_type, mapping_status, mapping_rule, confidence
+           FROM workspace_entity_mappings WHERE source_entity_key='unmatched-source'"""
+    ).fetchone()
+    assert tuple(unmapped) == (
+        "school_major", "unmapped", "no_unique_department_name", 0.0,
+    )
+    ambiguous = target.execute(
+        """SELECT target_entity_type, mapping_status, mapping_rule, confidence
+           FROM workspace_entity_mappings WHERE source_entity_key='ambiguous-source'"""
+    ).fetchone()
+    assert tuple(ambiguous) == (
+        "school_major", "ambiguous", "normalized_name_ambiguous", 0.0,
+    )
     snapshots = target.execute(
         "SELECT catalog_year, catalog_year_status, observed_at "
         "FROM workspace_plan_snapshots ORDER BY plan_key"
     ).fetchall()
-    assert len(snapshots) == 2
+    assert len(snapshots) == 4
     assert all(row["catalog_year"] is None for row in snapshots)
     assert all(row["catalog_year_status"] == "unknown" for row in snapshots)
     assert all(row["observed_at"] == "2026-07-31T08:00:00Z" for row in snapshots)
@@ -303,10 +355,12 @@ def test_shared_score_evidence_is_stored_once_and_linked_to_plans() -> None:
     clear_major(target, "085410")
     assert target.execute("SELECT COUNT(*) FROM workspace_score_evidence").fetchone()[0] == 0
     assert target.execute("SELECT COUNT(*) FROM workspace_plan_score_evidence").fetchone()[0] == 0
-    assert target.execute("SELECT COUNT(*) FROM workspace_plan_snapshots").fetchone()[0] == 2
+    assert target.execute("SELECT COUNT(*) FROM workspace_source_entities").fetchone()[0] == 0
+    assert target.execute("SELECT COUNT(*) FROM workspace_entity_mappings").fetchone()[0] == 0
+    assert target.execute("SELECT COUNT(*) FROM workspace_plan_snapshots").fetchone()[0] == 4
     for payload in department_payloads:
         insert_department(target, "school-1", "085410", payload)
-    assert target.execute("SELECT COUNT(*) FROM workspace_plan_snapshots").fetchone()[0] == 2
+    assert target.execute("SELECT COUNT(*) FROM workspace_plan_snapshots").fetchone()[0] == 4
     target.close()
 
 
