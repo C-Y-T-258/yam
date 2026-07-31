@@ -2842,7 +2842,14 @@ fn plan_direction_label(row: &WorkspacePlanRow) -> (String, &'static str, bool) 
 }
 
 fn plan_export_row(row: &WorkspacePlanRow, major_name: &str) -> Vec<Value> {
-    let latest_year = latest_score_year(row);
+    let has_score = row.latest_score_year > 0 && row.latest_min_score > 0;
+    let latest_year = has_score.then(|| latest_score_year(row)).flatten();
+    let plan_year = (row.plan_year_status == "provided" && row.latest_plan_year > 0)
+        .then_some(row.latest_plan_year);
+    let score_year = has_score.then_some(row.latest_score_year);
+    let score = has_score.then_some(row.latest_min_score);
+    let enrollment =
+        (row.latest_enroll_count_status == "provided").then_some(row.latest_enroll_count);
     let (direction, direction_type, direction_fallback) = plan_direction_label(row);
     vec![
         json!(row.school_code),
@@ -2863,13 +2870,17 @@ fn plan_export_row(row: &WorkspacePlanRow, major_name: &str) -> Vec<Value> {
         json!(row.school_updated_at),
         json!(row.department_source),
         json!(row.department_updated_at),
-        json!(row.latest_plan_year),
+        json!(plan_year),
         json!(row.plan_year_status),
         json!(row.plan_snapshot_at),
-        json!(row.latest_score_year),
-        json!(row.latest_min_score),
-        json!(score_scope_label(row)),
-        json!(row.latest_enroll_count),
+        json!(score_year),
+        json!(score),
+        json!(if has_score {
+            score_scope_label(row)
+        } else {
+            ""
+        }),
+        json!(enrollment),
         json!(row.latest_enroll_count_status),
         json!(row.latest_enroll_text),
         json!(latest_year.map(|year| year.source.as_str()).unwrap_or("")),
@@ -3468,6 +3479,30 @@ mod tests {
         assert_eq!(row[25], json!("provided"));
         assert_eq!(row[26], json!("专业：20(不含推免)"));
         assert_eq!(row[27], json!("score-source"));
+    }
+
+    #[test]
+    fn plan_export_unknown_numeric_values_are_null_but_provided_zero_is_preserved() {
+        let mut plan = sample_plan_row();
+        plan.latest_plan_year = 0;
+        plan.plan_year_status = "unknown".to_string();
+        plan.latest_score_year = 0;
+        plan.latest_min_score = 0;
+        plan.latest_enroll_count = 0;
+        plan.latest_enroll_count_status = "unknown".to_string();
+        plan.years.clear();
+
+        let row = plan_export_row(&plan, "计算机科学与技术");
+        assert!(row[18].is_null());
+        assert_eq!(row[19], json!("unknown"));
+        assert!(row[21].is_null());
+        assert!(row[22].is_null());
+        assert_eq!(row[23], json!(""));
+        assert!(row[24].is_null());
+        assert_eq!(row[25], json!("unknown"));
+
+        plan.latest_enroll_count_status = "provided".to_string();
+        assert_eq!(plan_export_row(&plan, "计算机科学与技术")[24], json!(0));
     }
 
     #[test]

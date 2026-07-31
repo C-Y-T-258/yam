@@ -44,6 +44,8 @@ import {
   getPlanExportCells,
   getPlanScoreLabel,
   getPlanScoreYearLabel,
+  getPlanYearLabel,
+  getScoreComponentLabel,
   getScoreScopeLabel,
   getSchoolScoreNote,
   getSchoolScoreStatus,
@@ -2058,19 +2060,19 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                                           </div>
                                           <div className="flex justify-between py-1.5 border-b border-gray-100">
                                             <span className="text-gray-500">政治</span>
-                                            <span className="text-gray-900">{yearData.politics}</span>
+                                            <span className="text-gray-900">{getScoreComponentLabel(yearData.politics)}</span>
                                           </div>
                                           <div className="flex justify-between py-1.5 border-b border-gray-100">
                                             <span className="text-gray-500">英语</span>
-                                            <span className="text-gray-900">{yearData.english}</span>
+                                            <span className="text-gray-900">{getScoreComponentLabel(yearData.english)}</span>
                                           </div>
                                           <div className="flex justify-between py-1.5 border-b border-gray-100">
                                             <span className="text-gray-500">数学</span>
-                                            <span className="text-gray-900">{yearData.math}</span>
+                                            <span className="text-gray-900">{getScoreComponentLabel(yearData.math)}</span>
                                           </div>
                                           <div className="flex justify-between py-1.5">
                                             <span className="text-gray-500">专业课</span>
-                                            <span className="text-gray-900">{yearData.specialized}</span>
+                                            <span className="text-gray-900">{getScoreComponentLabel(yearData.specialized)}</span>
                                           </div>
                                         </motion.div>
                                       )}
@@ -2106,10 +2108,10 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                                               <tr key={y.year} className="border-b border-gray-100">
                                                 <td className="py-1.5 text-gray-900">{y.year}</td>
                                                 <td className="py-1.5 text-right text-gray-900 font-medium">{y.min_score}</td>
-                                                <td className="py-1.5 text-right text-gray-900">{y.politics}</td>
-                                                <td className="py-1.5 text-right text-gray-900">{y.english}</td>
-                                                <td className="py-1.5 text-right text-gray-900">{y.math}</td>
-                                                <td className="py-1.5 text-right text-gray-900">{y.specialized}</td>
+                                                <td className="py-1.5 text-right text-gray-900">{getScoreComponentLabel(y.politics)}</td>
+                                                <td className="py-1.5 text-right text-gray-900">{getScoreComponentLabel(y.english)}</td>
+                                                <td className="py-1.5 text-right text-gray-900">{getScoreComponentLabel(y.math)}</td>
+                                                <td className="py-1.5 text-right text-gray-900">{getScoreComponentLabel(y.specialized)}</td>
                                               </tr>
                                             ))}
                                           </tbody>
@@ -2308,7 +2310,7 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                           ? `目录年份：${p.latest_plan_year} · 快照时间：${p.plan_snapshot_at || '未知'}`
                           : `当前招生目录快照，来源未提供目录年份 · 快照时间：${p.plan_snapshot_at || '未知'}`}
                       >
-                        {p.plan_year_status === 'provided' && p.latest_plan_year ? p.latest_plan_year : '未知'}
+                        {getPlanYearLabel(p)}
                       </div>
                       <div className="text-center min-w-0">
                         <div className="text-gray-900 font-medium">{getPlanScoreLabel(p)}</div>
@@ -2397,10 +2399,10 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                                         <td className="py-1.5 px-2 text-gray-700 font-medium">{y.year}</td>
                                         <td className="py-1.5 px-2 text-center text-gray-900 font-medium">{y.min_score}</td>
                                         <td className="py-1.5 px-2 text-center text-gray-500" title={y.match_note || getScoreScopeLabel(y)}>{getScoreScopeLabel(y)}</td>
-                                        <td className="py-1.5 px-2 text-center text-gray-600">{y.politics}</td>
-                                        <td className="py-1.5 px-2 text-center text-gray-600">{y.english}</td>
-                                        <td className="py-1.5 px-2 text-center text-gray-600">{y.math}</td>
-                                        <td className="py-1.5 px-2 text-center text-gray-600">{y.specialized}</td>
+                                        <td className="py-1.5 px-2 text-center text-gray-600">{getScoreComponentLabel(y.politics)}</td>
+                                        <td className="py-1.5 px-2 text-center text-gray-600">{getScoreComponentLabel(y.english)}</td>
+                                        <td className="py-1.5 px-2 text-center text-gray-600">{getScoreComponentLabel(y.math)}</td>
+                                        <td className="py-1.5 px-2 text-center text-gray-600">{getScoreComponentLabel(y.specialized)}</td>
                                       </tr>
                                     ))}
                                   </tbody>
@@ -2412,7 +2414,7 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                             <div className="mt-3 flex flex-wrap gap-2 text-[10px] text-gray-500">
                               <span>计划来源：{p.department_source || '—'}</span>
                               <span>更新时间：{p.department_updated_at || '—'}</span>
-                              <span>目录年份：{p.plan_year_status === 'provided' && p.latest_plan_year ? p.latest_plan_year : '未知'}</span>
+                              <span>目录年份：{getPlanYearLabel(p)}</span>
                               <span>计划快照：{p.plan_snapshot_at || '—'}</span>
                               <span>学习方式：{p.study_mode || '—'}</span>
                               <span>考试方式：{p.exam_type || '—'}</span>

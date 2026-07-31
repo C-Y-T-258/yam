@@ -31,7 +31,9 @@ import {
   getPlanEnrollmentLabel,
   getPlanScoreLabel,
   getPlanYearLabel,
+  getScoreComponentLabel,
   getScoreScopeLabel,
+  getScoreValueLabel,
 } from '../lib/workspace-utils';
 
 // S009 - Manage Display Majors Modal
@@ -317,10 +319,10 @@ export function CompareModal({ isOpen, onClose, onClear, plans }: CompareModalPr
     { label: '分数值', value: getPlanScoreLabel },
     { label: '分数粒度', value: (plan: WorkspacePlanRow) => getLatestScoreYear(plan) ? getScoreScopeLabel(getLatestScoreYear(plan)) : '—' },
     { label: '招生人数', value: getPlanEnrollmentLabel },
-    { label: '政治', value: (plan: WorkspacePlanRow) => getLatestScoreYear(plan)?.politics },
-    { label: '英语', value: (plan: WorkspacePlanRow) => getLatestScoreYear(plan)?.english },
-    { label: '数学', value: (plan: WorkspacePlanRow) => getLatestScoreYear(plan)?.math },
-    { label: '专业课', value: (plan: WorkspacePlanRow) => getLatestScoreYear(plan)?.specialized },
+    { label: '政治', value: (plan: WorkspacePlanRow) => getScoreComponentLabel(getLatestScoreYear(plan)?.politics) },
+    { label: '英语', value: (plan: WorkspacePlanRow) => getScoreComponentLabel(getLatestScoreYear(plan)?.english) },
+    { label: '数学', value: (plan: WorkspacePlanRow) => getScoreComponentLabel(getLatestScoreYear(plan)?.math) },
+    { label: '专业课', value: (plan: WorkspacePlanRow) => getScoreComponentLabel(getLatestScoreYear(plan)?.specialized) },
     { label: '计划来源', value: (plan: WorkspacePlanRow) => plan.department_source },
     { label: '计划更新时间', value: (plan: WorkspacePlanRow) => plan.department_updated_at },
     { label: '分数来源', value: (plan: WorkspacePlanRow) => getLatestScoreYear(plan)?.source },
@@ -584,7 +586,7 @@ export function FavoritesPage(_props: FavoritesPageProps) {
                 <div className="font-medium text-gray-900">{item.name}</div>
                 <div className="w-40 text-center text-gray-600">{item.level}</div>
                 <div className="w-20 text-center text-gray-600">{item.province}</div>
-                <div className="w-20 text-center text-gray-900 font-medium">{item.min_score}</div>
+                <div className="w-20 text-center text-gray-900 font-medium">{getScoreValueLabel(item.min_score)}</div>
                 <div className="w-20 text-center text-gray-600">{item.enroll_count}</div>
                 <div className="w-16 flex items-center justify-center">
                   <button className="p-1 text-gray-400 hover:text-[#1e3a5f] transition-colors">

@@ -90,17 +90,31 @@ export function getPlanScoreYearLabel(
   return hasPlanProfessionalScore(plan) ? String(plan.latest_score_year) : '无分数年份';
 }
 
+export function getScoreValueLabel(value: number | null | undefined): string | number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : '暂无';
+}
+
+export function getScoreComponentLabel(value: number | null | undefined): string | number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : '—';
+}
+
+export function getSchoolRequestYearLabel(
+  school: Pick<WorkspaceSchool, 'latest_request_year'>,
+): string {
+  return school.latest_request_year > 0 ? String(school.latest_request_year) : '最新年份';
+}
+
 export function getSchoolScoreStatus(school: WorkspaceSchool): string {
   if (school.min_score > 0) return `${school.min_score}`;
   if (school.latest_request_status === 'api_error') {
-    return `${school.latest_request_year || '最新年份'}专业分数线获取失败`;
+    return `${getSchoolRequestYearLabel(school)}专业分数线获取失败`;
   }
   if (school.reference_score > 0) {
     const scope = school.reference_scope === 'category_reference' ? '门类参考线' : '一级学科参考线';
     return `暂无该专业分数线；${school.reference_year}年${scope}${school.reference_score}`;
   }
   if (school.latest_request_status === 'success_empty') {
-    return `${school.latest_request_year || '最新年份'}未返回该专业或参考分数线`;
+    return `${getSchoolRequestYearLabel(school)}未返回该专业或参考分数线`;
   }
   return '尚未取得该专业分数线';
 }
@@ -108,7 +122,7 @@ export function getSchoolScoreStatus(school: WorkspaceSchool): string {
 export function getSchoolScoreNote(school: WorkspaceSchool): string {
   const notes: string[] = [];
   if (school.latest_request_status === 'api_error') {
-    notes.push(`${school.latest_request_year || '最新年份'}专业分数线获取失败`);
+    notes.push(`${getSchoolRequestYearLabel(school)}专业分数线获取失败`);
   }
   if (school.reference_score > 0) {
     const scope = school.reference_scope === 'category_reference' ? '门类参考线' : '一级学科参考线';
@@ -144,15 +158,19 @@ export function getTrendScaleDomain(values: number[]): TrendScaleDomain {
 export function getPlanExportCells(plan: WorkspacePlanRow, majorName: string): ExportCell[] {
   const latestYear = getLatestScoreYear(plan);
   const direction = getDirectionInfo(plan);
+  const hasScore = hasPlanProfessionalScore(plan);
+  const hasPlanYear = plan.plan_year_status === 'provided' && plan.latest_plan_year > 0;
+  const hasEnrollment = plan.latest_enroll_count_status === 'provided';
   return [
     plan.school_code, plan.school_name, plan.major_code, majorName,
     plan.province, plan.level, plan.department_name, direction.label,
     direction.label_type, direction.is_fallback ? '是' : '否',
     plan.exam_subjects.join('; '), plan.study_mode, plan.exam_type,
     plan.special_plans.join('; '), plan.school_source, plan.school_updated_at,
-    plan.department_source, plan.department_updated_at, plan.latest_plan_year, plan.plan_year_status,
-    plan.plan_snapshot_at, plan.latest_score_year,
-    plan.latest_min_score, getScoreScopeLabel(latestYear), plan.latest_enroll_count,
+    plan.department_source, plan.department_updated_at, hasPlanYear ? plan.latest_plan_year : '', plan.plan_year_status,
+    plan.plan_snapshot_at, hasScore ? plan.latest_score_year : '',
+    hasScore ? plan.latest_min_score : '', hasScore && latestYear ? getScoreScopeLabel(latestYear) : '',
+    hasEnrollment ? plan.latest_enroll_count : '',
     plan.latest_enroll_count_status, plan.latest_enroll_text,
     latestYear?.source || '',
     latestYear?.updated_at || '', latestYear?.match_note || '',

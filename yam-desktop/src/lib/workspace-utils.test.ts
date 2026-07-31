@@ -10,7 +10,10 @@ import {
   getPlanScoreLabel,
   getPlanScoreYearLabel,
   getPlanYearLabel,
+  getScoreComponentLabel,
   getScoreScopeLabel,
+  getScoreValueLabel,
+  getSchoolRequestYearLabel,
   getSchoolScoreStatus,
   getTrendScaleDomain,
   getWorkspaceLoadingMode,
@@ -189,6 +192,12 @@ describe('getSchoolScoreStatus', () => {
     expect(getSchoolScoreStatus({ ...school, reference_score: 300, reference_year: 2026, reference_scope: 'category_reference' }))
       .toBe('暂无该专业分数线；2026年门类参考线300');
   });
+
+  it('请求年份未知时显式使用最新年份标签', () => {
+    expect(getSchoolRequestYearLabel({ ...school, latest_request_year: 0 })).toBe('最新年份');
+    expect(getSchoolScoreStatus({ ...school, latest_request_year: 0, latest_request_status: 'api_error' }))
+      .toBe('最新年份专业分数线获取失败');
+  });
 });
 
 describe('plan score labels', () => {
@@ -201,6 +210,21 @@ describe('plan score labels', () => {
     expect(hasPlanProfessionalScore(missing)).toBe(false);
     expect(getPlanScoreLabel(missing)).toBe('暂无');
     expect(getPlanScoreYearLabel(missing)).toBe('无分数年份');
+  });
+});
+
+describe('score component labels', () => {
+  it('来源使用0和--表示未给单科要求时显示占位符', () => {
+    expect(getScoreComponentLabel(45)).toBe(45);
+    expect(getScoreComponentLabel(0)).toBe('—');
+    expect(getScoreComponentLabel(undefined)).toBe('—');
+  });
+});
+
+describe('score value labels', () => {
+  it('学校聚合分数0显示暂无，正分值保持数字', () => {
+    expect(getScoreValueLabel(338)).toBe(338);
+    expect(getScoreValueLabel(0)).toBe('暂无');
   });
 });
 
@@ -258,7 +282,28 @@ describe('getPlanExportCells', () => {
     };
     const cells = getPlanExportCells(plan, '电子信息');
     expect(cells[7]).toBe('408计算机学科专业基础');
-    expect(cells[23]).toBe('分数参考');
+    expect(cells[23]).toBe('');
     expect(cells.slice(27)).toEqual(['', '', '']);
+  });
+
+  it('导出未知数值为空，同时保留状态列和来源明确的招生0', () => {
+    const unknown = {
+      ...basePlan,
+      latest_plan_year: 0,
+      plan_year_status: 'unknown' as const,
+      latest_score_year: 0,
+      latest_min_score: 0,
+      latest_enroll_count: 0,
+      latest_enroll_count_status: 'unknown' as const,
+      years: [],
+    };
+    const cells = getPlanExportCells(unknown, '电子信息');
+    expect(cells.slice(18, 26)).toEqual(['', 'unknown', unknown.plan_snapshot_at, '', '', '', '', 'unknown']);
+
+    const providedZero = {
+      ...unknown,
+      latest_enroll_count_status: 'provided' as const,
+    };
+    expect(getPlanExportCells(providedZero, '电子信息')[24]).toBe(0);
   });
 });
