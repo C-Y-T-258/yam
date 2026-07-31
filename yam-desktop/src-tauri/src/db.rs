@@ -557,6 +557,21 @@ const SCHEMA: &str = "
         score_scope TEXT NOT NULL DEFAULT 'school_major', source TEXT NOT NULL DEFAULT '',
         updated_at TEXT NOT NULL DEFAULT '', match_note TEXT NOT NULL DEFAULT '', UNIQUE(plan_key, year)
     );
+    CREATE TABLE IF NOT EXISTS workspace_score_evidence (
+        evidence_key TEXT PRIMARY KEY, school_id TEXT NOT NULL, major_code TEXT NOT NULL,
+        year INTEGER NOT NULL, min_score INTEGER NOT NULL, politics INTEGER NOT NULL,
+        english INTEGER NOT NULL, math INTEGER NOT NULL, specialized INTEGER NOT NULL,
+        score_scope TEXT NOT NULL, source TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '',
+        match_note TEXT NOT NULL DEFAULT '', raw_evidence_json TEXT NOT NULL DEFAULT '{}',
+        source_record_count INTEGER NOT NULL DEFAULT 1,
+        selected_department_id TEXT NOT NULL DEFAULT '',
+        UNIQUE(school_id, major_code, year, score_scope, source, selected_department_id)
+    );
+    CREATE TABLE IF NOT EXISTS workspace_plan_score_evidence (
+        plan_key TEXT NOT NULL, evidence_key TEXT NOT NULL,
+        relation_kind TEXT NOT NULL DEFAULT 'shared_reference',
+        PRIMARY KEY (plan_key, evidence_key)
+    );
     CREATE TABLE IF NOT EXISTS workspace_score_request_status (
         major_code TEXT NOT NULL, school_id TEXT NOT NULL, requested_year INTEGER NOT NULL,
         source TEXT NOT NULL, status TEXT NOT NULL, error_message TEXT NOT NULL DEFAULT '',
@@ -564,7 +579,7 @@ const SCHEMA: &str = "
         PRIMARY KEY (major_code, school_id, requested_year, source)
     );
     CREATE TABLE IF NOT EXISTS workspace_model_state (
-        major_code TEXT PRIMARY KEY, model_version INTEGER NOT NULL DEFAULT 2,
+        major_code TEXT PRIMARY KEY, model_version INTEGER NOT NULL DEFAULT 3,
         status TEXT NOT NULL CHECK(status IN ('writing','ready','failed')),
         old_plan_count INTEGER NOT NULL DEFAULT 0, new_plan_count INTEGER NOT NULL DEFAULT 0,
         old_year_count INTEGER NOT NULL DEFAULT 0, new_year_count INTEGER NOT NULL DEFAULT 0,
@@ -578,6 +593,8 @@ const SCHEMA: &str = "
     CREATE INDEX IF NOT EXISTS idx_workspace_plans_major_school ON workspace_plans(major_code, school_id);
     CREATE INDEX IF NOT EXISTS idx_workspace_plans_department ON workspace_plans(department_key);
     CREATE INDEX IF NOT EXISTS idx_workspace_plan_years_plan ON workspace_plan_years(plan_key, year DESC);
+    CREATE INDEX IF NOT EXISTS idx_workspace_score_evidence_school ON workspace_score_evidence(major_code, school_id, year DESC);
+    CREATE INDEX IF NOT EXISTS idx_workspace_plan_score_evidence_plan ON workspace_plan_score_evidence(plan_key);
 
     CREATE TABLE IF NOT EXISTS favorites (
         favorite_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1632,7 +1649,14 @@ fn workspace_years_source(normalized: bool) -> &'static str {
         "(SELECT p.plan_id AS department_id, y.year, y.enroll_count, y.min_score,
                  y.politics, y.english, y.math, y.specialized, y.score_scope,
                  y.source, y.updated_at, y.match_note
-          FROM workspace_plan_years y JOIN workspace_plans p ON p.plan_key = y.plan_key)"
+          FROM workspace_plan_years y JOIN workspace_plans p ON p.plan_key = y.plan_key
+          UNION ALL
+          SELECT p.plan_id AS department_id, e.year, 0 AS enroll_count, e.min_score,
+                 e.politics, e.english, e.math, e.specialized, e.score_scope,
+                 e.source, e.updated_at, e.match_note
+          FROM workspace_plan_score_evidence r
+          JOIN workspace_plans p ON p.plan_key = r.plan_key
+          JOIN workspace_score_evidence e ON e.evidence_key = r.evidence_key)"
     } else {
         "workspace_department_years"
     }
@@ -3192,13 +3216,15 @@ mod tests {
 
         let mut direction_filters = empty_filters();
         direction_filters.research_direction = Some("方向3");
-        let direction_filtered = get_workspace_plans_page(&conn, &["081200"], direction_filters, 1, 20);
+        let direction_filtered =
+            get_workspace_plans_page(&conn, &["081200"], direction_filters, 1, 20);
         assert_eq!(direction_filtered.total, 1);
         assert_eq!(direction_filtered.items[0].plan_key, "plan-3");
 
         let mut missing_direction_filters = empty_filters();
         missing_direction_filters.research_direction = Some("不存在方向");
-        let missing_direction = get_workspace_plans_page(&conn, &["081200"], missing_direction_filters, 1, 20);
+        let missing_direction =
+            get_workspace_plans_page(&conn, &["081200"], missing_direction_filters, 1, 20);
         assert_eq!(missing_direction.total, 0);
         assert!(missing_direction.items.is_empty());
 
@@ -3413,5 +3439,91 @@ mod tests {
         assert_eq!(departments[1].plan_key, "plan-2");
         assert_eq!(departments[1].years.len(), 1);
         assert_eq!(departments[1].years[0].min_score, 345);
+    }
+
+    #[test]
+    fn normalized_plans_project_one_shared_score_evidence_without_copying_values() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO workspace_schools
+             (school_id, major_code, name, province, level, min_score, enroll_count)
+             VALUES ('school-1', '085410', '测试大学', '北京', '普通本科', 335, 20)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO workspace_department_entities
+             (department_key, school_id, major_code, source_department_id, name)
+             VALUES ('department-1', 'school-1', '085410', 'dept-1', '计算机学院')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO workspace_plans
+             (plan_id, plan_key, department_key, school_id, major_code, research_direction,
+              exam_subjects, study_mode, exam_type, special_plans, enrollment_count)
+             VALUES
+             (201, 'plan-1', 'department-1', 'school-1', '085410', '方向一', '', '全日制', '统考', '[]', 10),
+             (202, 'plan-2', 'department-1', 'school-1', '085410', '方向二', '', '全日制', '统考', '[]', 10)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO workspace_score_evidence
+             (evidence_key, school_id, major_code, year, min_score, politics, english,
+              math, specialized, score_scope, source, match_note)
+             VALUES ('evidence-1', 'school-1', '085410', 2025, 335, 50, 50,
+                     80, 90, 'school_major', 'source', '共享学校专业参考线')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO workspace_plan_score_evidence (plan_key, evidence_key)
+             VALUES ('plan-1', 'evidence-1'), ('plan-2', 'evidence-1')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO workspace_model_state
+             (major_code, model_version, status, old_plan_count, new_plan_count,
+              old_year_count, new_year_count)
+             VALUES ('085410', 3, 'ready', 2, 2, 2, 2)",
+            [],
+        )
+        .unwrap();
+
+        let plans = get_workspace_plans(&conn, &["085410"], empty_filters());
+
+        assert_eq!(plans.len(), 2);
+        assert!(plans.iter().all(|plan| plan.years.len() == 1));
+        assert!(plans.iter().all(|plan| plan.years[0].min_score == 335));
+        assert!(plans
+            .iter()
+            .all(|plan| plan.years[0].score_scope == "school_major"));
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM workspace_score_evidence", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM workspace_plan_score_evidence",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            2
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM workspace_plan_years", [], |row| row
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
+            0
+        );
     }
 }

@@ -75,7 +75,11 @@ fn resolve_backend_command(
     }
 }
 
-fn materialize_backend_bytes(home_dir: &Path, version: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+fn materialize_backend_bytes(
+    home_dir: &Path,
+    version: &str,
+    bytes: &[u8],
+) -> Result<PathBuf, String> {
     let runtime_dir = home_dir.join(".yam").join("runtime");
     std::fs::create_dir_all(&runtime_dir)
         .map_err(|error| format!("无法创建后端运行目录: {error}"))?;
@@ -84,14 +88,11 @@ fn materialize_backend_bytes(home_dir: &Path, version: &str, bytes: &[u8]) -> Re
         return Ok(target);
     }
     let temporary = target.with_extension("exe.part");
-    std::fs::write(&temporary, bytes)
-        .map_err(|error| format!("无法释放内置后端: {error}"))?;
+    std::fs::write(&temporary, bytes).map_err(|error| format!("无法释放内置后端: {error}"))?;
     if target.exists() {
-        std::fs::remove_file(&target)
-            .map_err(|error| format!("无法更新内置后端: {error}"))?;
+        std::fs::remove_file(&target).map_err(|error| format!("无法更新内置后端: {error}"))?;
     }
-    std::fs::rename(&temporary, &target)
-        .map_err(|error| format!("无法启用内置后端: {error}"))?;
+    std::fs::rename(&temporary, &target).map_err(|error| format!("无法启用内置后端: {error}"))?;
     Ok(target)
 }
 
@@ -133,11 +134,8 @@ fn backend_command(
     );
     #[cfg(not(debug_assertions))]
     let spec = BackendCommandSpec {
-        program: materialize_backend_bytes(
-            &home_dir,
-            env!("CARGO_PKG_VERSION"),
-            BUNDLED_BACKEND,
-        ).map_err(|error| {
+        program: materialize_backend_bytes(&home_dir, env!("CARGO_PKG_VERSION"), BUNDLED_BACKEND)
+            .map_err(|error| {
             diagnostics::log("ERROR", "backend_materialize_failed", &error);
             error
         })?,
@@ -2783,8 +2781,17 @@ fn csv_field(value: &Value) -> String {
 }
 
 fn latest_score_year(row: &WorkspacePlanRow) -> Option<&crate::db::WorkspaceYear> {
-    row.years.iter().find(|year| year.year == row.latest_score_year)
-        .or_else(|| row.years.iter().find(|year| !matches!(year.score_scope.as_str(), "first_level_reference" | "category_reference")))
+    row.years
+        .iter()
+        .find(|year| year.year == row.latest_score_year)
+        .or_else(|| {
+            row.years.iter().find(|year| {
+                !matches!(
+                    year.score_scope.as_str(),
+                    "first_level_reference" | "category_reference"
+                )
+            })
+        })
 }
 
 fn score_scope_label(row: &WorkspacePlanRow) -> &'static str {
@@ -2800,7 +2807,11 @@ fn score_scope_label(row: &WorkspacePlanRow) -> &'static str {
 
 fn plan_direction_label(row: &WorkspacePlanRow) -> (String, &'static str, bool) {
     if !row.research_direction.trim().is_empty() {
-        (row.research_direction.trim().to_string(), "direction", false)
+        (
+            row.research_direction.trim().to_string(),
+            "direction",
+            false,
+        )
     } else {
         let subjects = row
             .exam_subjects

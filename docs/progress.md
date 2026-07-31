@@ -1584,3 +1584,15 @@ M1 启动健康 / M2 导航 / M3 工作区下拉 / M4 院校视图（表格/多�
 - 清理 `WorkspacePage.tsx` 文件头重复 UTF-8 BOM；视图切换按钮统一显示目标模式。
 - 最终门禁：前端 48/48、Rust 24/24、Python 12/12；TypeScript、生产构建、Python `compileall`、`npm audit --audit-level=high` 和 `git diff --check` 均通过。
 - 通用数据模型边界转入 ISSUE-031：来源实体映射、当前快照/历史事实版本、未知状态、共享参考实体、稳定计划键和录取统计模型，不阻塞当前发布。
+
+---
+
+## ISSUE-031 第一阶段：共享分数证据实体（2026-07-31）
+
+- 新增 `workspace_score_evidence`：按学校、专业、年份保存唯一共享分数证据，包含粒度、来源、更新时间、说明、原始证据 JSON、来源记录数和选中来源院系。
+- 新增 `workspace_plan_score_evidence`：计划仅引用共享证据，不再把同一学校专业参考值复制进每条 `workspace_plan_years`。
+- normalized 模型升级为 v3；Rust `workspace_years_source` 联合直接计划年份与共享证据引用，现有 DTO、分页、筛选、排序、导出和页面展示无需改变。
+- legacy `workspace_department_years` 暂时继续写入兼容投影，旧库回退行为保持不变；模型状态以“直接年份 + 共享证据引用”核对投影行数。
+- 同步校验新增悬空引用、跨学校引用和跨专业引用门禁；专业清理同时删除证据引用与共享证据。
+- 真实 `085410` 只读源库 → 临时目标库同步验证：217所学校、514个计划、668条共享证据、1624个计划引用、0条直接复制的normalized计划年份、0组重复证据；legacy与normalized投影均为1624条，模型状态v3/ready。
+- 最终门禁：前端48/48、Rust25/25、Python13/13；TypeScript、生产构建、Python `compileall`、Rust格式检查和`npm audit --audit-level=high`通过。

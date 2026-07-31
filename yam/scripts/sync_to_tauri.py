@@ -125,6 +125,33 @@ CREATE TABLE IF NOT EXISTS workspace_plan_years (
     UNIQUE(plan_key, year)
 );
 
+CREATE TABLE IF NOT EXISTS workspace_score_evidence (
+    evidence_key TEXT PRIMARY KEY,
+    school_id TEXT NOT NULL,
+    major_code TEXT NOT NULL,
+    year INTEGER NOT NULL,
+    min_score INTEGER NOT NULL,
+    politics INTEGER NOT NULL,
+    english INTEGER NOT NULL,
+    math INTEGER NOT NULL,
+    specialized INTEGER NOT NULL,
+    score_scope TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT '',
+    match_note TEXT NOT NULL DEFAULT '',
+    raw_evidence_json TEXT NOT NULL DEFAULT '{}',
+    source_record_count INTEGER NOT NULL DEFAULT 1,
+    selected_department_id TEXT NOT NULL DEFAULT '',
+    UNIQUE(school_id, major_code, year, score_scope, source, selected_department_id)
+);
+
+CREATE TABLE IF NOT EXISTS workspace_plan_score_evidence (
+    plan_key TEXT NOT NULL,
+    evidence_key TEXT NOT NULL,
+    relation_kind TEXT NOT NULL DEFAULT 'shared_reference',
+    PRIMARY KEY (plan_key, evidence_key)
+);
+
 CREATE TABLE IF NOT EXISTS workspace_score_request_status (
     major_code TEXT NOT NULL,
     school_id TEXT NOT NULL,
@@ -138,7 +165,7 @@ CREATE TABLE IF NOT EXISTS workspace_score_request_status (
 
 CREATE TABLE IF NOT EXISTS workspace_model_state (
     major_code TEXT PRIMARY KEY,
-    model_version INTEGER NOT NULL DEFAULT 2,
+    model_version INTEGER NOT NULL DEFAULT 3,
     status TEXT NOT NULL CHECK(status IN ('writing','ready','failed')),
     old_plan_count INTEGER NOT NULL DEFAULT 0,
     new_plan_count INTEGER NOT NULL DEFAULT 0,
@@ -162,6 +189,10 @@ CREATE INDEX IF NOT EXISTS idx_workspace_plans_department
 ON workspace_plans(department_key);
 CREATE INDEX IF NOT EXISTS idx_workspace_plan_years_plan
 ON workspace_plan_years(plan_key, year DESC);
+CREATE INDEX IF NOT EXISTS idx_workspace_score_evidence_school
+ON workspace_score_evidence(major_code, school_id, year DESC);
+CREATE INDEX IF NOT EXISTS idx_workspace_plan_score_evidence_plan
+ON workspace_plan_score_evidence(plan_key);
 
 CREATE TABLE IF NOT EXISTS favorites (
     favorite_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -276,9 +307,14 @@ def load_seed_index(major_code: str) -> dict[str, dict[str, Any]]:
 
 def clear_major(conn: sqlite3.Connection, major_code: str) -> None:
     conn.execute(
+        "DELETE FROM workspace_plan_score_evidence WHERE plan_key IN "
+        "(SELECT plan_key FROM workspace_plans WHERE major_code = ?)", (major_code,),
+    )
+    conn.execute(
         "DELETE FROM workspace_plan_years WHERE plan_key IN "
         "(SELECT plan_key FROM workspace_plans WHERE major_code = ?)", (major_code,),
     )
+    conn.execute("DELETE FROM workspace_score_evidence WHERE major_code = ?", (major_code,))
     conn.execute("DELETE FROM workspace_plans WHERE major_code = ?", (major_code,))
     conn.execute("DELETE FROM workspace_department_entities WHERE major_code = ?", (major_code,))
     conn.execute("DELETE FROM workspace_score_request_status WHERE major_code = ?", (major_code,))
@@ -299,6 +335,21 @@ def _department_key(school_id: str, major_code: str, source_department_id: str, 
         json.dumps(identity, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
     return f"department:v1:{digest}"
+
+
+def _score_evidence_key(
+    school_id: str,
+    major_code: str,
+    year: int,
+    score_scope: str,
+    source: str,
+    selected_department_id: str,
+) -> str:
+    identity = [school_id, major_code, year, score_scope, source, selected_department_id]
+    digest = hashlib.sha256(
+        json.dumps(identity, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return f"score-evidence:v1:{digest}"
 
 
 def load_schools(conn: sqlite3.Connection, major_code: str) -> list[dict[str, Any]]:
@@ -567,25 +618,81 @@ def insert_department(
     return department_id
 
 
+def _score_scope(score: dict[str, Any]) -> str:
+    note = str(score.get("note") or "")
+    match_scope = str(score.get("match_scope") or "")
+    if match_scope in ("discipline", "first_level") or "一级学科参考线" in note:
+        return "first_level_reference"
+    if match_scope == "category" or "门类级参考线" in note:
+        return "category_reference"
+    return "school_major"
+
+
+def insert_shared_score_evidence(
+    target: sqlite3.Connection,
+    school_id: str,
+    major_code: str,
+    score_lines: list[dict[str, Any]],
+) -> dict[int, str]:
+    """每校、专业、年份只保存一份共享分数证据。"""
+    evidence_keys: dict[int, str] = {}
+    for score in score_lines:
+        year = int(score.get("year") or 0)
+        score_scope = _score_scope(score)
+        source = str(score.get("source") or "")
+        selected_department_id = str(score.get("selected_department_id") or "")
+        evidence_key = _score_evidence_key(
+            school_id,
+            major_code,
+            year,
+            score_scope,
+            source,
+            selected_department_id,
+        )
+        target.execute(
+            """
+            INSERT INTO workspace_score_evidence
+            (evidence_key, school_id, major_code, year, min_score, politics, english,
+             math, specialized, score_scope, source, updated_at, match_note,
+             raw_evidence_json, source_record_count, selected_department_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                evidence_key,
+                school_id,
+                major_code,
+                year,
+                score.get("total") or 0,
+                score.get("politics") or 0,
+                score.get("english") or 0,
+                score.get("special_one") or 0,
+                score.get("special_two") or 0,
+                score_scope,
+                source,
+                score.get("updated_at") or "",
+                score.get("note") or "",
+                score.get("raw_evidence_json") or "{}",
+                int(score.get("source_record_count") or 1),
+                selected_department_id,
+            ),
+        )
+        evidence_keys[year] = evidence_key
+    return evidence_keys
+
+
 def insert_department_years(
     target: sqlite3.Connection,
     department_id: int,
     dept_enrollment_count: int | None,
     score_lines: list[dict[str, Any]],
+    shared_evidence_keys: dict[int, str],
 ) -> int:
-    """写入分数年份，返回最新可用的专业级分数线。"""
+    """legacy 表保留投影；normalized 模型只保存共享证据引用。"""
     latest_main_score = 0
     for score in score_lines:
         total = score.get("total")
         note = score.get("note") or ""
-        match_scope = str(score.get("match_scope") or "")
-        if match_scope in ("discipline", "first_level") or "一级学科参考线" in note:
-            score_scope = "first_level_reference"
-        elif match_scope == "category" or "门类级参考线" in note:
-            score_scope = "category_reference"
-        else:
-            # 来源院系无法与研招网计划稳定对应，只能标为学校专业级分数线。
-            score_scope = "school_major"
+        score_scope = _score_scope(score)
         if latest_main_score == 0 and total is not None and score_scope == "school_major":
             latest_main_score = int(total)
 
@@ -614,15 +721,24 @@ def insert_department_years(
         plan_key = target.execute(
             "SELECT plan_key FROM workspace_plans WHERE plan_id = ?", (department_id,)
         ).fetchone()[0]
-        target.execute(
-            """
-            INSERT INTO workspace_plan_years
-            (plan_key, year, enroll_count, min_score, politics, english, math, specialized,
-             score_scope, source, updated_at, match_note)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (plan_key, *year_values),
-        )
+        evidence_key = shared_evidence_keys.get(int(score.get("year") or 0))
+        if evidence_key:
+            target.execute(
+                """INSERT INTO workspace_plan_score_evidence
+                   (plan_key, evidence_key, relation_kind)
+                   VALUES (?, ?, 'shared_reference')""",
+                (plan_key, evidence_key),
+            )
+        else:
+            target.execute(
+                """
+                INSERT INTO workspace_plan_years
+                (plan_key, year, enroll_count, min_score, politics, english, math, specialized,
+                 score_scope, source, updated_at, match_note)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (plan_key, *year_values),
+            )
     return latest_main_score
 
 
@@ -667,7 +783,7 @@ def sync_major(source: sqlite3.Connection, target: sqlite3.Connection, major_cod
          str(major_info.get("discipline_name") or ""), major_source, now_str),
     )
     target.execute(
-        "INSERT INTO workspace_model_state (major_code, status) VALUES (?, 'writing')",
+        "INSERT INTO workspace_model_state (major_code, model_version, status) VALUES (?, 3, 'writing')",
         (major_code,),
     )
 
@@ -716,6 +832,9 @@ def sync_major(source: sqlite3.Connection, target: sqlite3.Connection, major_cod
         departments = load_departments(source, school_id, major_code)
         # 当前分数按学校+专业+年份聚合，每所学校只需查询一次并复用到各计划。
         score_lines = load_score_lines(source, school_id, "", major_code)
+        shared_evidence_keys = insert_shared_score_evidence(
+            target, school_id, major_code, score_lines
+        )
 
         school_enroll_count = unique_plan_enrollment_total(departments)
         school_min_score: int | None = None
@@ -727,7 +846,11 @@ def sync_major(source: sqlite3.Connection, target: sqlite3.Connection, major_cod
             inserted_departments += 1
 
             latest_dept_score = insert_department_years(
-                target, target_dept_id, dept_enrollment_count, score_lines
+                target,
+                target_dept_id,
+                dept_enrollment_count,
+                score_lines,
+                shared_evidence_keys,
             )
             inserted_years += len(score_lines)
 
@@ -777,9 +900,16 @@ def sync_major(source: sqlite3.Connection, target: sqlite3.Connection, major_cod
            WHERE d.major_code = ?""", (major_code,),
     ).fetchone()[0]
     new_year_count = target.execute(
-        """SELECT COUNT(*) FROM workspace_plan_years y
-           JOIN workspace_plans p ON p.plan_key = y.plan_key
-           WHERE p.major_code = ?""", (major_code,),
+        """SELECT
+             (SELECT COUNT(*) FROM workspace_plan_years y
+              JOIN workspace_plans p ON p.plan_key = y.plan_key
+              WHERE p.major_code = ?)
+             +
+             (SELECT COUNT(*) FROM workspace_plan_score_evidence r
+              JOIN workspace_plans p ON p.plan_key = r.plan_key
+              JOIN workspace_score_evidence e ON e.evidence_key = r.evidence_key
+              WHERE p.major_code = ?)""",
+        (major_code, major_code),
     ).fetchone()[0]
     invalid_plan_keys = target.execute(
         """SELECT COUNT(*) FROM workspace_departments
@@ -793,16 +923,31 @@ def sync_major(source: sqlite3.Connection, target: sqlite3.Connection, major_cod
     ).fetchone()[0]
     duplicate_years = target.execute(
         """SELECT COUNT(*) FROM (
-           SELECT y.plan_key, y.year FROM workspace_plan_years y
-           JOIN workspace_plans p ON p.plan_key = y.plan_key WHERE p.major_code = ?
-           GROUP BY y.plan_key, y.year HAVING COUNT(*) > 1)""", (major_code,),
+           SELECT plan_key, year FROM (
+             SELECT y.plan_key, y.year FROM workspace_plan_years y
+             JOIN workspace_plans p ON p.plan_key = y.plan_key WHERE p.major_code = ?
+             UNION ALL
+             SELECT r.plan_key, e.year FROM workspace_plan_score_evidence r
+             JOIN workspace_score_evidence e ON e.evidence_key = r.evidence_key
+             JOIN workspace_plans p ON p.plan_key = r.plan_key WHERE p.major_code = ?
+           ) GROUP BY plan_key, year HAVING COUNT(*) > 1)""",
+        (major_code, major_code),
+    ).fetchone()[0]
+    invalid_evidence_links = target.execute(
+        """SELECT COUNT(*) FROM workspace_plan_score_evidence r
+           LEFT JOIN workspace_plans p ON p.plan_key = r.plan_key
+           LEFT JOIN workspace_score_evidence e ON e.evidence_key = r.evidence_key
+           WHERE p.plan_key IS NULL OR e.evidence_key IS NULL
+              OR p.school_id <> e.school_id OR p.major_code <> e.major_code"""
     ).fetchone()[0]
     if (old_plan_count != new_plan_count or old_year_count != new_year_count
-            or invalid_plan_keys or duplicate_plan_keys or duplicate_years):
+            or invalid_plan_keys or duplicate_plan_keys or duplicate_years
+            or invalid_evidence_links):
         raise RuntimeError(
             f"规范化校验失败: plans={old_plan_count}/{new_plan_count}, "
             f"years={old_year_count}/{new_year_count}, empty_keys={invalid_plan_keys}, "
-            f"duplicate_keys={duplicate_plan_keys}, duplicate_years={duplicate_years}"
+            f"duplicate_keys={duplicate_plan_keys}, duplicate_years={duplicate_years}, "
+            f"invalid_evidence_links={invalid_evidence_links}"
         )
     target.execute(
         """UPDATE workspace_model_state SET status='ready', old_plan_count=?, new_plan_count=?,
@@ -837,7 +982,8 @@ def main() -> int:
 
             if args.clear and not args.major_code:
                 for table in [
-                    "workspace_plan_years", "workspace_plans", "workspace_department_entities",
+                    "workspace_plan_score_evidence", "workspace_plan_years",
+                    "workspace_score_evidence", "workspace_plans", "workspace_department_entities",
                     "workspace_model_state", "workspace_majors", "workspace_department_years",
                     "workspace_departments", "workspace_schools",
                 ]:

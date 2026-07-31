@@ -11,7 +11,15 @@ from unittest import mock
 import pytest
 
 from yam import backend_entry
-from yam.scripts.sync_to_tauri import load_score_lines, unique_plan_enrollment_total
+from yam.scripts.sync_to_tauri import (
+    TARGET_SCHEMA,
+    clear_major,
+    insert_department,
+    insert_department_years,
+    insert_shared_score_evidence,
+    load_score_lines,
+    unique_plan_enrollment_total,
+)
 from yam.storage.db import Database
 
 
@@ -222,3 +230,57 @@ def test_load_score_lines_keeps_one_complete_source_record() -> None:
     )
     assert rows[0]["source_record_count"] == 2
     assert rows[0]["selected_department_id"] == "a"
+
+
+def test_shared_score_evidence_is_stored_once_and_linked_to_plans() -> None:
+    target = sqlite3.connect(":memory:")
+    target.row_factory = sqlite3.Row
+    target.executescript(TARGET_SCHEMA)
+    score_lines = [
+        {
+            "year": 2025,
+            "total": 335,
+            "politics": 50,
+            "english": 50,
+            "special_one": 80,
+            "special_two": 90,
+            "source": "source",
+            "updated_at": "2026-07-31T00:00:00Z",
+            "note": "学校专业参考线",
+            "selected_department_id": "source-dept",
+            "source_record_count": 2,
+            "raw_evidence_json": '{"code":"085410"}',
+        }
+    ]
+    evidence_keys = insert_shared_score_evidence(
+        target, "school-1", "085410", score_lines
+    )
+    for direction in ("方向一", "方向二"):
+        department_id = insert_department(
+            target,
+            "school-1",
+            "085410",
+            {
+                "department_id": "dept-1",
+                "name": "计算机学院",
+                "research_direction": direction,
+                "exam_subjects": [],
+                "special_plans": [],
+                "study_mode": "全日制",
+                "exam_type": "统考",
+                "enrollment_count": 10,
+            },
+        )
+        insert_department_years(target, department_id, 10, score_lines, evidence_keys)
+
+    assert target.execute("SELECT COUNT(*) FROM workspace_score_evidence").fetchone()[0] == 1
+    assert target.execute("SELECT COUNT(*) FROM workspace_plan_score_evidence").fetchone()[0] == 2
+    assert target.execute("SELECT COUNT(*) FROM workspace_plan_years").fetchone()[0] == 0
+    assert target.execute("SELECT COUNT(*) FROM workspace_department_years").fetchone()[0] == 2
+    assert target.execute(
+        "SELECT COUNT(DISTINCT evidence_key) FROM workspace_plan_score_evidence"
+    ).fetchone()[0] == 1
+    clear_major(target, "085410")
+    assert target.execute("SELECT COUNT(*) FROM workspace_score_evidence").fetchone()[0] == 0
+    assert target.execute("SELECT COUNT(*) FROM workspace_plan_score_evidence").fetchone()[0] == 0
+    target.close()
