@@ -66,6 +66,12 @@ export function getPlanEnrollmentLabel(
   return plan.latest_enroll_count_status === 'unknown' ? '未提供' : getEnrollmentCountLabel(plan.latest_enroll_count);
 }
 
+export function getPlanYearLabel(
+  plan: Pick<WorkspacePlanRow, 'latest_plan_year' | 'plan_year_status'>,
+): string | number {
+  return plan.plan_year_status === 'provided' && plan.latest_plan_year > 0 ? plan.latest_plan_year : '未知';
+}
+
 export function hasPlanProfessionalScore(
   plan: Pick<WorkspacePlanRow, 'latest_min_score' | 'latest_score_year'>,
 ): boolean {

@@ -9,6 +9,7 @@ import {
   getPlanExportCells,
   getPlanScoreLabel,
   getPlanScoreYearLabel,
+  getPlanYearLabel,
   getScoreScopeLabel,
   getSchoolScoreStatus,
   getTrendScaleDomain,
@@ -156,6 +157,17 @@ describe('getPlanEnrollmentLabel', () => {
       latest_enroll_count: 0,
       latest_enroll_count_status: 'unknown',
     })).toBe('未提供');
+  });
+});
+
+describe('getPlanYearLabel', () => {
+  it('只有计划年份来源明确时显示年份，否则显示未知', () => {
+    expect(getPlanYearLabel(basePlan)).toBe(2025);
+    expect(getPlanYearLabel({
+      ...basePlan,
+      latest_plan_year: 0,
+      plan_year_status: 'unknown',
+    })).toBe('未知');
   });
 });
 

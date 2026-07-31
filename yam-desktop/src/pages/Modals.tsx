@@ -25,7 +25,14 @@ import {
   type WorkspaceFilters,
   type WorkspacePlanRow,
 } from '../lib/db';
-import { getDirectionLabel, getScoreScopeLabel } from '../lib/workspace-utils';
+import {
+  getDirectionLabel,
+  getLatestScoreYear,
+  getPlanEnrollmentLabel,
+  getPlanScoreLabel,
+  getPlanYearLabel,
+  getScoreScopeLabel,
+} from '../lib/workspace-utils';
 
 // S009 - Manage Display Majors Modal
 interface ManageMajorsModalProps {
@@ -306,18 +313,18 @@ export function CompareModal({ isOpen, onClose, onClear, plans }: CompareModalPr
     { label: '学习方式', value: (plan: WorkspacePlanRow) => plan.study_mode },
     { label: '考试方式', value: (plan: WorkspacePlanRow) => plan.exam_type },
     { label: '特殊计划', value: (plan: WorkspacePlanRow) => plan.special_plans.join('、') },
-    { label: '最新年份', value: (plan: WorkspacePlanRow) => plan.latest_year },
-    { label: '分数值', value: (plan: WorkspacePlanRow) => plan.latest_min_score },
-    { label: '分数粒度', value: (plan: WorkspacePlanRow) => plan.years[0] ? getScoreScopeLabel(plan.years[0]) : '—' },
-    { label: '招生人数', value: (plan: WorkspacePlanRow) => plan.latest_enroll_count },
-    { label: '政治', value: (plan: WorkspacePlanRow) => plan.years[0]?.politics },
-    { label: '英语', value: (plan: WorkspacePlanRow) => plan.years[0]?.english },
-    { label: '数学', value: (plan: WorkspacePlanRow) => plan.years[0]?.math },
-    { label: '专业课', value: (plan: WorkspacePlanRow) => plan.years[0]?.specialized },
+    { label: '计划年份', value: getPlanYearLabel },
+    { label: '分数值', value: getPlanScoreLabel },
+    { label: '分数粒度', value: (plan: WorkspacePlanRow) => getLatestScoreYear(plan) ? getScoreScopeLabel(getLatestScoreYear(plan)) : '—' },
+    { label: '招生人数', value: getPlanEnrollmentLabel },
+    { label: '政治', value: (plan: WorkspacePlanRow) => getLatestScoreYear(plan)?.politics },
+    { label: '英语', value: (plan: WorkspacePlanRow) => getLatestScoreYear(plan)?.english },
+    { label: '数学', value: (plan: WorkspacePlanRow) => getLatestScoreYear(plan)?.math },
+    { label: '专业课', value: (plan: WorkspacePlanRow) => getLatestScoreYear(plan)?.specialized },
     { label: '计划来源', value: (plan: WorkspacePlanRow) => plan.department_source },
     { label: '计划更新时间', value: (plan: WorkspacePlanRow) => plan.department_updated_at },
-    { label: '分数来源', value: (plan: WorkspacePlanRow) => plan.years[0]?.source },
-    { label: '分数更新时间', value: (plan: WorkspacePlanRow) => plan.years[0]?.updated_at },
+    { label: '分数来源', value: (plan: WorkspacePlanRow) => getLatestScoreYear(plan)?.source },
+    { label: '分数更新时间', value: (plan: WorkspacePlanRow) => getLatestScoreYear(plan)?.updated_at },
   ];
 
   return (
