@@ -63,6 +63,7 @@
 - 第四阶段真实全量验证：四专业2714条共享分数证据全部有来源实体；1144个来源实体全部有映射记录，其中212个`candidate`到研招网院系、932个`unmapped`保留学校专业层、0个缺映射，业务投影仍为9135条。
 - 第四阶段完整门禁通过：前端48/48、Rust26/26、Python14/14，TypeScript、生产构建、Python `compileall`、npm audit、Rust格式和差异检查通过。
 - ISSUE-031 第五阶段完成：当前招生计划人数新增 `enrollment_count_status` 和 `enrollment_text`，来源明确给0时保留为 `provided` 并显示0，只有状态未知时显示“未提供”；真实四专业临时同步验证2961个计划中33个招生0全部为provided，normalized模型升级为v7。
+- ISSUE-031 第六阶段启动：真实源库确认 `score_lines.total=0/NULL` 均为0条，计划视图分数 `0` 可确定为无专业级分数哨兵；前端改用显式分数状态 helper，不再依赖 `||` fallback。
 - 尚未完成：剩余未知值状态在所有工作区表完全解耦、可靠计划年份来源，以及录取统计独立模型。
 
 ---

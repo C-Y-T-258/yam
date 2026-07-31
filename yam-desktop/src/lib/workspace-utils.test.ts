@@ -7,11 +7,14 @@ import {
   getLatestScoreYear,
   getPlanEnrollmentLabel,
   getPlanExportCells,
+  getPlanScoreLabel,
+  getPlanScoreYearLabel,
   getScoreScopeLabel,
   getSchoolScoreStatus,
   getTrendScaleDomain,
   getWorkspaceLoadingMode,
   getWorkspaceRefreshError,
+  hasPlanProfessionalScore,
 } from './workspace-utils';
 
 const baseYear: WorkspaceYear = {
@@ -173,6 +176,19 @@ describe('getSchoolScoreStatus', () => {
       .toBe('暂无该专业分数线；2026年一级学科参考线320');
     expect(getSchoolScoreStatus({ ...school, reference_score: 300, reference_year: 2026, reference_scope: 'category_reference' }))
       .toBe('暂无该专业分数线；2026年门类参考线300');
+  });
+});
+
+describe('plan score labels', () => {
+  it('用显式状态判断计划专业级分数，不依赖 || fallback', () => {
+    expect(hasPlanProfessionalScore(basePlan)).toBe(true);
+    expect(getPlanScoreLabel(basePlan)).toBe(338);
+    expect(getPlanScoreYearLabel(basePlan)).toBe('2025');
+
+    const missing = { ...basePlan, latest_min_score: 0, latest_score_year: 0 };
+    expect(hasPlanProfessionalScore(missing)).toBe(false);
+    expect(getPlanScoreLabel(missing)).toBe('暂无');
+    expect(getPlanScoreYearLabel(missing)).toBe('无分数年份');
   });
 });
 

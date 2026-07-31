@@ -42,12 +42,15 @@ import {
   getLatestScoreYear,
   getPlanEnrollmentLabel,
   getPlanExportCells,
+  getPlanScoreLabel,
+  getPlanScoreYearLabel,
   getScoreScopeLabel,
   getSchoolScoreNote,
   getSchoolScoreStatus,
   getTrendScaleDomain,
   getWorkspaceLoadingMode,
   getWorkspaceRefreshError,
+  hasPlanProfessionalScore,
   type ExportCell,
 } from '../lib/workspace-utils';
 
@@ -2308,13 +2311,13 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                         {p.plan_year_status === 'provided' && p.latest_plan_year ? p.latest_plan_year : '未知'}
                       </div>
                       <div className="text-center min-w-0">
-                        <div className="text-gray-900 font-medium">{p.latest_min_score || '暂无'}</div>
+                        <div className="text-gray-900 font-medium">{getPlanScoreLabel(p)}</div>
                         {getLatestScoreYear(p) && (
                           <div className="text-[10px] text-gray-400 mt-0.5" title={[getLatestScoreYear(p)?.source, getLatestScoreYear(p)?.match_note].filter(Boolean).join(' · ')}>
-                            {p.latest_score_year || '无分数年份'}年 · {getScoreScopeLabel(getLatestScoreYear(p))}
+                            {getPlanScoreYearLabel(p)}年 · {getScoreScopeLabel(getLatestScoreYear(p))}
                           </div>
                         )}
-                        {!p.latest_score_year && <div className="text-[10px] text-amber-600">最新计划暂无可用分数</div>}
+                        {!hasPlanProfessionalScore(p) && <div className="text-[10px] text-amber-600">最新计划暂无可用分数</div>}
                       </div>
                       {/* 招生 */}
                       <div className="text-center text-gray-600 text-xs" title={p.latest_enroll_text || undefined}>

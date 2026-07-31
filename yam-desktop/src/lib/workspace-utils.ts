@@ -66,6 +66,24 @@ export function getPlanEnrollmentLabel(
   return plan.latest_enroll_count_status === 'unknown' ? '未提供' : getEnrollmentCountLabel(plan.latest_enroll_count);
 }
 
+export function hasPlanProfessionalScore(
+  plan: Pick<WorkspacePlanRow, 'latest_min_score' | 'latest_score_year'>,
+): boolean {
+  return plan.latest_min_score > 0 && plan.latest_score_year > 0;
+}
+
+export function getPlanScoreLabel(
+  plan: Pick<WorkspacePlanRow, 'latest_min_score' | 'latest_score_year'>,
+): string | number {
+  return hasPlanProfessionalScore(plan) ? plan.latest_min_score : '暂无';
+}
+
+export function getPlanScoreYearLabel(
+  plan: Pick<WorkspacePlanRow, 'latest_min_score' | 'latest_score_year'>,
+): string {
+  return hasPlanProfessionalScore(plan) ? String(plan.latest_score_year) : '无分数年份';
+}
+
 export function getSchoolScoreStatus(school: WorkspaceSchool): string {
   if (school.min_score > 0) return `${school.min_score}`;
   if (school.latest_request_status === 'api_error') {
