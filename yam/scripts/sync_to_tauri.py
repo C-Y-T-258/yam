@@ -114,6 +114,9 @@ CREATE TABLE IF NOT EXISTS workspace_plan_snapshots (
     department_key TEXT NOT NULL,
     school_id TEXT NOT NULL,
     major_code TEXT NOT NULL,
+    source_department_id TEXT NOT NULL DEFAULT '',
+    department_name TEXT NOT NULL DEFAULT '',
+    plan_identity_version INTEGER NOT NULL DEFAULT 2,
     catalog_year INTEGER,
     catalog_year_status TEXT NOT NULL DEFAULT 'unknown'
         CHECK(catalog_year_status IN ('provided', 'unknown')),
@@ -186,7 +189,7 @@ CREATE TABLE IF NOT EXISTS workspace_score_request_status (
 
 CREATE TABLE IF NOT EXISTS workspace_model_state (
     major_code TEXT PRIMARY KEY,
-    model_version INTEGER NOT NULL DEFAULT 4,
+    model_version INTEGER NOT NULL DEFAULT 5,
     status TEXT NOT NULL CHECK(status IN ('writing','ready','failed')),
     old_plan_count INTEGER NOT NULL DEFAULT 0,
     new_plan_count INTEGER NOT NULL DEFAULT 0,
@@ -281,6 +284,9 @@ def ensure_target_schema(conn: sqlite3.Connection) -> None:
     add_if_missing("workspace_department_years", "source", "TEXT NOT NULL DEFAULT ''")
     add_if_missing("workspace_department_years", "updated_at", "TEXT NOT NULL DEFAULT ''")
     add_if_missing("workspace_department_years", "match_note", "TEXT NOT NULL DEFAULT ''")
+    add_if_missing("workspace_plan_snapshots", "source_department_id", "TEXT NOT NULL DEFAULT ''")
+    add_if_missing("workspace_plan_snapshots", "department_name", "TEXT NOT NULL DEFAULT ''")
+    add_if_missing("workspace_plan_snapshots", "plan_identity_version", "INTEGER NOT NULL DEFAULT 1")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_workspace_schools_major_code "
         "ON workspace_schools(major_code, school_code, name)"
@@ -354,12 +360,118 @@ def clear_major(conn: sqlite3.Connection, major_code: str) -> None:
     conn.execute("DELETE FROM workspace_schools WHERE major_code = ?", (major_code,))
 
 
-def _department_key(school_id: str, major_code: str, source_department_id: str, name: str) -> str:
-    identity = [value.strip() for value in (school_id, major_code, source_department_id, name)]
-    digest = hashlib.sha256(
+def _identity_digest(identity: list[Any]) -> str:
+    return hashlib.sha256(
         json.dumps(identity, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
-    return f"department:v1:{digest}"
+
+
+def _department_key(school_id: str, major_code: str, source_department_id: str, name: str) -> str:
+    source_id = source_department_id.strip()
+    identity = [school_id.strip(), major_code.strip(), source_id]
+    if not source_id:
+        identity.append(name.strip())
+    return f"department:v2:{_identity_digest(identity)}"
+
+
+def _plan_key(department_key: str, research_direction: str) -> str:
+    return f"plan:v2:{_identity_digest([department_key, research_direction.strip()])}"
+
+
+def _legacy_plan_key(
+    school_id: str,
+    major_code: str,
+    source_department_id: str,
+    name: str,
+    research_direction: str,
+    exam_subjects: list[str],
+    study_mode: str,
+    exam_type: str,
+    special_plans: list[str],
+) -> str:
+    return _identity_digest([
+        school_id,
+        major_code,
+        source_department_id,
+        name,
+        research_direction,
+        exam_subjects,
+        study_mode,
+        exam_type,
+        special_plans,
+    ])
+
+
+def migrate_plan_snapshot_identities(
+    conn: sqlite3.Connection, major_code: str
+) -> tuple[int, int]:
+    """迁移可识别的历史快照，并合并同一计划、同一观察时刻的重复项。"""
+    rows = conn.execute(
+        """
+        SELECT s.snapshot_key, s.plan_key, s.observed_at, s.school_id, s.major_code,
+               COALESCE(NULLIF(s.source_department_id, ''), d.source_department_id, ''),
+               COALESCE(NULLIF(s.department_name, ''), d.name, ''),
+               s.research_direction
+        FROM workspace_plan_snapshots s
+        LEFT JOIN workspace_plans p ON p.plan_key = s.plan_key
+        LEFT JOIN workspace_department_entities d
+          ON d.department_key = COALESCE(p.department_key, s.department_key)
+        WHERE s.major_code = ?
+        ORDER BY s.observed_at, s.snapshot_key
+        """,
+        (major_code,),
+    ).fetchall()
+    migrated = 0
+    merged = 0
+    for row in rows:
+        snapshot_key = str(row[0])
+        old_plan_key = str(row[1])
+        observed_at = str(row[2])
+        school_id = str(row[3])
+        row_major_code = str(row[4])
+        source_department_id = str(row[5])
+        department_name = str(row[6])
+        research_direction = str(row[7])
+        if not source_department_id and not department_name:
+            continue
+        department_key = _department_key(
+            school_id, row_major_code, source_department_id, department_name
+        )
+        new_plan_key = _plan_key(department_key, research_direction)
+        duplicate = conn.execute(
+            """SELECT snapshot_key FROM workspace_plan_snapshots
+               WHERE plan_key = ? AND observed_at = ? AND snapshot_key <> ?""",
+            (new_plan_key, observed_at, snapshot_key),
+        ).fetchone()
+        if duplicate:
+            conn.execute(
+                """UPDATE workspace_plan_snapshots
+                   SET department_key=?, source_department_id=?, department_name=?,
+                       plan_identity_version=2
+                   WHERE snapshot_key=?""",
+                (department_key, source_department_id, department_name, duplicate[0]),
+            )
+            conn.execute(
+                "DELETE FROM workspace_plan_snapshots WHERE snapshot_key=?", (snapshot_key,)
+            )
+            merged += 1
+            continue
+        conn.execute(
+            """UPDATE workspace_plan_snapshots
+               SET plan_key=?, department_key=?, source_department_id=?, department_name=?,
+                   plan_identity_version=2
+               WHERE snapshot_key=?""",
+            (
+                new_plan_key,
+                department_key,
+                source_department_id,
+                department_name,
+                snapshot_key,
+            ),
+        )
+        if old_plan_key != new_plan_key:
+            migrated += 1
+    return migrated, merged
 
 
 def _score_evidence_key(
@@ -371,10 +483,7 @@ def _score_evidence_key(
     selected_department_id: str,
 ) -> str:
     identity = [school_id, major_code, year, score_scope, source, selected_department_id]
-    digest = hashlib.sha256(
-        json.dumps(identity, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-    return f"score-evidence:v1:{digest}"
+    return f"score-evidence:v1:{_identity_digest(identity)}"
 
 
 def _plan_snapshot_key(plan_key: str, observed_at: str) -> str:
@@ -591,36 +700,22 @@ def insert_department(
     research_direction = str(dept.get("research_direction") or "").strip()
     study_mode = str(dept.get("study_mode") or "").strip()
     exam_type = str(dept.get("exam_type") or "").strip()
-    plan_identity = [
-        school_id,
-        major_code,
-        source_department_id,
-        name,
-        research_direction,
-        exam_subjects,
-        study_mode,
-        exam_type,
-        special_plans,
-    ]
-    plan_key = hashlib.sha256(
-        json.dumps(
-            plan_identity,
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
     source = str(dept.get("source") or "")
     updated_at = str(dept.get("updated_at") or "")
     exam_subjects_text = ",".join(exam_subjects)
     special_plans_text = json.dumps(special_plans, ensure_ascii=False)
     department_key = _department_key(school_id, major_code, source_department_id, name)
+    plan_key = _plan_key(department_key, research_direction)
     target.execute(
         """
         INSERT INTO workspace_department_entities
         (department_key, school_id, major_code, source_department_id, name, source, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(department_key) DO UPDATE SET
-            source=excluded.source, updated_at=excluded.updated_at
+            source_department_id=excluded.source_department_id,
+            name=excluded.name,
+            source=excluded.source,
+            updated_at=excluded.updated_at
         """,
         (department_key, school_id, major_code, source_department_id, name, source, updated_at),
     )
@@ -653,11 +748,16 @@ def insert_department(
     target.execute(
         """
         INSERT INTO workspace_plan_snapshots
-        (snapshot_key, plan_key, department_key, school_id, major_code, catalog_year,
-         catalog_year_status, observed_at, research_direction, exam_subjects, study_mode,
-         exam_type, special_plans, enrollment_count, source, source_record_kind)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yanzhao_department_derived')
-        ON CONFLICT(snapshot_key) DO UPDATE SET
+        (snapshot_key, plan_key, department_key, school_id, major_code, source_department_id,
+         department_name, plan_identity_version, catalog_year, catalog_year_status, observed_at,
+         research_direction, exam_subjects, study_mode, exam_type, special_plans,
+         enrollment_count, source, source_record_kind)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 2, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yanzhao_department_derived')
+        ON CONFLICT(plan_key, observed_at) DO UPDATE SET
+            department_key=excluded.department_key,
+            source_department_id=excluded.source_department_id,
+            department_name=excluded.department_name,
+            plan_identity_version=excluded.plan_identity_version,
             catalog_year=excluded.catalog_year,
             catalog_year_status=excluded.catalog_year_status,
             research_direction=excluded.research_direction,
@@ -674,6 +774,8 @@ def insert_department(
             department_key,
             school_id,
             major_code,
+            source_department_id,
+            name,
             catalog_year,
             catalog_year_status,
             observed_at,
@@ -832,6 +934,7 @@ def unique_plan_enrollment_total(departments: list[dict[str, Any]]) -> int:
 
 
 def sync_major(source: sqlite3.Connection, target: sqlite3.Connection, major_code: str) -> dict[str, int]:
+    migrate_plan_snapshot_identities(target, major_code)
     clear_major(target, major_code)
     now_str = datetime.now(timezone.utc).isoformat()
     major_info = config.get_major(major_code) or {}
@@ -854,7 +957,7 @@ def sync_major(source: sqlite3.Connection, target: sqlite3.Connection, major_cod
          str(major_info.get("discipline_name") or ""), major_source, now_str),
     )
     target.execute(
-        "INSERT INTO workspace_model_state (major_code, model_version, status) VALUES (?, 4, 'writing')",
+        "INSERT INTO workspace_model_state (major_code, model_version, status) VALUES (?, 5, 'writing')",
         (major_code,),
     )
 

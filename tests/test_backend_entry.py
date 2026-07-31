@@ -13,11 +13,13 @@ import pytest
 from yam import backend_entry
 from yam.scripts.sync_to_tauri import (
     TARGET_SCHEMA,
+    _legacy_plan_key,
     clear_major,
     insert_department,
     insert_department_years,
     insert_shared_score_evidence,
     load_score_lines,
+    migrate_plan_snapshot_identities,
     unique_plan_enrollment_total,
 )
 from yam.storage.db import Database
@@ -293,6 +295,10 @@ def test_shared_score_evidence_is_stored_once_and_linked_to_plans() -> None:
     assert all(row["catalog_year"] is None for row in snapshots)
     assert all(row["catalog_year_status"] == "unknown" for row in snapshots)
     assert all(row["observed_at"] == "2026-07-31T08:00:00Z" for row in snapshots)
+    assert all(
+        row[0].startswith("plan:v2:")
+        for row in target.execute("SELECT plan_key FROM workspace_plans").fetchall()
+    )
 
     clear_major(target, "085410")
     assert target.execute("SELECT COUNT(*) FROM workspace_score_evidence").fetchone()[0] == 0
@@ -301,4 +307,90 @@ def test_shared_score_evidence_is_stored_once_and_linked_to_plans() -> None:
     for payload in department_payloads:
         insert_department(target, "school-1", "085410", payload)
     assert target.execute("SELECT COUNT(*) FROM workspace_plan_snapshots").fetchone()[0] == 2
+    target.close()
+
+
+def test_plan_identity_ignores_versioned_display_fields_and_migrates_v1_snapshot() -> None:
+    target = sqlite3.connect(":memory:")
+    target.row_factory = sqlite3.Row
+    target.executescript(TARGET_SCHEMA)
+    original = {
+        "department_id": "dept-1",
+        "name": "计算机学院",
+        "research_direction": "人工智能",
+        "exam_subjects": ["英语一", "408"],
+        "special_plans": ["退役大学生士兵"],
+        "study_mode": "全日制",
+        "exam_type": "统考",
+        "updated_at": "2026-07-31T08:00:00Z",
+    }
+    insert_department(target, "school-1", "085410", original)
+    stable_key = target.execute("SELECT plan_key FROM workspace_plans").fetchone()[0]
+
+    clear_major(target, "085410")
+    changed = {
+        **original,
+        "name": "计算机与人工智能学院",
+        "exam_subjects": ["英语二", "自命题"],
+        "special_plans": [],
+        "study_mode": "非全日制",
+        "exam_type": "单独考试",
+        "updated_at": "2026-08-01T08:00:00Z",
+    }
+    insert_department(target, "school-1", "085410", changed)
+    assert target.execute("SELECT plan_key FROM workspace_plans").fetchone()[0] == stable_key
+    assert target.execute(
+        "SELECT COUNT(DISTINCT plan_key) FROM workspace_plan_snapshots"
+    ).fetchone()[0] == 1
+    assert target.execute("SELECT COUNT(*) FROM workspace_plan_snapshots").fetchone()[0] == 2
+
+    legacy_key = _legacy_plan_key(
+        "school-2", "085410", "dept-2", "旧学院", "方向一",
+        ["英语一", "408"], "全日制", "统考", [],
+    )
+    target.execute(
+        """INSERT INTO workspace_department_entities
+           (department_key, school_id, major_code, source_department_id, name)
+           VALUES ('department:v1:legacy', 'school-2', '085410', 'dept-2', '旧学院')"""
+    )
+    target.execute(
+        """INSERT INTO workspace_plans
+           (plan_id, plan_key, department_key, school_id, major_code, research_direction,
+            exam_subjects, study_mode, exam_type, special_plans)
+           VALUES (99, ?, 'department:v1:legacy', 'school-2', '085410', '方向一',
+                   '英语一,408', '全日制', '统考', '[]')""",
+        (legacy_key,),
+    )
+    target.execute(
+        """INSERT INTO workspace_plan_snapshots
+           (snapshot_key, plan_key, department_key, school_id, major_code,
+            plan_identity_version, observed_at, research_direction, exam_subjects)
+           VALUES ('legacy-snapshot', ?, 'department:v1:legacy', 'school-2', '085410',
+                   1, '2026-07-30T08:00:00Z', '方向一', '英语一,408')""",
+        (legacy_key,),
+    )
+    target.execute(
+        """INSERT INTO workspace_plan_snapshots
+           (snapshot_key, plan_key, department_key, school_id, major_code,
+            plan_identity_version, observed_at, research_direction, exam_subjects)
+           VALUES ('unmapped-snapshot', 'orphan-v1', 'unknown-department', 'school-3',
+                   '085410', 1, '2026-07-29T08:00:00Z', '方向二', '408')"""
+    )
+
+    migrated, merged = migrate_plan_snapshot_identities(target, "085410")
+    migrated_row = target.execute(
+        """SELECT plan_key, department_key, source_department_id, department_name,
+                  plan_identity_version
+           FROM workspace_plan_snapshots WHERE snapshot_key='legacy-snapshot'"""
+    ).fetchone()
+    assert migrated >= 1
+    assert merged == 0
+    assert migrated_row["plan_key"].startswith("plan:v2:")
+    assert migrated_row["department_key"].startswith("department:v2:")
+    assert migrated_row["source_department_id"] == "dept-2"
+    assert migrated_row["department_name"] == "旧学院"
+    assert migrated_row["plan_identity_version"] == 2
+    assert target.execute(
+        "SELECT plan_key FROM workspace_plan_snapshots WHERE snapshot_key='unmapped-snapshot'"
+    ).fetchone()[0] == "orphan-v1"
     target.close()

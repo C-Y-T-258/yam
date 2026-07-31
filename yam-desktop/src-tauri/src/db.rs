@@ -430,6 +430,24 @@ pub fn migrate_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
     )?;
     add_if_missing(
         conn,
+        "workspace_plan_snapshots",
+        "source_department_id",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    add_if_missing(
+        conn,
+        "workspace_plan_snapshots",
+        "department_name",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    add_if_missing(
+        conn,
+        "workspace_plan_snapshots",
+        "plan_identity_version",
+        "INTEGER NOT NULL DEFAULT 1",
+    )?;
+    add_if_missing(
+        conn,
         "workspace_department_years",
         "score_scope",
         "TEXT NOT NULL DEFAULT 'school_major'",
@@ -554,7 +572,9 @@ const SCHEMA: &str = "
     );
     CREATE TABLE IF NOT EXISTS workspace_plan_snapshots (
         snapshot_key TEXT PRIMARY KEY, plan_key TEXT NOT NULL, department_key TEXT NOT NULL,
-        school_id TEXT NOT NULL, major_code TEXT NOT NULL, catalog_year INTEGER,
+        school_id TEXT NOT NULL, major_code TEXT NOT NULL,
+        source_department_id TEXT NOT NULL DEFAULT '', department_name TEXT NOT NULL DEFAULT '',
+        plan_identity_version INTEGER NOT NULL DEFAULT 2, catalog_year INTEGER,
         catalog_year_status TEXT NOT NULL DEFAULT 'unknown'
             CHECK(catalog_year_status IN ('provided', 'unknown')),
         observed_at TEXT NOT NULL, research_direction TEXT NOT NULL,
@@ -593,7 +613,7 @@ const SCHEMA: &str = "
         PRIMARY KEY (major_code, school_id, requested_year, source)
     );
     CREATE TABLE IF NOT EXISTS workspace_model_state (
-        major_code TEXT PRIMARY KEY, model_version INTEGER NOT NULL DEFAULT 4,
+        major_code TEXT PRIMARY KEY, model_version INTEGER NOT NULL DEFAULT 5,
         status TEXT NOT NULL CHECK(status IN ('writing','ready','failed')),
         old_plan_count INTEGER NOT NULL DEFAULT 0, new_plan_count INTEGER NOT NULL DEFAULT 0,
         old_year_count INTEGER NOT NULL DEFAULT 0, new_year_count INTEGER NOT NULL DEFAULT 0,
@@ -3018,6 +3038,49 @@ mod tests {
         assert_eq!(m085410.school_count, 2);
         let m085400 = majors.iter().find(|m| m.major_code == "085400").unwrap();
         assert_eq!(m085400.school_count, 1);
+    }
+
+    #[test]
+    fn migrates_v4_plan_snapshot_identity_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE workspace_plan_snapshots (
+                snapshot_key TEXT PRIMARY KEY, plan_key TEXT NOT NULL,
+                department_key TEXT NOT NULL, school_id TEXT NOT NULL,
+                major_code TEXT NOT NULL, catalog_year INTEGER,
+                catalog_year_status TEXT NOT NULL DEFAULT 'unknown',
+                observed_at TEXT NOT NULL, research_direction TEXT NOT NULL,
+                exam_subjects TEXT NOT NULL, study_mode TEXT NOT NULL DEFAULT '',
+                exam_type TEXT NOT NULL DEFAULT '', special_plans TEXT NOT NULL DEFAULT '[]',
+                enrollment_count INTEGER NOT NULL DEFAULT 0, source TEXT NOT NULL DEFAULT '',
+                source_record_kind TEXT NOT NULL DEFAULT 'yanzhao_department_derived',
+                UNIQUE(plan_key, observed_at)
+             );
+             INSERT INTO workspace_plan_snapshots
+             (snapshot_key, plan_key, department_key, school_id, major_code,
+              observed_at, research_direction, exam_subjects)
+             VALUES ('snapshot-v4', 'plan-v1', 'department-v1', 'school-1', '085410',
+                     '2026-07-31T08:00:00Z', '方向一', '408');",
+        )
+        .unwrap();
+
+        init_schema(&conn).unwrap();
+
+        let migrated = conn
+            .query_row(
+                "SELECT source_department_id, department_name, plan_identity_version
+                 FROM workspace_plan_snapshots WHERE snapshot_key='snapshot-v4'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i32>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(migrated, (String::new(), String::new(), 1));
     }
 
     fn empty_filters() -> WorkspaceFilterParams<'static> {
