@@ -112,6 +112,41 @@ def test_enrollment_zero_is_provided_not_unknown() -> None:
     target.close()
 
 
+def test_plan_snapshot_catalog_year_is_provided_only_when_source_supplies_it() -> None:
+    target = sqlite3.connect(":memory:")
+    target.row_factory = sqlite3.Row
+    target.executescript(TARGET_SCHEMA)
+
+    base = {
+        "department_id": "dept-1",
+        "name": "Computer School",
+        "research_direction": "AI",
+        "exam_subjects": ["English", "408"],
+        "special_plans": [],
+        "study_mode": "full-time",
+        "exam_type": "unified",
+        "updated_at": "2026-08-01T08:00:00Z",
+        "enrollment_count": 12,
+    }
+    insert_department(target, "school-1", "085410", {**base, "catalog_year": 2027})
+    insert_department(
+        target,
+        "school-2",
+        "085410",
+        {**base, "department_id": "dept-2", "catalog_year": None},
+    )
+
+    rows = target.execute(
+        "SELECT school_id, catalog_year, catalog_year_status "
+        "FROM workspace_plan_snapshots ORDER BY school_id"
+    ).fetchall()
+    assert [tuple(row) for row in rows] == [
+        ("school-1", 2027, "provided"),
+        ("school-2", None, "unknown"),
+    ]
+    target.close()
+
+
 def test_search_arguments_are_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
