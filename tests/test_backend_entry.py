@@ -255,21 +255,26 @@ def test_shared_score_evidence_is_stored_once_and_linked_to_plans() -> None:
     evidence_keys = insert_shared_score_evidence(
         target, "school-1", "085410", score_lines
     )
+    department_payloads = []
     for direction in ("方向一", "方向二"):
+        payload = {
+            "department_id": "dept-1",
+            "name": "计算机学院",
+            "research_direction": direction,
+            "exam_subjects": [],
+            "special_plans": [],
+            "study_mode": "全日制",
+            "exam_type": "统考",
+            "enrollment_count": 10,
+            "source": "yanzhao",
+            "updated_at": "2026-07-31T08:00:00Z",
+        }
+        department_payloads.append(payload)
         department_id = insert_department(
             target,
             "school-1",
             "085410",
-            {
-                "department_id": "dept-1",
-                "name": "计算机学院",
-                "research_direction": direction,
-                "exam_subjects": [],
-                "special_plans": [],
-                "study_mode": "全日制",
-                "exam_type": "统考",
-                "enrollment_count": 10,
-            },
+            payload,
         )
         insert_department_years(target, department_id, 10, score_lines, evidence_keys)
 
@@ -280,7 +285,20 @@ def test_shared_score_evidence_is_stored_once_and_linked_to_plans() -> None:
     assert target.execute(
         "SELECT COUNT(DISTINCT evidence_key) FROM workspace_plan_score_evidence"
     ).fetchone()[0] == 1
+    snapshots = target.execute(
+        "SELECT catalog_year, catalog_year_status, observed_at "
+        "FROM workspace_plan_snapshots ORDER BY plan_key"
+    ).fetchall()
+    assert len(snapshots) == 2
+    assert all(row["catalog_year"] is None for row in snapshots)
+    assert all(row["catalog_year_status"] == "unknown" for row in snapshots)
+    assert all(row["observed_at"] == "2026-07-31T08:00:00Z" for row in snapshots)
+
     clear_major(target, "085410")
     assert target.execute("SELECT COUNT(*) FROM workspace_score_evidence").fetchone()[0] == 0
     assert target.execute("SELECT COUNT(*) FROM workspace_plan_score_evidence").fetchone()[0] == 0
+    assert target.execute("SELECT COUNT(*) FROM workspace_plan_snapshots").fetchone()[0] == 2
+    for payload in department_payloads:
+        insert_department(target, "school-1", "085410", payload)
+    assert target.execute("SELECT COUNT(*) FROM workspace_plan_snapshots").fetchone()[0] == 2
     target.close()

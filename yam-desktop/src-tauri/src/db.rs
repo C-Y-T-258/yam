@@ -267,6 +267,8 @@ pub struct WorkspacePlanRow {
     // 兼容旧调用：latest_year 等同最新计划年份；分数年份单独由 latest_score_year 表示。
     pub latest_year: i32,
     pub latest_plan_year: i32,
+    pub plan_year_status: String,
+    pub plan_snapshot_at: String,
     pub latest_score_year: i32,
     pub latest_min_score: i32,
     pub latest_enroll_count: i32,
@@ -550,6 +552,18 @@ const SCHEMA: &str = "
         source TEXT NOT NULL DEFAULT '', source_record_kind TEXT NOT NULL DEFAULT 'yanzhao_department_derived',
         updated_at TEXT NOT NULL DEFAULT ''
     );
+    CREATE TABLE IF NOT EXISTS workspace_plan_snapshots (
+        snapshot_key TEXT PRIMARY KEY, plan_key TEXT NOT NULL, department_key TEXT NOT NULL,
+        school_id TEXT NOT NULL, major_code TEXT NOT NULL, catalog_year INTEGER,
+        catalog_year_status TEXT NOT NULL DEFAULT 'unknown'
+            CHECK(catalog_year_status IN ('provided', 'unknown')),
+        observed_at TEXT NOT NULL, research_direction TEXT NOT NULL,
+        exam_subjects TEXT NOT NULL, study_mode TEXT NOT NULL DEFAULT '',
+        exam_type TEXT NOT NULL DEFAULT '', special_plans TEXT NOT NULL DEFAULT '[]',
+        enrollment_count INTEGER NOT NULL DEFAULT 0, source TEXT NOT NULL DEFAULT '',
+        source_record_kind TEXT NOT NULL DEFAULT 'yanzhao_department_derived',
+        UNIQUE(plan_key, observed_at)
+    );
     CREATE TABLE IF NOT EXISTS workspace_plan_years (
         plan_year_id INTEGER PRIMARY KEY AUTOINCREMENT, plan_key TEXT NOT NULL, year INTEGER NOT NULL,
         enroll_count INTEGER NOT NULL, min_score INTEGER NOT NULL, politics INTEGER NOT NULL,
@@ -579,7 +593,7 @@ const SCHEMA: &str = "
         PRIMARY KEY (major_code, school_id, requested_year, source)
     );
     CREATE TABLE IF NOT EXISTS workspace_model_state (
-        major_code TEXT PRIMARY KEY, model_version INTEGER NOT NULL DEFAULT 3,
+        major_code TEXT PRIMARY KEY, model_version INTEGER NOT NULL DEFAULT 4,
         status TEXT NOT NULL CHECK(status IN ('writing','ready','failed')),
         old_plan_count INTEGER NOT NULL DEFAULT 0, new_plan_count INTEGER NOT NULL DEFAULT 0,
         old_year_count INTEGER NOT NULL DEFAULT 0, new_year_count INTEGER NOT NULL DEFAULT 0,
@@ -592,6 +606,8 @@ const SCHEMA: &str = "
     CREATE INDEX IF NOT EXISTS idx_workspace_entities_major_school ON workspace_department_entities(major_code, school_id);
     CREATE INDEX IF NOT EXISTS idx_workspace_plans_major_school ON workspace_plans(major_code, school_id);
     CREATE INDEX IF NOT EXISTS idx_workspace_plans_department ON workspace_plans(department_key);
+    CREATE INDEX IF NOT EXISTS idx_workspace_plan_snapshots_plan ON workspace_plan_snapshots(plan_key, observed_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_workspace_plan_snapshots_major ON workspace_plan_snapshots(major_code, school_id, observed_at DESC);
     CREATE INDEX IF NOT EXISTS idx_workspace_plan_years_plan ON workspace_plan_years(plan_key, year DESC);
     CREATE INDEX IF NOT EXISTS idx_workspace_score_evidence_school ON workspace_score_evidence(major_code, school_id, year DESC);
     CREATE INDEX IF NOT EXISTS idx_workspace_plan_score_evidence_plan ON workspace_plan_score_evidence(plan_key);
@@ -2267,7 +2283,9 @@ fn get_workspace_plan_base_rows(
                 s.source, s.updated_at, s.major_code,
                 d.department_id, d.source_department_id, d.plan_key, d.name, d.research_direction,
                 d.exam_subjects, d.study_mode, d.exam_type, d.special_plans, d.enrollment_count, d.source, d.updated_at,
-                COALESCE((SELECT y.year FROM {years} y WHERE y.department_id = d.department_id ORDER BY y.year DESC LIMIT 1), 0),
+                COALESCE((SELECT ps.catalog_year FROM workspace_plan_snapshots ps WHERE ps.plan_key = d.plan_key ORDER BY ps.observed_at DESC LIMIT 1), 0),
+                COALESCE((SELECT ps.catalog_year_status FROM workspace_plan_snapshots ps WHERE ps.plan_key = d.plan_key ORDER BY ps.observed_at DESC LIMIT 1), 'unknown'),
+                COALESCE((SELECT ps.observed_at FROM workspace_plan_snapshots ps WHERE ps.plan_key = d.plan_key ORDER BY ps.observed_at DESC LIMIT 1), d.updated_at),
                 COALESCE((SELECT y.year FROM {years} y WHERE y.department_id = d.department_id AND y.score_scope NOT IN ('first_level_reference', 'category_reference') ORDER BY y.year DESC LIMIT 1), 0),
                 COALESCE((SELECT y.min_score FROM {years} y WHERE y.department_id = d.department_id AND y.score_scope NOT IN ('first_level_reference', 'category_reference') ORDER BY y.year DESC LIMIT 1), 0),
                 COALESCE((SELECT y.enroll_count FROM {years} y WHERE y.department_id = d.department_id ORDER BY y.year DESC LIMIT 1), 0)
@@ -2322,8 +2340,10 @@ fn get_workspace_plan_base_rows(
                 department_updated_at: row.get(25)?,
                 latest_year: row.get(26)?,
                 latest_plan_year: row.get(26)?,
-                latest_score_year: row.get(27)?,
-                latest_min_score: row.get(28)?,
+                plan_year_status: row.get(27)?,
+                plan_snapshot_at: row.get(28)?,
+                latest_score_year: row.get(29)?,
+                latest_min_score: row.get(30)?,
                 latest_enroll_count: row.get(23)?,
                 years: Vec::new(),
             })
@@ -3485,10 +3505,22 @@ mod tests {
         )
         .unwrap();
         conn.execute(
+            "INSERT INTO workspace_plan_snapshots
+             (snapshot_key, plan_key, department_key, school_id, major_code, catalog_year,
+              catalog_year_status, observed_at, research_direction, exam_subjects)
+             VALUES
+             ('snapshot-1', 'plan-1', 'department-1', 'school-1', '085410', NULL,
+              'unknown', '2026-07-31T08:00:00Z', '方向一', ''),
+             ('snapshot-2', 'plan-2', 'department-1', 'school-1', '085410', NULL,
+              'unknown', '2026-07-31T08:00:00Z', '方向二', '')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
             "INSERT INTO workspace_model_state
              (major_code, model_version, status, old_plan_count, new_plan_count,
               old_year_count, new_year_count)
-             VALUES ('085410', 3, 'ready', 2, 2, 2, 2)",
+             VALUES ('085410', 4, 'ready', 2, 2, 2, 2)",
             [],
         )
         .unwrap();
@@ -3501,6 +3533,13 @@ mod tests {
         assert!(plans
             .iter()
             .all(|plan| plan.years[0].score_scope == "school_major"));
+        assert!(plans.iter().all(|plan| plan.latest_plan_year == 0));
+        assert!(plans.iter().all(|plan| plan.latest_year == 0));
+        assert!(plans.iter().all(|plan| plan.plan_year_status == "unknown"));
+        assert!(plans
+            .iter()
+            .all(|plan| plan.plan_snapshot_at == "2026-07-31T08:00:00Z"));
+        assert!(plans.iter().all(|plan| plan.latest_score_year == 2025));
         assert_eq!(
             conn.query_row("SELECT COUNT(*) FROM workspace_score_evidence", [], |row| {
                 row.get::<_, i64>(0)

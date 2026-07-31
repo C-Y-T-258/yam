@@ -116,7 +116,8 @@ export function getPlanExportCells(plan: WorkspacePlanRow, majorName: string): E
     direction.label_type, direction.is_fallback ? '是' : '否',
     plan.exam_subjects.join('; '), plan.study_mode, plan.exam_type,
     plan.special_plans.join('; '), plan.school_source, plan.school_updated_at,
-    plan.department_source, plan.department_updated_at, plan.latest_plan_year, plan.latest_score_year,
+    plan.department_source, plan.department_updated_at, plan.latest_plan_year, plan.plan_year_status,
+    plan.plan_snapshot_at, plan.latest_score_year,
     plan.latest_min_score, getScoreScopeLabel(latestYear), plan.latest_enroll_count, latestYear?.source || '',
     latestYear?.updated_at || '', latestYear?.match_note || '',
   ];

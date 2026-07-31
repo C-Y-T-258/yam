@@ -54,6 +54,8 @@ const basePlan: WorkspacePlanRow = {
   department_updated_at: '2026-06-15T08:00:00Z',
   latest_year: 2025,
   latest_plan_year: 2025,
+  plan_year_status: 'provided',
+  plan_snapshot_at: '2026-06-15T08:00:00Z',
   latest_score_year: 2025,
   latest_min_score: 338,
   latest_enroll_count: 24,
@@ -169,14 +171,15 @@ describe('getTrendScaleDomain', () => {
 });
 
 describe('getPlanExportCells', () => {
-  it('导出全部 23 列及方向、粒度和来源元数据', () => {
+  it('导出方向、目录年份状态、快照时间、粒度和来源元数据', () => {
     const cells = getPlanExportCells(basePlan, '电子信息');
-    expect(cells).toHaveLength(26);
+    expect(cells).toHaveLength(28);
     expect(cells[7]).toBe('人工智能');
     expect(cells[8]).toBe('direction');
     expect(cells[18]).toBe(2025);
-    expect(cells[21]).toBe('方向分数线');
-    expect(cells.slice(23)).toEqual(['score-source', '2026-07-01T08:00:00Z', '按方向精确匹配']);
+    expect(cells.slice(18, 22)).toEqual([2025, 'provided', '2026-06-15T08:00:00Z', 2025]);
+    expect(cells[23]).toBe('方向分数线');
+    expect(cells.slice(25)).toEqual(['score-source', '2026-07-01T08:00:00Z', '按方向精确匹配']);
     expect(cells.slice(14, 18)).toEqual([
       'school-source',
       '2026-06-01T08:00:00Z',
@@ -195,7 +198,7 @@ describe('getPlanExportCells', () => {
     };
     const cells = getPlanExportCells(plan, '电子信息');
     expect(cells[7]).toBe('408计算机学科专业基础');
-    expect(cells[21]).toBe('分数参考');
-    expect(cells.slice(23)).toEqual(['', '', '']);
+    expect(cells[23]).toBe('分数参考');
+    expect(cells.slice(25)).toEqual(['', '', '']);
   });
 });

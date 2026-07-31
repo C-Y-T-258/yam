@@ -108,6 +108,27 @@ CREATE TABLE IF NOT EXISTS workspace_plans (
     updated_at TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS workspace_plan_snapshots (
+    snapshot_key TEXT PRIMARY KEY,
+    plan_key TEXT NOT NULL,
+    department_key TEXT NOT NULL,
+    school_id TEXT NOT NULL,
+    major_code TEXT NOT NULL,
+    catalog_year INTEGER,
+    catalog_year_status TEXT NOT NULL DEFAULT 'unknown'
+        CHECK(catalog_year_status IN ('provided', 'unknown')),
+    observed_at TEXT NOT NULL,
+    research_direction TEXT NOT NULL,
+    exam_subjects TEXT NOT NULL,
+    study_mode TEXT NOT NULL DEFAULT '',
+    exam_type TEXT NOT NULL DEFAULT '',
+    special_plans TEXT NOT NULL DEFAULT '[]',
+    enrollment_count INTEGER NOT NULL DEFAULT 0,
+    source TEXT NOT NULL DEFAULT '',
+    source_record_kind TEXT NOT NULL DEFAULT 'yanzhao_department_derived',
+    UNIQUE(plan_key, observed_at)
+);
+
 CREATE TABLE IF NOT EXISTS workspace_plan_years (
     plan_year_id INTEGER PRIMARY KEY AUTOINCREMENT,
     plan_key TEXT NOT NULL,
@@ -165,7 +186,7 @@ CREATE TABLE IF NOT EXISTS workspace_score_request_status (
 
 CREATE TABLE IF NOT EXISTS workspace_model_state (
     major_code TEXT PRIMARY KEY,
-    model_version INTEGER NOT NULL DEFAULT 3,
+    model_version INTEGER NOT NULL DEFAULT 4,
     status TEXT NOT NULL CHECK(status IN ('writing','ready','failed')),
     old_plan_count INTEGER NOT NULL DEFAULT 0,
     new_plan_count INTEGER NOT NULL DEFAULT 0,
@@ -187,6 +208,10 @@ CREATE INDEX IF NOT EXISTS idx_workspace_plans_major_school
 ON workspace_plans(major_code, school_id);
 CREATE INDEX IF NOT EXISTS idx_workspace_plans_department
 ON workspace_plans(department_key);
+CREATE INDEX IF NOT EXISTS idx_workspace_plan_snapshots_plan
+ON workspace_plan_snapshots(plan_key, observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workspace_plan_snapshots_major
+ON workspace_plan_snapshots(major_code, school_id, observed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_workspace_plan_years_plan
 ON workspace_plan_years(plan_key, year DESC);
 CREATE INDEX IF NOT EXISTS idx_workspace_score_evidence_school
@@ -352,6 +377,11 @@ def _score_evidence_key(
     return f"score-evidence:v1:{digest}"
 
 
+def _plan_snapshot_key(plan_key: str, observed_at: str) -> str:
+    digest = hashlib.sha256(f"{plan_key}\0{observed_at}".encode("utf-8")).hexdigest()
+    return f"plan-snapshot:v1:{digest}"
+
+
 def load_schools(conn: sqlite3.Connection, major_code: str) -> list[dict[str, Any]]:
     """读取源库 schools，动态适配新旧 schema.
 
@@ -480,11 +510,13 @@ def _enrich_school_fields(school: dict[str, Any]) -> None:
 def load_departments(conn: sqlite3.Connection, school_id: str, major_code: str) -> list[dict[str, Any]]:
     source_expr = "COALESCE(source, '')" if _source_has_column(conn, "departments", "source") else "''"
     updated_at_expr = "COALESCE(updated_at, '')" if _source_has_column(conn, "departments", "updated_at") else "''"
+    catalog_year_expr = "catalog_year" if _source_has_column(conn, "departments", "catalog_year") else "NULL"
     cur = conn.execute(
         f"""
         SELECT department_id, name, research_direction, enrollment_count,
                exam_subjects, exam_type, study_mode, special_plans,
-               {source_expr} AS source, {updated_at_expr} AS updated_at
+               {source_expr} AS source, {updated_at_expr} AS updated_at,
+               {catalog_year_expr} AS catalog_year
         FROM departments
         WHERE school_id = ? AND major_code = ?
         ORDER BY name
@@ -614,6 +646,45 @@ def insert_department(
         (department_id, plan_key, department_key, school_id, major_code, research_direction,
          exam_subjects_text, study_mode, exam_type, special_plans_text,
          dept.get("enrollment_count") or 0, source, updated_at),
+    )
+    catalog_year = int(dept.get("catalog_year") or 0) or None
+    catalog_year_status = "provided" if catalog_year is not None else "unknown"
+    observed_at = updated_at or datetime.now(timezone.utc).isoformat()
+    target.execute(
+        """
+        INSERT INTO workspace_plan_snapshots
+        (snapshot_key, plan_key, department_key, school_id, major_code, catalog_year,
+         catalog_year_status, observed_at, research_direction, exam_subjects, study_mode,
+         exam_type, special_plans, enrollment_count, source, source_record_kind)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yanzhao_department_derived')
+        ON CONFLICT(snapshot_key) DO UPDATE SET
+            catalog_year=excluded.catalog_year,
+            catalog_year_status=excluded.catalog_year_status,
+            research_direction=excluded.research_direction,
+            exam_subjects=excluded.exam_subjects,
+            study_mode=excluded.study_mode,
+            exam_type=excluded.exam_type,
+            special_plans=excluded.special_plans,
+            enrollment_count=excluded.enrollment_count,
+            source=excluded.source
+        """,
+        (
+            _plan_snapshot_key(plan_key, observed_at),
+            plan_key,
+            department_key,
+            school_id,
+            major_code,
+            catalog_year,
+            catalog_year_status,
+            observed_at,
+            research_direction,
+            exam_subjects_text,
+            study_mode,
+            exam_type,
+            special_plans_text,
+            dept.get("enrollment_count") or 0,
+            source,
+        ),
     )
     return department_id
 
@@ -783,7 +854,7 @@ def sync_major(source: sqlite3.Connection, target: sqlite3.Connection, major_cod
          str(major_info.get("discipline_name") or ""), major_source, now_str),
     )
     target.execute(
-        "INSERT INTO workspace_model_state (major_code, model_version, status) VALUES (?, 3, 'writing')",
+        "INSERT INTO workspace_model_state (major_code, model_version, status) VALUES (?, 4, 'writing')",
         (major_code,),
     )
 
@@ -940,14 +1011,21 @@ def sync_major(source: sqlite3.Connection, target: sqlite3.Connection, major_cod
            WHERE p.plan_key IS NULL OR e.evidence_key IS NULL
               OR p.school_id <> e.school_id OR p.major_code <> e.major_code"""
     ).fetchone()[0]
+    plans_without_snapshots = target.execute(
+        """SELECT COUNT(*) FROM workspace_plans p
+           LEFT JOIN workspace_plan_snapshots s ON s.plan_key = p.plan_key
+           WHERE p.major_code = ? AND s.snapshot_key IS NULL""",
+        (major_code,),
+    ).fetchone()[0]
     if (old_plan_count != new_plan_count or old_year_count != new_year_count
             or invalid_plan_keys or duplicate_plan_keys or duplicate_years
-            or invalid_evidence_links):
+            or invalid_evidence_links or plans_without_snapshots):
         raise RuntimeError(
             f"规范化校验失败: plans={old_plan_count}/{new_plan_count}, "
             f"years={old_year_count}/{new_year_count}, empty_keys={invalid_plan_keys}, "
             f"duplicate_keys={duplicate_plan_keys}, duplicate_years={duplicate_years}, "
-            f"invalid_evidence_links={invalid_evidence_links}"
+            f"invalid_evidence_links={invalid_evidence_links}, "
+            f"plans_without_snapshots={plans_without_snapshots}"
         )
     target.execute(
         """UPDATE workspace_model_state SET status='ready', old_plan_count=?, new_plan_count=?,
@@ -983,7 +1061,8 @@ def main() -> int:
             if args.clear and not args.major_code:
                 for table in [
                     "workspace_plan_score_evidence", "workspace_plan_years",
-                    "workspace_score_evidence", "workspace_plans", "workspace_department_entities",
+                    "workspace_score_evidence", "workspace_plan_snapshots",
+                    "workspace_plans", "workspace_department_entities",
                     "workspace_model_state", "workspace_majors", "workspace_department_years",
                     "workspace_departments", "workspace_schools",
                 ]:

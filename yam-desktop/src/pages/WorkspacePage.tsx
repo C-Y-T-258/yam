@@ -1198,7 +1198,7 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
         '院校代码', '院校名称', '专业代码', '专业名称', '省份', '层次',
         '院系', '研究方向', '方向标签类型', '方向是否回退', '考试科目', '学习方式', '考试方式', '特殊计划',
         '院校来源', '院校更新时间', '计划来源', '计划更新时间',
-        '最新计划年份', '最新分数年份', '分数线', '分数粒度', '招生人数', '分数来源', '分数更新时间', '匹配说明',
+        '目录年份', '计划年份状态', '计划快照时间', '最新分数年份', '分数线', '分数粒度', '招生人数', '分数来源', '分数更新时间', '匹配说明',
       ];
       const cellRows: ExportCell[][] = planRows.map(p =>
         getPlanExportCells(p, majorNameOf(p.major_code))
@@ -2229,7 +2229,7 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                   <div>院系</div>
                   {!planCompact && <div>研究方向</div>}
                   {!planCompact && <div>考试科目</div>}
-                  <div className="text-center">计划年</div>
+                  <div className="text-center">目录年</div>
                   <div className="text-center">分数线</div>
                   <div className="text-center">招生</div>
                   <div className="text-center">操作</div>
@@ -2295,8 +2295,15 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                           {p.exam_subjects.join('；') || '—'}
                         </div>
                       )}
-                      {/* 计划年份与分数年份分开显示 */}
-                      <div className="text-center text-gray-500 text-xs">{p.latest_plan_year || '—'}</div>
+                      {/* 目录年份与分数年份分开显示 */}
+                      <div
+                        className={`text-center text-xs ${p.plan_year_status === 'provided' ? 'text-gray-500' : 'text-amber-600'}`}
+                        title={p.plan_year_status === 'provided'
+                          ? `目录年份：${p.latest_plan_year} · 快照时间：${p.plan_snapshot_at || '未知'}`
+                          : `当前招生目录快照，来源未提供目录年份 · 快照时间：${p.plan_snapshot_at || '未知'}`}
+                      >
+                        {p.plan_year_status === 'provided' && p.latest_plan_year ? p.latest_plan_year : '未知'}
+                      </div>
                       <div className="text-center min-w-0">
                         <div className="text-gray-900 font-medium">{p.latest_min_score || '暂无'}</div>
                         {getLatestScoreYear(p) && (
@@ -2397,6 +2404,8 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                             <div className="mt-3 flex flex-wrap gap-2 text-[10px] text-gray-500">
                               <span>计划来源：{p.department_source || '—'}</span>
                               <span>更新时间：{p.department_updated_at || '—'}</span>
+                              <span>目录年份：{p.plan_year_status === 'provided' && p.latest_plan_year ? p.latest_plan_year : '未知'}</span>
+                              <span>计划快照：{p.plan_snapshot_at || '—'}</span>
                               <span>学习方式：{p.study_mode || '—'}</span>
                               <span>考试方式：{p.exam_type || '—'}</span>
                               {p.special_plans.length > 0 && <span>专项：{p.special_plans.join('、')}</span>}

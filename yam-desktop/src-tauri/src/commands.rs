@@ -2676,7 +2676,7 @@ fn preferred_export_path(
     resolve_preferred_export_path(&settings, default_filename, ext)
 }
 
-const PLAN_EXPORT_HEADERS: [&str; 26] = [
+const PLAN_EXPORT_HEADERS: [&str; 28] = [
     "院校代码",
     "院校名称",
     "专业代码",
@@ -2695,7 +2695,9 @@ const PLAN_EXPORT_HEADERS: [&str; 26] = [
     "院校更新时间",
     "计划来源",
     "计划更新时间",
-    "最新计划年份",
+    "目录年份",
+    "计划年份状态",
+    "计划快照时间",
     "最新分数年份",
     "分数线",
     "分数粒度",
@@ -2860,6 +2862,8 @@ fn plan_export_row(row: &WorkspacePlanRow, major_name: &str) -> Vec<Value> {
         json!(row.department_source),
         json!(row.department_updated_at),
         json!(row.latest_plan_year),
+        json!(row.plan_year_status),
+        json!(row.plan_snapshot_at),
         json!(row.latest_score_year),
         json!(row.latest_min_score),
         json!(score_scope_label(row)),
@@ -3420,6 +3424,8 @@ mod tests {
             department_updated_at: "2026-07-02T08:00:00Z".to_string(),
             latest_year: 2026,
             latest_plan_year: 2026,
+            plan_year_status: "provided".to_string(),
+            plan_snapshot_at: "2026-07-02T08:00:00Z".to_string(),
             latest_score_year: 2026,
             latest_min_score: 350,
             latest_enroll_count: 20,
@@ -3441,14 +3447,17 @@ mod tests {
 
     #[test]
     fn plan_export_headers_and_row_have_semantic_columns() {
-        assert_eq!(PLAN_EXPORT_HEADERS.len(), 26);
+        assert_eq!(PLAN_EXPORT_HEADERS.len(), 28);
         let row = plan_export_row(&sample_plan_row(), "计算机科学与技术");
-        assert_eq!(row.len(), 26);
+        assert_eq!(row.len(), 28);
         assert_eq!(row[7], json!("人工智能"));
         assert_eq!(row[8], json!("direction"));
-        assert_eq!(row[19], json!(2026));
-        assert_eq!(row[21], json!("方向分数线"));
-        assert_eq!(row[23], json!("score-source"));
+        assert_eq!(row[18], json!(2026));
+        assert_eq!(row[19], json!("provided"));
+        assert_eq!(row[20], json!("2026-07-02T08:00:00Z"));
+        assert_eq!(row[21], json!(2026));
+        assert_eq!(row[23], json!("方向分数线"));
+        assert_eq!(row[25], json!("score-source"));
     }
 
     #[test]
