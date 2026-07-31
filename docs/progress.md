@@ -65,6 +65,7 @@
 - ISSUE-031 第五阶段完成：当前招生计划人数新增 `enrollment_count_status` 和 `enrollment_text`，来源明确给0时保留为 `provided` 并显示0，只有状态未知时显示“未提供”；真实四专业临时同步验证2961个计划中33个招生0全部为provided，normalized模型升级为v7。
 - ISSUE-031 第六阶段启动：真实源库确认 `score_lines.total=0/NULL` 均为0条，计划视图分数 `0` 可确定为无专业级分数哨兵；前端改用显式分数状态 helper，不再依赖 `||` fallback。
 - ISSUE-031 第六阶段延伸：方向/计划比较弹窗同步使用计划年份、专业级分数和招生人数状态 helper，避免比较视图继续暴露 `0` 哨兵或参考线年份。
+- ISSUE-031 第七阶段完成：新增只读未知状态审计脚本；真实源库确认无 `departments.catalog_year` 列、3855条分数总分无0/NULL，桌面库2961个计划快照目录年全部为 `unknown`，招生0明确拆为24个unknown与9个provided。
 - 尚未完成：剩余未知值状态在所有工作区表完全解耦、可靠计划年份来源，以及录取统计独立模型。
 
 ---
