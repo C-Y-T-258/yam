@@ -3,6 +3,7 @@ import type { WorkspacePlanRow, WorkspaceYear } from './db';
 import {
   getDirectionInfo,
   getDirectionLabel,
+  getEnrollmentCountLabel,
   getLatestScoreYear,
   getPlanEnrollmentLabel,
   getPlanExportCells,
@@ -131,6 +132,13 @@ describe('getLatestScoreYear', () => {
 });
 
 describe('getPlanEnrollmentLabel', () => {
+  it('基础招生人数标签保留 0，仅缺失值显示未提供', () => {
+    expect(getEnrollmentCountLabel(0)).toBe(0);
+    expect(getEnrollmentCountLabel(24)).toBe(24);
+    expect(getEnrollmentCountLabel(null)).toBe('未提供');
+    expect(getEnrollmentCountLabel(undefined)).toBe('未提供');
+  });
+
   it('保留来源明确提供的 0，不显示为未提供', () => {
     expect(getPlanEnrollmentLabel({
       ...basePlan,

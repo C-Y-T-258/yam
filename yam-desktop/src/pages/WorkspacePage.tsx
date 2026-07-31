@@ -38,6 +38,7 @@ import {
 import {
   getDirectionInfo,
   getDirectionLabel,
+  getEnrollmentCountLabel,
   getLatestScoreYear,
   getPlanEnrollmentLabel,
   getPlanExportCells,
@@ -1770,7 +1771,7 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                  })()}
 
                 {/* Enrollment Count */}
-                <div className="w-20 text-center text-gray-600">{item.enroll_count || '未提供'}</div>
+                <div className="w-20 text-center text-gray-600">{getEnrollmentCountLabel(item.enroll_count)}</div>
 
                 {/* Actions */}
                 <div className="w-16 flex items-center justify-center">
@@ -1952,7 +1953,7 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                                 )}
                                 {latestScore ? (
                                   <span className="ml-3 text-[11px] font-normal text-gray-400">
-                                    {getScoreScopeLabel(latestScore)} {latestScore.min_score} · 招生 {dept.enrollment_count || '未提供'}
+                                    {getScoreScopeLabel(latestScore)} {latestScore.min_score} · 招生 {getEnrollmentCountLabel(dept.enrollment_count)}
                                   </span>
                                 ) : null}
                               </span>
@@ -2046,7 +2047,7 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                                         >
                                           <div className="flex justify-between py-1.5 border-b border-gray-100">
                                             <span className="text-gray-500">当前计划招生人数</span>
-                                            <span className="text-gray-900">{dept.enrollment_count || '未提供'}</span>
+                                            <span className="text-gray-900">{getEnrollmentCountLabel(dept.enrollment_count)}</span>
                                           </div>
                                           <div className="flex justify-between py-1.5 border-b border-gray-100">
                                             <span className="text-gray-500">最低分</span>

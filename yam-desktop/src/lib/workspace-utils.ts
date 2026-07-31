@@ -56,10 +56,14 @@ export function getLatestScoreYear(plan: Pick<WorkspacePlanRow, 'years'> & Parti
     || plan.years.find((year) => year.score_scope !== 'first_level_reference' && year.score_scope !== 'category_reference');
 }
 
+export function getEnrollmentCountLabel(count: number | null | undefined): string | number {
+  return typeof count === 'number' && Number.isFinite(count) ? count : '未提供';
+}
+
 export function getPlanEnrollmentLabel(
   plan: Pick<WorkspacePlanRow, 'latest_enroll_count' | 'latest_enroll_count_status'>,
 ): string | number {
-  return plan.latest_enroll_count_status === 'unknown' ? '未提供' : plan.latest_enroll_count;
+  return plan.latest_enroll_count_status === 'unknown' ? '未提供' : getEnrollmentCountLabel(plan.latest_enroll_count);
 }
 
 export function getSchoolScoreStatus(school: WorkspaceSchool): string {
