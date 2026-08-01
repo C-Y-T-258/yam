@@ -1164,8 +1164,8 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
   const selectedPlansForCompare = Array.from(selectedPlanRows.values());
   // UX-4.3：紧凑模式去掉「研究方向」「考试科目」两列（1.6fr × 2），减少小屏换行。
   const planGridCols = planCompact
-    ? 'grid-cols-[40px_1.4fr_0.9fr_1.2fr_0.6fr_0.6fr_0.6fr_64px]'
-    : 'grid-cols-[40px_1.4fr_0.9fr_1.2fr_1.6fr_1.6fr_0.6fr_0.6fr_0.6fr_64px]';
+    ? 'grid-cols-[40px_1.4fr_0.9fr_1.2fr_0.7fr_0.6fr_64px]'
+    : 'grid-cols-[40px_1.4fr_0.9fr_1.2fr_1.6fr_1.6fr_0.7fr_0.6fr_64px]';
 
   // ISSUE-028：导出格式下拉菜单 click-away 关闭
   useEffect(() => {
@@ -2237,7 +2237,6 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                   <div>院系</div>
                   {!planCompact && <div>研究方向</div>}
                   {!planCompact && <div>考试科目</div>}
-                  <div className="text-center">目录年</div>
                   <div className="text-center">分数线</div>
                   <div className="text-center">招生</div>
                   <div className="text-center">操作</div>
@@ -2303,15 +2302,6 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                           {p.exam_subjects.join('；') || '—'}
                         </div>
                       )}
-                      {/* 目录年份与分数年份分开显示 */}
-                      <div
-                        className={`text-center text-xs ${p.plan_year_status === 'provided' ? 'text-gray-500' : 'text-amber-600'}`}
-                        title={p.plan_year_status === 'provided'
-                          ? `目录年份：${p.latest_plan_year} · 快照时间：${p.plan_snapshot_at || '未知'}`
-                          : `当前招生目录快照，来源未提供目录年份 · 快照时间：${p.plan_snapshot_at || '未知'}`}
-                      >
-                        {getPlanYearLabel(p)}
-                      </div>
                       <div className="text-center min-w-0">
                         <div className="text-gray-900 font-medium">{getPlanScoreLabel(p)}</div>
                         {getLatestScoreYear(p) && (
@@ -2414,7 +2404,7 @@ export function WorkspacePage({ onOpenCompare, onOpenManageMajors, refreshNonce 
                             <div className="mt-3 flex flex-wrap gap-2 text-[10px] text-gray-500">
                               <span>计划来源：{p.department_source || '—'}</span>
                               <span>更新时间：{p.department_updated_at || '—'}</span>
-                              <span>目录年份：{getPlanYearLabel(p)}</span>
+                              <span>{p.plan_year_status === 'provided' ? `目录年份：${getPlanYearLabel(p)}` : '目录年份状态：来源未提供'}</span>
                               <span>计划快照：{p.plan_snapshot_at || '—'}</span>
                               <span>学习方式：{p.study_mode || '—'}</span>
                               <span>考试方式：{p.exam_type || '—'}</span>

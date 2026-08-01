@@ -305,6 +305,7 @@ export function CompareModal({ isOpen, onClose, onClear, plans }: CompareModalPr
     gridTemplateColumns: `120px repeat(${plans.length}, minmax(180px, 1fr))`,
     minWidth: `${120 + plans.length * 180}px`,
   };
+  const hasProvidedPlanYear = plans.some((plan) => plan.plan_year_status === 'provided' && plan.latest_plan_year > 0);
   const comparisonRows = [
     { label: '院校名称', value: (plan: WorkspacePlanRow) => plan.school_name },
     { label: '地区', value: (plan: WorkspacePlanRow) => plan.province },
@@ -315,7 +316,7 @@ export function CompareModal({ isOpen, onClose, onClear, plans }: CompareModalPr
     { label: '学习方式', value: (plan: WorkspacePlanRow) => plan.study_mode },
     { label: '考试方式', value: (plan: WorkspacePlanRow) => plan.exam_type },
     { label: '特殊计划', value: (plan: WorkspacePlanRow) => plan.special_plans.join('、') },
-    { label: '计划年份', value: getPlanYearLabel },
+    ...(hasProvidedPlanYear ? [{ label: '计划年份', value: getPlanYearLabel }] : []),
     { label: '分数值', value: getPlanScoreLabel },
     { label: '分数粒度', value: (plan: WorkspacePlanRow) => getLatestScoreYear(plan) ? getScoreScopeLabel(getLatestScoreYear(plan)) : '—' },
     { label: '招生人数', value: getPlanEnrollmentLabel },
