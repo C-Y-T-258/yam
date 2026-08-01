@@ -1,0 +1,891 @@
+{
+  "admission_cycles": [
+    2023,
+    2024,
+    2025,
+    2026
+  ],
+  "artifact_schema": "yam.year_source_local_audit.v1",
+  "desktop": {
+    "database": {
+      "path": "C:\\Users\\12721\\.yam\\data\\yam-desktop.db",
+      "query_only": 1,
+      "sha256_after": "e472304295a5b4c33e23840c16d3353633454414da19ae203e35406ada6a1ff7",
+      "sha256_before": "e472304295a5b4c33e23840c16d3353633454414da19ae203e35406ada6a1ff7",
+      "size_bytes": 15011840
+    },
+    "queries": {
+      "desktop.catalog_year_status": {
+        "columns": [
+          "catalog_year",
+          "catalog_year_status",
+          "snapshots",
+          "earliest_observed_at",
+          "latest_observed_at"
+        ],
+        "rows": [
+          {
+            "catalog_year": null,
+            "catalog_year_status": "unknown",
+            "earliest_observed_at": "2026-07-18T00:06:07",
+            "latest_observed_at": "2026-07-30T05:05:13",
+            "snapshots": 2961
+          }
+        ],
+        "sql": "SELECT catalog_year, catalog_year_status, COUNT(*) AS snapshots, MIN(observed_at) AS earliest_observed_at, MAX(observed_at) AS latest_observed_at FROM workspace_plan_snapshots GROUP BY catalog_year, catalog_year_status ORDER BY catalog_year, catalog_year_status"
+      },
+      "desktop.current_entities": {
+        "columns": [
+          "majors",
+          "school_major_pairs",
+          "department_entities",
+          "plans",
+          "source_school_ids"
+        ],
+        "rows": [
+          {
+            "department_entities": 1217,
+            "majors": 4,
+            "plans": 2961,
+            "school_major_pairs": 855,
+            "source_school_ids": 461
+          }
+        ],
+        "sql": "SELECT (SELECT COUNT(*) FROM workspace_majors) AS majors, (SELECT COUNT(*) FROM workspace_schools) AS school_major_pairs, (SELECT COUNT(*) FROM workspace_department_entities) AS department_entities, (SELECT COUNT(*) FROM workspace_plans) AS plans, (SELECT COUNT(DISTINCT school_id) FROM workspace_schools) AS source_school_ids"
+      },
+      "desktop.department_year_projection": {
+        "columns": [
+          "year",
+          "score_scope",
+          "projected_rows",
+          "current_departments"
+        ],
+        "rows": [
+          {
+            "current_departments": 172,
+            "projected_rows": 172,
+            "score_scope": "category_reference",
+            "year": 2023
+          },
+          {
+            "current_departments": 83,
+            "projected_rows": 83,
+            "score_scope": "first_level_reference",
+            "year": 2023
+          },
+          {
+            "current_departments": 1701,
+            "projected_rows": 1701,
+            "score_scope": "school_major",
+            "year": 2023
+          },
+          {
+            "current_departments": 183,
+            "projected_rows": 183,
+            "score_scope": "category_reference",
+            "year": 2024
+          },
+          {
+            "current_departments": 47,
+            "projected_rows": 47,
+            "score_scope": "first_level_reference",
+            "year": 2024
+          },
+          {
+            "current_departments": 2058,
+            "projected_rows": 2058,
+            "score_scope": "school_major",
+            "year": 2024
+          },
+          {
+            "current_departments": 181,
+            "projected_rows": 181,
+            "score_scope": "category_reference",
+            "year": 2025
+          },
+          {
+            "current_departments": 43,
+            "projected_rows": 43,
+            "score_scope": "first_level_reference",
+            "year": 2025
+          },
+          {
+            "current_departments": 2172,
+            "projected_rows": 2172,
+            "score_scope": "school_major",
+            "year": 2025
+          },
+          {
+            "current_departments": 188,
+            "projected_rows": 188,
+            "score_scope": "category_reference",
+            "year": 2026
+          },
+          {
+            "current_departments": 37,
+            "projected_rows": 37,
+            "score_scope": "first_level_reference",
+            "year": 2026
+          },
+          {
+            "current_departments": 2270,
+            "projected_rows": 2270,
+            "score_scope": "school_major",
+            "year": 2026
+          }
+        ],
+        "sql": "SELECT year, score_scope, COUNT(*) AS projected_rows, COUNT(DISTINCT department_id) AS current_departments FROM workspace_department_years GROUP BY year, score_scope ORDER BY year, score_scope"
+      },
+      "desktop.plan_year_rows": {
+        "columns": [
+          "year",
+          "rows",
+          "plans"
+        ],
+        "rows": [],
+        "sql": "SELECT year, COUNT(*) AS rows, COUNT(DISTINCT plan_key) AS plans FROM workspace_plan_years GROUP BY year ORDER BY year"
+      },
+      "desktop.score_evidence_by_year_scope": {
+        "columns": [
+          "year",
+          "score_scope",
+          "evidence_rows",
+          "school_major_pairs"
+        ],
+        "rows": [
+          {
+            "evidence_rows": 44,
+            "school_major_pairs": 44,
+            "score_scope": "category_reference",
+            "year": 2023
+          },
+          {
+            "evidence_rows": 30,
+            "school_major_pairs": 30,
+            "score_scope": "first_level_reference",
+            "year": 2023
+          },
+          {
+            "evidence_rows": 490,
+            "school_major_pairs": 490,
+            "score_scope": "school_major",
+            "year": 2023
+          },
+          {
+            "evidence_rows": 46,
+            "school_major_pairs": 46,
+            "score_scope": "category_reference",
+            "year": 2024
+          },
+          {
+            "evidence_rows": 15,
+            "school_major_pairs": 15,
+            "score_scope": "first_level_reference",
+            "year": 2024
+          },
+          {
+            "evidence_rows": 595,
+            "school_major_pairs": 595,
+            "score_scope": "school_major",
+            "year": 2024
+          },
+          {
+            "evidence_rows": 48,
+            "school_major_pairs": 48,
+            "score_scope": "category_reference",
+            "year": 2025
+          },
+          {
+            "evidence_rows": 12,
+            "school_major_pairs": 12,
+            "score_scope": "first_level_reference",
+            "year": 2025
+          },
+          {
+            "evidence_rows": 670,
+            "school_major_pairs": 670,
+            "score_scope": "school_major",
+            "year": 2025
+          },
+          {
+            "evidence_rows": 52,
+            "school_major_pairs": 52,
+            "score_scope": "category_reference",
+            "year": 2026
+          },
+          {
+            "evidence_rows": 13,
+            "school_major_pairs": 13,
+            "score_scope": "first_level_reference",
+            "year": 2026
+          },
+          {
+            "evidence_rows": 699,
+            "school_major_pairs": 699,
+            "score_scope": "school_major",
+            "year": 2026
+          }
+        ],
+        "sql": "SELECT year, score_scope, COUNT(*) AS evidence_rows, COUNT(DISTINCT school_id || '|' || major_code) AS school_major_pairs FROM workspace_score_evidence GROUP BY year, score_scope ORDER BY year, score_scope"
+      },
+      "desktop.score_request_status": {
+        "columns": [
+          "requested_year",
+          "source",
+          "status",
+          "requests"
+        ],
+        "rows": [
+          {
+            "requested_year": 2023,
+            "requests": 94,
+            "source": "zhangshangkaoyan",
+            "status": "success_empty"
+          },
+          {
+            "requested_year": 2023,
+            "requests": 123,
+            "source": "zhangshangkaoyan",
+            "status": "success_with_data"
+          },
+          {
+            "requested_year": 2024,
+            "requests": 1,
+            "source": "zhangshangkaoyan",
+            "status": "api_error"
+          },
+          {
+            "requested_year": 2024,
+            "requests": 68,
+            "source": "zhangshangkaoyan",
+            "status": "success_empty"
+          },
+          {
+            "requested_year": 2024,
+            "requests": 148,
+            "source": "zhangshangkaoyan",
+            "status": "success_with_data"
+          },
+          {
+            "requested_year": 2025,
+            "requests": 32,
+            "source": "zhangshangkaoyan",
+            "status": "success_empty"
+          },
+          {
+            "requested_year": 2025,
+            "requests": 185,
+            "source": "zhangshangkaoyan",
+            "status": "success_with_data"
+          },
+          {
+            "requested_year": 2026,
+            "requests": 1,
+            "source": "zhangshangkaoyan",
+            "status": "api_error"
+          },
+          {
+            "requested_year": 2026,
+            "requests": 4,
+            "source": "zhangshangkaoyan",
+            "status": "success_empty"
+          },
+          {
+            "requested_year": 2026,
+            "requests": 212,
+            "source": "zhangshangkaoyan",
+            "status": "success_with_data"
+          }
+        ],
+        "sql": "SELECT requested_year, source, status, COUNT(*) AS requests FROM workspace_score_request_status GROUP BY requested_year, source, status ORDER BY requested_year, source, status"
+      },
+      "desktop.source_mapping_status": {
+        "columns": [
+          "source",
+          "entity_type",
+          "target_entity_type",
+          "mapping_status",
+          "mappings"
+        ],
+        "rows": [
+          {
+            "entity_type": "score_department",
+            "mapping_status": "unmapped",
+            "mappings": 361,
+            "source": "zhangshangkaoyan",
+            "target_entity_type": "school_major"
+          }
+        ],
+        "sql": "SELECT se.source, se.entity_type, em.target_entity_type, em.mapping_status, COUNT(*) AS mappings FROM workspace_source_entities AS se LEFT JOIN workspace_entity_mappings AS em ON em.source_entity_key = se.source_entity_key GROUP BY se.source, se.entity_type, em.target_entity_type, em.mapping_status ORDER BY se.source, se.entity_type, em.target_entity_type, em.mapping_status"
+      },
+      "desktop.table_counts": {
+        "columns": [
+          "table_name",
+          "row_count"
+        ],
+        "rows": [
+          {
+            "row_count": 1217,
+            "table_name": "workspace_department_entities"
+          },
+          {
+            "row_count": 9135,
+            "table_name": "workspace_department_years"
+          },
+          {
+            "row_count": 2961,
+            "table_name": "workspace_departments"
+          },
+          {
+            "row_count": 361,
+            "table_name": "workspace_entity_mappings"
+          },
+          {
+            "row_count": 4,
+            "table_name": "workspace_majors"
+          },
+          {
+            "row_count": 4,
+            "table_name": "workspace_model_state"
+          },
+          {
+            "row_count": 9135,
+            "table_name": "workspace_plan_score_evidence"
+          },
+          {
+            "row_count": 2961,
+            "table_name": "workspace_plan_snapshots"
+          },
+          {
+            "row_count": 0,
+            "table_name": "workspace_plan_years"
+          },
+          {
+            "row_count": 2961,
+            "table_name": "workspace_plans"
+          },
+          {
+            "row_count": 855,
+            "table_name": "workspace_schools"
+          },
+          {
+            "row_count": 2714,
+            "table_name": "workspace_score_evidence"
+          },
+          {
+            "row_count": 868,
+            "table_name": "workspace_score_request_status"
+          },
+          {
+            "row_count": 361,
+            "table_name": "workspace_source_entities"
+          }
+        ],
+        "sql": "SELECT name AS table_name, CASE name WHEN 'workspace_schools' THEN (SELECT COUNT(*) FROM workspace_schools) WHEN 'workspace_departments' THEN (SELECT COUNT(*) FROM workspace_departments) WHEN 'workspace_department_years' THEN (SELECT COUNT(*) FROM workspace_department_years) WHEN 'workspace_majors' THEN (SELECT COUNT(*) FROM workspace_majors) WHEN 'workspace_department_entities' THEN (SELECT COUNT(*) FROM workspace_department_entities) WHEN 'workspace_plans' THEN (SELECT COUNT(*) FROM workspace_plans) WHEN 'workspace_plan_years' THEN (SELECT COUNT(*) FROM workspace_plan_years) WHEN 'workspace_plan_snapshots' THEN (SELECT COUNT(*) FROM workspace_plan_snapshots) WHEN 'workspace_score_request_status' THEN (SELECT COUNT(*) FROM workspace_score_request_status) WHEN 'workspace_score_evidence' THEN (SELECT COUNT(*) FROM workspace_score_evidence) WHEN 'workspace_plan_score_evidence' THEN (SELECT COUNT(*) FROM workspace_plan_score_evidence) WHEN 'workspace_source_entities' THEN (SELECT COUNT(*) FROM workspace_source_entities) WHEN 'workspace_entity_mappings' THEN (SELECT COUNT(*) FROM workspace_entity_mappings) WHEN 'workspace_model_state' THEN (SELECT COUNT(*) FROM workspace_model_state) END AS row_count FROM sqlite_master WHERE type = 'table' AND name LIKE 'workspace_%' ORDER BY name"
+      },
+      "desktop.temporal_columns": {
+        "columns": [
+          "table_name",
+          "column_name",
+          "declared_type"
+        ],
+        "rows": [
+          {
+            "column_name": "created_at",
+            "declared_type": "INTEGER",
+            "table_name": "favorites"
+          },
+          {
+            "column_name": "created_at",
+            "declared_type": "INTEGER",
+            "table_name": "plan_favorites"
+          },
+          {
+            "column_name": "viewed_at",
+            "declared_type": "INTEGER",
+            "table_name": "recent_views"
+          },
+          {
+            "column_name": "year",
+            "declared_type": "INTEGER",
+            "table_name": "score_lines"
+          },
+          {
+            "column_name": "updated_at",
+            "declared_type": "TEXT",
+            "table_name": "workspace_department_entities"
+          },
+          {
+            "column_name": "year_id",
+            "declared_type": "INTEGER",
+            "table_name": "workspace_department_years"
+          },
+          {
+            "column_name": "year",
+            "declared_type": "INTEGER",
+            "table_name": "workspace_department_years"
+          },
+          {
+            "column_name": "updated_at",
+            "declared_type": "TEXT",
+            "table_name": "workspace_department_years"
+          },
+          {
+            "column_name": "updated_at",
+            "declared_type": "TEXT",
+            "table_name": "workspace_departments"
+          },
+          {
+            "column_name": "mapped_at",
+            "declared_type": "TEXT",
+            "table_name": "workspace_entity_mappings"
+          },
+          {
+            "column_name": "updated_at",
+            "declared_type": "TEXT",
+            "table_name": "workspace_majors"
+          },
+          {
+            "column_name": "old_year_count",
+            "declared_type": "INTEGER",
+            "table_name": "workspace_model_state"
+          },
+          {
+            "column_name": "new_year_count",
+            "declared_type": "INTEGER",
+            "table_name": "workspace_model_state"
+          },
+          {
+            "column_name": "verified_at",
+            "declared_type": "TEXT",
+            "table_name": "workspace_model_state"
+          },
+          {
+            "column_name": "catalog_year",
+            "declared_type": "INTEGER",
+            "table_name": "workspace_plan_snapshots"
+          },
+          {
+            "column_name": "catalog_year_status",
+            "declared_type": "TEXT",
+            "table_name": "workspace_plan_snapshots"
+          },
+          {
+            "column_name": "observed_at",
+            "declared_type": "TEXT",
+            "table_name": "workspace_plan_snapshots"
+          },
+          {
+            "column_name": "plan_year_id",
+            "declared_type": "INTEGER",
+            "table_name": "workspace_plan_years"
+          },
+          {
+            "column_name": "year",
+            "declared_type": "INTEGER",
+            "table_name": "workspace_plan_years"
+          },
+          {
+            "column_name": "updated_at",
+            "declared_type": "TEXT",
+            "table_name": "workspace_plan_years"
+          },
+          {
+            "column_name": "updated_at",
+            "declared_type": "TEXT",
+            "table_name": "workspace_plans"
+          },
+          {
+            "column_name": "updated_at",
+            "declared_type": "TEXT",
+            "table_name": "workspace_schools"
+          },
+          {
+            "column_name": "year",
+            "declared_type": "INTEGER",
+            "table_name": "workspace_score_evidence"
+          },
+          {
+            "column_name": "updated_at",
+            "declared_type": "TEXT",
+            "table_name": "workspace_score_evidence"
+          },
+          {
+            "column_name": "requested_year",
+            "declared_type": "INTEGER",
+            "table_name": "workspace_score_request_status"
+          },
+          {
+            "column_name": "retrieved_at",
+            "declared_type": "TEXT",
+            "table_name": "workspace_score_request_status"
+          },
+          {
+            "column_name": "observed_at",
+            "declared_type": "TEXT",
+            "table_name": "workspace_source_entities"
+          }
+        ],
+        "sql": "SELECT m.name AS table_name, p.name AS column_name, p.type AS declared_type FROM sqlite_master AS m, pragma_table_info(m.name) AS p WHERE m.type = 'table' AND (p.name LIKE '%year%' OR p.name LIKE '%\\_at' ESCAPE '\\' OR p.name LIKE '%date%' OR p.name LIKE '%time%') ORDER BY m.name, p.cid"
+      }
+    }
+  },
+  "generated_at": "2026-07-31T23:07:06.853073+00:00",
+  "source": {
+    "database": {
+      "path": "C:\\Users\\12721\\.yam\\data\\yam.db",
+      "query_only": 1,
+      "sha256_after": "ee05e36ef3b918bf2a359d312fd6ff480865297f5aa1efce52fb112ad9879dbd",
+      "sha256_before": "ee05e36ef3b918bf2a359d312fd6ff480865297f5aa1efce52fb112ad9879dbd",
+      "size_bytes": 3096576
+    },
+    "queries": {
+      "source.admission_plan_by_year_major": {
+        "columns": [
+          "year",
+          "major_code",
+          "rows",
+          "source_school_ids",
+          "source_department_ids"
+        ],
+        "rows": [
+          {
+            "major_code": "085410",
+            "rows": 206,
+            "source_department_ids": 205,
+            "source_school_ids": 147,
+            "year": 2024
+          },
+          {
+            "major_code": "085410",
+            "rows": 256,
+            "source_department_ids": 253,
+            "source_school_ids": 185,
+            "year": 2025
+          },
+          {
+            "major_code": "085410",
+            "rows": 319,
+            "source_department_ids": 314,
+            "source_school_ids": 216,
+            "year": 2026
+          }
+        ],
+        "sql": "SELECT year, major_code, COUNT(*) AS rows, COUNT(DISTINCT school_id) AS source_school_ids, COUNT(DISTINCT department_id) AS source_department_ids FROM admission_plans GROUP BY year, major_code ORDER BY year, major_code"
+      },
+      "source.admission_plan_time_range": {
+        "columns": [
+          "earliest_updated_at",
+          "latest_updated_at",
+          "distinct_observation_times"
+        ],
+        "rows": [
+          {
+            "distinct_observation_times": 3,
+            "earliest_updated_at": "2026-07-07T01:50:04",
+            "latest_updated_at": "2026-07-07T02:26:38"
+          }
+        ],
+        "sql": "SELECT MIN(updated_at) AS earliest_updated_at, MAX(updated_at) AS latest_updated_at, COUNT(DISTINCT updated_at) AS distinct_observation_times FROM admission_plans"
+      },
+      "source.current_entities": {
+        "columns": [
+          "department_rows",
+          "majors",
+          "source_school_ids",
+          "school_major_pairs",
+          "school_major_departments"
+        ],
+        "rows": [
+          {
+            "department_rows": 2961,
+            "majors": 4,
+            "school_major_departments": 1217,
+            "school_major_pairs": 855,
+            "source_school_ids": 461
+          }
+        ],
+        "sql": "SELECT COUNT(*) AS department_rows, COUNT(DISTINCT major_code) AS majors, COUNT(DISTINCT school_id) AS source_school_ids, COUNT(DISTINCT school_id || '|' || major_code) AS school_major_pairs, COUNT(DISTINCT school_id || '|' || major_code || '|' || department_id) AS school_major_departments FROM departments"
+      },
+      "source.department_observation_range": {
+        "columns": [
+          "earliest_updated_at",
+          "latest_updated_at",
+          "distinct_observation_times"
+        ],
+        "rows": [
+          {
+            "distinct_observation_times": 4,
+            "earliest_updated_at": "2026-07-18T00:06:07",
+            "latest_updated_at": "2026-07-30T05:05:13"
+          }
+        ],
+        "sql": "SELECT MIN(updated_at) AS earliest_updated_at, MAX(updated_at) AS latest_updated_at, COUNT(DISTINCT updated_at) AS distinct_observation_times FROM departments"
+      },
+      "source.department_year_fields": {
+        "columns": [
+          "catalog_year_columns",
+          "generic_year_columns"
+        ],
+        "rows": [
+          {
+            "catalog_year_columns": 0,
+            "generic_year_columns": 0
+          }
+        ],
+        "sql": "SELECT SUM(CASE WHEN p.name = 'catalog_year' THEN 1 ELSE 0 END) AS catalog_year_columns, SUM(CASE WHEN p.name = 'year' THEN 1 ELSE 0 END) AS generic_year_columns FROM pragma_table_info('departments') AS p"
+      },
+      "source.score_by_year": {
+        "columns": [
+          "year",
+          "rows",
+          "school_major_pairs",
+          "source_school_ids"
+        ],
+        "rows": [
+          {
+            "rows": 802,
+            "school_major_pairs": 564,
+            "source_school_ids": 323,
+            "year": 2023
+          },
+          {
+            "rows": 979,
+            "school_major_pairs": 656,
+            "source_school_ids": 360,
+            "year": 2024
+          },
+          {
+            "rows": 1015,
+            "school_major_pairs": 730,
+            "source_school_ids": 410,
+            "year": 2025
+          },
+          {
+            "rows": 1059,
+            "school_major_pairs": 764,
+            "source_school_ids": 421,
+            "year": 2026
+          }
+        ],
+        "sql": "SELECT year, COUNT(*) AS rows, COUNT(DISTINCT school_id || '|' || major_code) AS school_major_pairs, COUNT(DISTINCT school_id) AS source_school_ids FROM score_lines GROUP BY year ORDER BY year"
+      },
+      "source.score_request_status": {
+        "columns": [
+          "requested_year",
+          "source",
+          "status",
+          "requests"
+        ],
+        "rows": [
+          {
+            "requested_year": 2023,
+            "requests": 94,
+            "source": "zhangshangkaoyan",
+            "status": "success_empty"
+          },
+          {
+            "requested_year": 2023,
+            "requests": 123,
+            "source": "zhangshangkaoyan",
+            "status": "success_with_data"
+          },
+          {
+            "requested_year": 2024,
+            "requests": 1,
+            "source": "zhangshangkaoyan",
+            "status": "api_error"
+          },
+          {
+            "requested_year": 2024,
+            "requests": 68,
+            "source": "zhangshangkaoyan",
+            "status": "success_empty"
+          },
+          {
+            "requested_year": 2024,
+            "requests": 148,
+            "source": "zhangshangkaoyan",
+            "status": "success_with_data"
+          },
+          {
+            "requested_year": 2025,
+            "requests": 32,
+            "source": "zhangshangkaoyan",
+            "status": "success_empty"
+          },
+          {
+            "requested_year": 2025,
+            "requests": 185,
+            "source": "zhangshangkaoyan",
+            "status": "success_with_data"
+          },
+          {
+            "requested_year": 2026,
+            "requests": 1,
+            "source": "zhangshangkaoyan",
+            "status": "api_error"
+          },
+          {
+            "requested_year": 2026,
+            "requests": 4,
+            "source": "zhangshangkaoyan",
+            "status": "success_empty"
+          },
+          {
+            "requested_year": 2026,
+            "requests": 212,
+            "source": "zhangshangkaoyan",
+            "status": "success_with_data"
+          }
+        ],
+        "sql": "SELECT requested_year, source, status, COUNT(*) AS requests FROM score_request_status GROUP BY requested_year, source, status ORDER BY requested_year, source, status"
+      },
+      "source.score_type_scope": {
+        "columns": [
+          "metric_type",
+          "match_scope",
+          "rows"
+        ],
+        "rows": [
+          {
+            "match_scope": "(null)",
+            "metric_type": "(null)",
+            "rows": 2950
+          },
+          {
+            "match_scope": "major",
+            "metric_type": "score_line",
+            "rows": 792
+          },
+          {
+            "match_scope": "discipline",
+            "metric_type": "score_line",
+            "rows": 74
+          },
+          {
+            "match_scope": "category",
+            "metric_type": "score_line",
+            "rows": 39
+          }
+        ],
+        "sql": "SELECT COALESCE(metric_type, '(null)') AS metric_type, COALESCE(match_scope, '(null)') AS match_scope, COUNT(*) AS rows FROM score_lines GROUP BY metric_type, match_scope ORDER BY rows DESC, metric_type, match_scope"
+      },
+      "source.table_counts": {
+        "columns": [
+          "table_name",
+          "row_count"
+        ],
+        "rows": [
+          {
+            "row_count": 781,
+            "table_name": "admission_plans"
+          },
+          {
+            "row_count": 2961,
+            "table_name": "departments"
+          },
+          {
+            "row_count": 0,
+            "table_name": "favorites"
+          },
+          {
+            "row_count": 1168,
+            "table_name": "fetch_log"
+          },
+          {
+            "row_count": 1,
+            "table_name": "recent_views"
+          },
+          {
+            "row_count": 855,
+            "table_name": "schools"
+          },
+          {
+            "row_count": 3855,
+            "table_name": "score_lines"
+          },
+          {
+            "row_count": 868,
+            "table_name": "score_request_status"
+          },
+          {
+            "row_count": 36,
+            "table_name": "snapshots"
+          }
+        ],
+        "sql": "SELECT name AS table_name, CASE name WHEN 'schools' THEN (SELECT COUNT(*) FROM schools) WHEN 'departments' THEN (SELECT COUNT(*) FROM departments) WHEN 'score_lines' THEN (SELECT COUNT(*) FROM score_lines) WHEN 'score_request_status' THEN (SELECT COUNT(*) FROM score_request_status) WHEN 'admission_plans' THEN (SELECT COUNT(*) FROM admission_plans) WHEN 'fetch_log' THEN (SELECT COUNT(*) FROM fetch_log) WHEN 'snapshots' THEN (SELECT COUNT(*) FROM snapshots) WHEN 'favorites' THEN (SELECT COUNT(*) FROM favorites) WHEN 'recent_views' THEN (SELECT COUNT(*) FROM recent_views) END AS row_count FROM sqlite_master WHERE type = 'table' AND name IN ('schools', 'departments', 'score_lines', 'score_request_status', 'admission_plans', 'fetch_log', 'snapshots', 'favorites', 'recent_views') ORDER BY name"
+      },
+      "source.temporal_columns": {
+        "columns": [
+          "table_name",
+          "column_name",
+          "declared_type"
+        ],
+        "rows": [
+          {
+            "column_name": "year",
+            "declared_type": "INTEGER",
+            "table_name": "admission_plans"
+          },
+          {
+            "column_name": "updated_at",
+            "declared_type": "TEXT",
+            "table_name": "admission_plans"
+          },
+          {
+            "column_name": "updated_at",
+            "declared_type": "TEXT",
+            "table_name": "departments"
+          },
+          {
+            "column_name": "created_at",
+            "declared_type": "TEXT",
+            "table_name": "favorites"
+          },
+          {
+            "column_name": "tried_at",
+            "declared_type": "TEXT",
+            "table_name": "fetch_log"
+          },
+          {
+            "column_name": "viewed_at",
+            "declared_type": "TEXT",
+            "table_name": "recent_views"
+          },
+          {
+            "column_name": "updated_at",
+            "declared_type": "TEXT",
+            "table_name": "schools"
+          },
+          {
+            "column_name": "year",
+            "declared_type": "INTEGER",
+            "table_name": "score_lines"
+          },
+          {
+            "column_name": "updated_at",
+            "declared_type": "TEXT",
+            "table_name": "score_lines"
+          },
+          {
+            "column_name": "requested_year",
+            "declared_type": "INTEGER",
+            "table_name": "score_request_status"
+          },
+          {
+            "column_name": "retrieved_at",
+            "declared_type": "TEXT",
+            "table_name": "score_request_status"
+          },
+          {
+            "column_name": "fetched_at",
+            "declared_type": "TEXT",
+            "table_name": "snapshots"
+          }
+        ],
+        "sql": "SELECT m.name AS table_name, p.name AS column_name, p.type AS declared_type FROM sqlite_master AS m, pragma_table_info(m.name) AS p WHERE m.type = 'table' AND (p.name LIKE '%year%' OR p.name LIKE '%\\_at' ESCAPE '\\' OR p.name LIKE '%date%' OR p.name LIKE '%time%') ORDER BY m.name, p.cid"
+      }
+    }
+  }
+}

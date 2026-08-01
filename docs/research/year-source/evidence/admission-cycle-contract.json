@@ -1,0 +1,105 @@
+{
+  "artifact_schema": "yam.admission_cycle_research_contract.v1",
+  "scope": "research_only_no_issue_032_integration",
+  "admission_cycle_definition": "The enrollment and admission cohort named by the source, for example 2026级/2026年硕士研究生招生录取周期.",
+  "fact_types": [
+    "catalog",
+    "national_score_line",
+    "school_score_line",
+    "department_score_line",
+    "major_score_line",
+    "direction_score_line",
+    "admitted_count",
+    "initial_score_min",
+    "initial_score_avg",
+    "initial_score_max",
+    "retest_score",
+    "final_score"
+  ],
+  "year_mapping": {
+    "direct_when_entity_confirmed": [
+      "catalog_declared_cycle",
+      "national_score_line_declared_cycle",
+      "score_line_declared_cycle",
+      "admission_statistics_declared_cycle",
+      "admission_result_declared_cycle"
+    ],
+    "never_direct": [
+      "request_year",
+      "plan_request_year",
+      "score_request_year",
+      "publication_date",
+      "collected_at",
+      "observed_at",
+      "archive_capture_time",
+      "url_year_without_source_declaration"
+    ],
+    "required_fields": [
+      "source_year",
+      "source_year_kind",
+      "source_year_locator",
+      "mapping_rule_id",
+      "admission_cycle",
+      "mapping_status"
+    ],
+    "mapping_statuses": ["confirmed", "ambiguous", "unknown", "not_applicable"]
+  },
+  "catalog_presence": {
+    "states": ["offered", "not_offered", "unknown"],
+    "not_offered_requirements": [
+      "complete_official_catalog",
+      "declared_admission_cycle",
+      "catalog_scope_covers_target_entity",
+      "school_and_major_confirmed",
+      "name_and_code_changes_reconciled",
+      "no_unresolved_candidate_mapping"
+    ],
+    "empty_query_state": "unknown"
+  },
+  "evidence_record": {
+    "required_fields": [
+      "source_id",
+      "provider",
+      "authority_class",
+      "original_url",
+      "retrieved_at",
+      "http_status",
+      "content_sha256",
+      "mime_type",
+      "source_year",
+      "source_year_kind",
+      "source_year_locator",
+      "document_version_id"
+    ],
+    "archive_fields": ["original_url", "archive_url", "archive_capture_time"],
+    "authority_order": ["latest_effective_school_official", "chsi", "reviewed_third_party_record"]
+  },
+  "version_chain": {
+    "relations": ["initial", "correction", "supplement", "adjustment", "superseded"],
+    "required_fields": ["document_version_id", "effective_status", "published_at", "retrieved_at", "supersedes_version_id", "relation"],
+    "rule": "Never overwrite an earlier document or normalized fact; select the latest effective official version at query time."
+  },
+  "entity_mapping": {
+    "levels": ["school", "major", "department", "direction", "plan"],
+    "statuses": ["confirmed", "ambiguous", "unmapped", "not_applicable"],
+    "candidate_fields": ["source_entity_id", "source_code", "source_name", "candidate_target_ids", "evidence", "decision_rule", "reviewed_at"],
+    "confirmation_rule": "All parent levels must be confirmed and child code/name/mode attributes must have no conflict.",
+    "coarse_fact_rule": "Retain at its source granularity and never copy it to child entities."
+  },
+  "deduplication": {
+    "document_key": ["content_sha256"],
+    "version_key": ["source_id", "original_url", "published_at", "content_sha256"],
+    "catalog_fact_key": ["admission_cycle", "school", "department", "major", "direction", "study_mode", "exam_mode", "special_plan", "document_version_id"],
+    "aggregate_admission_key": ["admission_cycle", "school", "department", "major", "statistic_type", "document_version_id"],
+    "candidate_row_rule": "If row-level deduplication is necessary, derive HMAC-SHA256 locally with an untracked secret; persist no name or raw exam number in tracked artifacts."
+  },
+  "collection_outcomes": ["可自动采集", "仅人工可用", "受限", "无历史数据", "不可用"],
+  "quality_gates": [
+    "source_year_semantics_confirmed",
+    "fact_type_strictly_classified",
+    "entity_granularity_not_promoted",
+    "document_and_locator_saved",
+    "version_relation_resolved",
+    "privacy_scan_passed"
+  ]
+}
