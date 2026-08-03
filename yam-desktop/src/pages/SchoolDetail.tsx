@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { MapPin, Award, BookOpen, Clock, Star, Square, ChevronLeft, ChevronRight, ChevronDown, ChevronUp } from 'lucide-react';
+import { MapPin, Award, BookOpen, Clock, Star, Square, ChevronLeft, ChevronRight, ChevronUp } from 'lucide-react';
 
 interface Department {
   name: string;
@@ -65,7 +65,7 @@ const MOCK_DEPARTMENTS: Department[] = [
   },
 ];
 
-export function SchoolDetail({ schoolId, schoolName, onClose, onAddFavorite, onAddCompare }: SchoolDetailProps) {
+export function SchoolDetail({ schoolName, onClose, onAddFavorite, onAddCompare }: SchoolDetailProps) {
   const [expandedDeptIndex, setExpandedDeptIndex] = useState<number | null>(0);
   const [activeYear, setActiveYear] = useState<number>(2026);
   const [showHistorical, setShowHistorical] = useState(false);

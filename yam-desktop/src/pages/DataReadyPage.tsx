@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion';
 import { ArrowRight, Plus, ChevronRight, FolderOpen } from 'lucide-react';
-import { useAppStore, type CrawledMajor } from '../stores/appStore';
+import { useAppStore } from '../stores/appStore';
 
 const MAJOR_ICONS: Record<string, string> = {
   '085410': '🧠',

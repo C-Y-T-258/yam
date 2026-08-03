@@ -1,8 +1,299 @@
 # 进度跟踪 - 2026-07-24
 
 > 本文件用于上下文压缩后恢复进度。每完成一步立即更新。
->
-> **已完成**：ISSUE-025 分数线分级匹配（98.5% 覆盖率）、ISSUE-029 httpx 并发优化（271/271 100% 成功，5 分钟）、ISSUE-023 目录更新 httpx 方案（7-8 分钟）、ISSUE-026 导出 CSV、ISSUE-027 阶段 1 工作区多专业合并展示 + 双视图切换、ISSUE-027 多专业 Tab 多选支持 + syncedMajorsRef 优化、ISSUE-027 阶段 2 招生计划视图、ISSUE-017 300s 自适应超时 + 种子抓取心跳（运行时验证通过）、ISSUE-019 专业选择页不全（确认 realtime 数据源已彻底解决，标记 fixed）、ISSUE-022 严重程度文档对齐（high→medium）、ISSUE-028 导出格式扩展 CSV/Excel/JSON（2026-07-24 用户桌面手动测试三格式 × 双视图通过，标记 fixed）。
+
+## ISSUE-030 分数线语义、血缘与聚合系统审计（2026-07-30）
+
+**目标**：不逐条修异常数字，按“语义契约→黄金样本→原始证据→全库根因统计→修复决策”定位能批量影响数据的系统规则。
+
+### 已完成研究
+- 新增 [issue-030-score-line-research.md](file:///d:/yam/docs/issue-030-score-line-research.md)，结构和过程可追溯标准对齐 ISSUE-015/023 研究文档。
+- 定义双轴语义：`metric_type` 区分录取最低分/复试线/未知线，`match_scope` 区分方向/院系/6位专业/4位一级学科/2位门类/校专业聚合；另设 `fetch_status/confidence/requested_year/effective_year/raw_evidence`。
+- 黄金样本覆盖：西北农林跨年主分数、武汉大学4位fallback/2026接口失败/MIN虚假组合、北航门类参考、复旦一级学科参考、北京师范虚假MIN组合、中国石油大学(华东)同年多院系异线、上海交大085400成功空数据。
+
+### 真实双库审计结果
+- Python源库：4专业、855校、2961院系/方向、3855分数记录。
+- 594个专业-学校组合的历史最小值与最新可用年份值不同（808个有分数组合中的约73.5%）。
+- 607组同校同年多原始记录，其中254组总分不同；11组按列MIN生成原始接口中不存在的分数组合。
+- 一级学科/门类参考线涉及94个专业-学校组合，复制后形成934条计划年份记录。
+- 32个专业-学校组合为`score_lines success`但无分数记录；250个专业-学校组合在院系成功后仍少于4个分数年份。
+- 校级年份结果平均复制到每个计划2.43–3.81次。
+
+### 系统性根因
+1. 原始`raw_code`、来源院系、逐年请求状态未持久化。
+2. 同校同年分别`MIN(total/各单科)`会拼出不存在的组合。
+3. 所有历史年份最小值被写成院校主分数。
+4. 无可靠院系映射时把校级聚合复制给每个方向。
+5. fetch状态只有学校+任务粒度，无法区分逐年成功、空数据、API失败和部分成功。
+6. 分数待采集集合错误依赖院系待采集集合，已有院系但缺分数的学校不能普通补采。
+7. 分数年份与招生计划年份共用模糊“最新年份”语义。
+8. 参考线虽然有标签，仍参与主列表排序、筛选、趋势和导出。
+
+### 决策
+- 不手工清洗用户数据库数字，按系统规则修复后重新采集和同步。
+- 修复顺序固定为：证据与逐年状态 → 独立分数任务 → 原始记录/聚合 → 最新分数与计划年份 → 查询规则 → 展示与导出。
+- 录取最低分后续作为独立`admission_statistics`模型接入，不复用当前`score_lines.total`。
+
+### 第一轮实现与验证（2026-07-30）
+- Python源库新增`raw_code/raw_department_name/metric_type/match_scope/confidence/raw_evidence_json`，并兼容迁移旧库。
+- 新增按专业、学校、请求年份、来源唯一的`score_request_status`；分数任务已与院系任务解耦，失败和缺失年份可独立补采。
+- 同步改为每年选择一条完整原始记录，停止逐列`MIN`拼接；院校主分数取最新可用专业级记录，历史分数年份不再复制当前招生人数。
+- Rust单科组合筛选改为同一年度同时满足；4位/2位参考线不再进入主分数年份、排序和筛选。
+- 前端与导出增加最新分数年份、计划年份兼容字段和方向`label_type/is_fallback`，来源说明与主分数记录保持一致。
+- 新增3个Python专项测试，覆盖旧库证据迁移、逐年状态补采、武汉大学式多记录整行保留；`tests/test_backend_entry.py`为10/10。
+- 完整门禁通过：前端45/45、Rust24/24、TypeScript与构建通过、Python compileall通过、npm audit 0、IDE diagnostics为空、git diff check通过。
+- 已完成真实用户库`085410`定向重采和同步：217所学校、905条源分数记录、514个计划、1624条计划年份；武汉大学2026状态为`api_error`，西北农林2026为264。
+- 修复后审计通过：投影虚假分数组合0条、历史分数年份招生人数非零0条、201个专业级主分数全部匹配最新可用记录、normalized状态`ready`。
+- 根据真实界面复验修正：计划默认分数改取最新专业级年份；无主分数显示“暂无”；当时招生人数0仍显示“未提供”，后续 ISSUE-031 第五阶段已改为来源明确的0显示为0；`--force`同时清理逐年状态。
+- 分数请求状态已同步到桌面库，院校视图可区分专业线、一级学科参考线、门类参考线、成功空数据和API失败；武汉大学明确显示2026接口失败及2025一级学科参考线285。
+- 院校人数按源院系ID、学习方式、考试方式和人数去重，武汉大学修正为68、西北农林修正为40；计划视图明确显示全日制/非全日制标签及各自人数。
+- 多专业院校卡片的分数列改为按专业逐行展示，禁止把不同专业分数压成一个值，也不再只提示展开查看。
+- 最新门禁：前端47/47、Rust24/24、Python12/12、TypeScript与构建通过、npm audit 0、IDE diagnostics为空、git diff check通过。
+- 院校视图结果行最左侧增加“最低分/详细状态”切换，默认恢复旧式单个最低分；参考线仍标注粒度，详细状态模式保留逐专业解释。
+- 招生计划视图的“紧凑视图/舒适视图”移动到同一结果行最左侧，删除原来单独占一行的按钮；真实CDP确认两个视图控件位置正确。
+- ISSUE-031 第一阶段完成：新增共享学校专业分数证据与计划引用，真实`085410`同步为668条证据、1624个引用，停止为每个计划复制同一分数值；normalized模型升级为v3。
+- ISSUE-031 第二阶段完成：新增按`plan_key + observed_at`版本化的当前计划快照；目录年份允许为空并用`provided/unknown`状态表达，Rust、页面和导出不再以最新分数年份推断计划年份；normalized模型升级为v4。
+- 第二阶段真实只读同步验证：217所学校、514个计划、514个当前快照、1624条分数投影；514个快照全部为明确`unknown`，无目录年份与分数年份误关联，重复同步后快照数仍为514，模型为`v4/ready`。
+- 第二阶段完整门禁通过：前端48/48、Rust25/25、Python13/13，TypeScript、生产构建和Python `compileall`通过；真实库同步与重复同步不变量同时通过。
+- ISSUE-031 第三阶段完成：`department_key/plan_key`升级为带版本前缀的v2身份；科目、院系名、学习/考试方式和专项变化不再换键，快照补存来源身份并可从v1迁移；normalized模型升级为v5。
+- 第三阶段真实全量验证：四专业2961个计划、2961个唯一v2计划键、1217个稳定院系实体，0碰撞、0快照孤儿；四专业均为`v5/ready`。`085410`的514个v4快照迁移后不丢不增，重复同步仍为514。
+- 第三阶段完整门禁通过：前端48/48、Rust26/26、Python14/14，TypeScript、生产构建、Python `compileall`、npm audit、Rust格式和差异检查通过。
+- 来源边界：研招网没有独立方向ID，同院系多计划必须继续用方向文本区分；方向改名不能无证据模糊归并，转入来源实体映射阶段。
+- ISSUE-031 第四阶段完成：新增来源实体和映射审计层；共享分数证据保留`source_entity_key`，映射状态区分唯一名称候选、多候选和未映射，不做模糊归并也不提升业务分数粒度；normalized模型升级为v6。
+- 第四阶段真实全量验证：四专业2714条共享分数证据全部有来源实体；1144个来源实体全部有映射记录，其中212个`candidate`到研招网院系、932个`unmapped`保留学校专业层、0个缺映射，业务投影仍为9135条。
+- 第四阶段完整门禁通过：前端48/48、Rust26/26、Python14/14，TypeScript、生产构建、Python `compileall`、npm audit、Rust格式和差异检查通过。
+- ISSUE-031 第五阶段完成：当前招生计划人数新增 `enrollment_count_status` 和 `enrollment_text`，来源明确给0时保留为 `provided` 并显示0，只有状态未知时显示“未提供”；真实四专业临时同步验证2961个计划中33个招生0全部为provided，normalized模型升级为v7。
+- ISSUE-031 第六阶段启动：真实源库确认 `score_lines.total=0/NULL` 均为0条，计划视图分数 `0` 可确定为无专业级分数哨兵；前端改用显式分数状态 helper，不再依赖 `||` fallback。
+- ISSUE-031 第六阶段延伸：方向/计划比较弹窗同步使用计划年份、专业级分数和招生人数状态 helper，避免比较视图继续暴露 `0` 哨兵或参考线年份。
+- ISSUE-031 第七阶段完成：新增只读未知状态审计脚本；真实源库确认无 `departments.catalog_year` 列、3855条分数总分无0/NULL，桌面库2961个计划快照目录年全部为 `unknown`，招生0明确拆为24个unknown与9个provided。
+- ISSUE-031 第八阶段完成：工作区、比较和收藏视图统一未知分数/单科标签；原始单科0记录的 `*_str` 均为 `--`，页面改显式显示“—”；前端与Rust计划导出将未知目录年、分数年、分数值和招生人数写为空值，同时保留状态列和来源明确的招生0。
+- ISSUE-031 第九阶段完成：确认目录年全未知是来源事实而非同步遗漏；真实源表无 `catalog_year` 列，桌面2961个快照均为 `NULL/unknown`；同步专项测试覆盖未来来源提供年份时写入 `provided`，禁止从分数年份或当前年份推断。
+- ISSUE-031 第十阶段完成：固定独立 `workspace_admission_statistics` 的字段、NULL/0规则、分数口径、映射粒度、查询接口和8类测试契约；禁止写回现有分数线模型，实际官方数据接入转入 ISSUE-032。
+- ISSUE-031 当前范围完成：阶段7至10按审计、展示、年份边界、录取统计设计顺序闭环；下一项固定为 ISSUE-032 官方录取统计接入。
+- 年度数据来源专项研究已合回主线：新增 `docs/research/year-source/`、只读审计/覆盖测算脚本和研究测试；确认当前产品年度目录覆盖 0%、严格分型分数覆盖 0%、录取统计覆盖 0%，另有 2454/3420 = 71.7544% 的未严格分型学校-专业-届次分数参考记录；ISSUE-032 下一步应先做小样本证据层与 `admission_cycle` 影子数据集。
+- UI 收口：招生计划列表移除全未知“目录年”主列，比较弹窗仅在至少一个计划有来源提供的目录年份时显示“计划年份”行；展开详情和导出继续保留目录年份状态与快照时间作为审计信息。
+- ISSUE-031 发布前回归收尾：全量 UI 回归脚本的 M8 导出段改为 UI-only 菜单验证，不再触发真实 Tauri 保存/后台导出；验证已通过 `npm --prefix yam-desktop run test:ui` 27/27、`test:types`、`test:unit` 57/57、`test:release:auto`（Rust 27/27 + Vite build）和 `git diff --check`。对应提交：`0b05a88 test(ui): stabilize export menu regression`。
+
+---
+
+## 可分发版本：NSIS 安装包 + release 整理（2026-07-26）
+
+**目标**：产出可直接分发的 Windows 安装包和便携版，并固定到 `release/` 目录。
+
+### 已完成
+- **构建产物验证**：
+  - `npm run desktop:build:nsis` 成功
+  - NSIS 安装包：`YAM_1.0.0_x64-setup.exe`（约 3.3 MB）
+  - 发布可执行：`yam-desktop.exe`（约 13 MB）
+
+- **release/ 目录整理**：
+  - `YAM-Setup-1.0.0.exe`（复制自 NSIS bundle）
+  - `YAM-Portable-1.0.0.exe`（复制自 release exe）
+  - `checksums.txt`（SHA256）
+  - `RELEASE-NOTES.md`（产物、安装说明、数据库路径、已知限制、构建信息）
+  - 每个可执行文件旁附带 `.sha256` 单文件校验
+
+- **入口已就绪**：
+  - `npm run desktop:build`（默认 NSIS + MSI）
+  - `npm run desktop:build:nsis`
+  - `npm run desktop:build:msi`
+  - README 已说明构建命令与 `release/` 结构
+
+### 产物位置
+```
+release/
+├── YAM-Setup-1.0.0.exe
+├── YAM-Setup-1.0.0.exe.sha256
+├── YAM-Setup-1.0.0.msi
+├── YAM-Setup-1.0.0.msi.sha256
+├── YAM-Portable-1.0.0.exe
+├── YAM-Portable-1.0.0.exe.sha256
+├── checksums.txt
+└── RELEASE-NOTES.md
+```
+
+### 文档同步
+- `docs/progress.md` 本节记录本次分发构建与整理（含 NSIS + MSI + WebView2 配置修正）。
+- `docs/roadmap.md` 阶段 2（可分发版本）已更新为“NSIS 已产出 + 整理到 release/ + MSI 已产出，待干净环境验证”。
+- `docs/tech-debt.md` “发布与分发相关待办”已更新：release/ 结构固定、NSIS/MSI 已生成，WebView2 通过 `downloadBootstrapper` 已在安装器层面实现基础保障。
+
+### WebView2 处理（2026-07-26 补充）
+- 修正 `src-tauri/tauri.conf.json`：`bundle.windows.webviewInstallMode` 从非标准字符串改为正确对象 `{ "type": "downloadBootstrapper" }`。
+- 重新构建 NSIS，更新 `release/YAM-Setup-1.0.0.exe` 及对应 `.sha256` 和 `checksums.txt`。
+- RELEASE-NOTES 同步更新构建命令与 WebView2 说明。
+- 安装器行为：缺失 WebView2 时自动下载官方 bootstrapper 并静默安装（silent 默认 true）。
+
+### 安装包验证 B（当前机器，已有 WebView2，2026-07-26）
+- 检测：WebView2 Runtime 150.0.4078.99 已存在。
+- 安装：双击 YAM-Setup-1.0.0.exe，选择自定义路径 `D:\test-yam\YAM\` 完成安装。
+- 启动：从开始菜单或 exe 直接启动，应用正常打开，界面与数据与开发时一致。
+- 数据路径：使用默认 `%USERPROFILE%\.yam\data\yam-desktop.db`（已确认存在，大小约 1MB）。
+- 观察到的问题（从开发环境残留到安装包）：
+  - 启动时弹出**空 Python 控制台窗口**（无输出）。
+  - 弹窗期间应用短暂“卡住”几秒，窗口自动关闭后恢复正常，数据正常加载。
+- 原因分析：Rust 端多处通过 `std::process::Command` 调用系统 `python` 执行 `yam.*` 模块（sync、crawl、login、catalog update、search-majors 等），未设置 Windows 创建标志隐藏控制台。
+- 修复（2026-07-26）：引入 `new_hidden_command()` 辅助函数，在 Windows 上统一为所有 python 子进程（及 taskkill）添加 `CREATE_NO_WINDOW (0x08000000)`，避免弹出空控制台窗口。
+  - 修改文件：`yam-desktop/src-tauri/src/commands.rs`
+  - 涉及调用点：sync_workspace_data_inner、run_crawl_task、login_yanzhao、refresh_login、run_update_catalog_task、search_majors、kill_process_tree（Windows taskkill）。
+- 验证结论：B 路径（已有 WebView2）主体通过；修复后重新构建安装包并在目标机器重测确认无控制台弹出。
+- 重测结果（NSIS 安装包，2026-07-26）：
+  - 使用刷新后的 YAM-Setup-1.0.0.exe 重新安装并启动。
+  - 启动时无空白 Python 控制台窗口弹出，界面直接正常打开，数据加载正常。
+  - 用户确认：“重测通过：无控制台弹出” / “无任何控制台窗口”。
+- Portable 情况：
+  - 用户反馈：在上述重测时，旧的 release/YAM-Portable-1.0.0.exe 仍有该问题（弹出较慢）。
+  - 修复后动作：用同一构建产生的修复二进制（含 CREATE_NO_WINDOW）刷新了 Portable 可执行文件，并同步更新了 .sha256 和 checksums.txt。
+  - 刷新后的 Portable SHA256：DD30F48896C2D3DA28B2A61636BD9DAAE3B523593F29D28816FD712602ADB10F
+  - 重测确认：用户使用刷新后的 Portable 直接运行，确认“无控制台窗口”，Portable 重测通过。
+- B 完整结论（已有 WebView2 路径）：
+  - NSIS 安装包：重测通过，无控制台弹出。
+  - Portable：刷新后重测通过，无控制台弹出。
+  - 校验和已同步更新（setup + portable + msi）。
+  - 代码修复与构建流程已闭环。
+
+### 干净环境验证决策（2026-07-26）
+- 已评估：无 WebView2 的 Win10/11 属于极少数场景（多年未更新的系统）。
+- 决策：本次跳过干净环境验证。
+- 理由：此类用户可自行从微软下载安装 WebView2 Runtime；不阻塞 1.0.0 发布。
+- 文档记录：roadmap.md 已更新说明“已评估并跳过，非阻塞”；INSTALL-VERIFICATION.md 保留完整指南供未来需要时使用。
+
+### 下一步（建议）
+1. 进入阶段 3（采集稳定）：内置登录向导 + 状态机 + 原子锁 + ISSUE-022 重新定义并关闭。
+2. 可选：补充便携版 vs 安装版差异细节到 RELEASE-NOTES（已初步提及）。
+3. 可选：如需企业场景再考虑 MSI 构建和干净环境补充验证。
+
+---
+
+## 代码清理：废弃前端与 Electron 目录（2026-07-25）
+
+**目标**：清理早期未使用代码，降低维护负担，聚焦 Tauri + 工作区主流程。
+
+### 已清理内容
+- **删除的页面与组件**：
+  - `src/pages/SchoolsPage.tsx`（院校列表卡片式，含 mock 数据 + TODO）
+  - `src/pages/SchoolDetailPage.tsx`（院校详情 Tab 式，含 mock 数据 + TODO）
+  - `src/components/SchoolCard.tsx`（旧版卡片）
+  - `src/components/FilterPanel.tsx`（旧版筛选面板）
+  - `src/components/schools/` 整个目录（SchoolCard.tsx + FilterPanel.tsx）
+  - `src/components/layout/` 整个目录（Header / MainLayout / Sidebar 多套实现）
+
+- **删除的 Electron 遗留目录**：
+  - `electron/` 整个目录（main.ts、preload.ts、ipc/handlers.ts、database/*）
+  - 当前项目完全走 Tauri，此目录已无引用
+
+- **验证**：
+  - `npm run build` ✅（1.89s）
+  - `cargo check` ✅（仅预存 1 个 warning）
+  - 全项目 grep 无残留引用
+
+### 影响
+- 不影响当前产品主流程（App.tsx / WorkspacePage.tsx 均未引用上述模块）。
+- 减少了重复命名冲突和废弃代码带来的混淆。
+- 符合 tech-debt.md 中“近期代码健康”目标。
+
+### 文档更新
+- `docs/tech-debt.md` 已更新“废弃/未使用的前端代码”章节，标记为✅已删除，并更新建议节奏。
+- 本次进度记录同步到 `progress.md`。
+
+---
+
+> 本文件用于上下文压缩后恢复进度。每完成一步立即更新。
+
+## 项目路线图与入口整理（2026-07-25）
+
+**目标**：系统性整理 YAM 全部方向，把“能跑的工程项目”变成“别人能启动、测试、分发、持续维护的产品”。
+
+### 已完成
+- **新增权威路线图**：[docs/roadmap.md](file:///d:/yam/docs/roadmap.md)
+  - P0/P1/P2 优先级分层（入口与分发为 P0，采集稳定与数据模型为 P1）
+  - 五阶段规划：可测试 → 可分发 → 稳定采集 → 核心分析 → 可维护产品
+  - 详细任务分解（入口、采集、数据模型、工作区、测试、错误处理、安全、性能）
+  - 版本与发布规范（MAJOR.MINOR.PATCH + 必须产物）
+  - 近期执行顺序 + 明确“不要现在做”的反模式
+  - 维护规则（任何需求先上路线图，Bug 同步 known-issues，完成更新 progress）
+
+- **明确开发与分发入口**（[yam-desktop/package.json](file:///d:/yam/yam-desktop/package.json)）
+  ```json
+  "desktop:dev": "tauri dev",
+  "desktop:build": "tauri build",
+  "desktop:build:nsis": "tauri build --bundles nsis",
+  "desktop:build:msi": "tauri build --bundles msi",
+  "test:ui": "node ../scripts/test_full_ui_v3.cjs",
+  "test:ux": "node ../scripts/test_ux_cdp.cjs"
+  ```
+  语义清晰：前端用 `dev/build`，桌面用 `desktop:*`。
+
+- **修正端口不一致**：[yam-desktop/src-tauri/src/main.rs](file:///d:/yam/yam-desktop/src-tauri/src/main.rs)
+  - 注释中的远程调试端口 9222 → **9223**（与 tauri.conf.json 一致）
+
+- **更新根 README**：[README.md](file:///d:/yam/README.md)
+  - 新增“快速开始”章节：
+    - 开发/测试入口：`cd yam-desktop; npm run desktop:dev`
+    - 构建/分发入口：`desktop:build / :nsis / :msi`
+    - 构建产物路径与建议的 `release/` 整理目录
+    - 数据库位置：`%USERPROFILE%\.yam\data\yam-desktop.db`
+  - 增加“路线图与文档”索引，指向 roadmap、known-issues、progress、full-ui-test-prompt
+
+- **验证**
+  - `npm run build` ✅（仅 500kB+ chunk 既有警告）
+  - `cargo check` ✅（仅 db.rs 预存的 `unused_assignments` warning）
+
+### 文档与债务系统化整理（2026-07-25 续）
+- **补建 `docs/session-handoff.md`**：方案 A（内置登录向导 + 原子启动锁 + 采集状态机）的设计摘要。README 引用已修正。
+- **新建 `docs/tech-debt.md`**（技术债务清单）：
+  - 废弃/未使用的前端代码（`SchoolsPage.tsx`、`SchoolDetailPage.tsx`、`components/schools/*`、旧版 `SchoolCard.tsx`、`FilterPanel.tsx` 等）
+  - Electron 遗留目录（`yam-desktop/electron/`）
+  - 代码内 TODO（均位于废弃模块中）
+  - 文档缺失与引用问题
+  - TypeScript 历史错误清单（全量 `tsc --noEmit` 残留）
+  - 中低优先级功能任务（SessionStore、score_lines 精确匹配、种子抓取并发等，已与 roadmap 对齐）
+  - 发布与分发相关待办（release/ 目录、NSIS/MSI 验证、WebView2、验收矩阵）
+  - 其他清理项（历史脚本、mock 数据、多套布局组件、Cargo warning）
+  - 建议处理节奏（立即 / 近期 / 中期 / 长期）
+- **README 同步更新**：路线图与文档章节新增 `tech-debt.md`、`session-handoff.md`、`data-collection-handoff-prompt.md` 说明。
+
+### 为什么要做这次整理
+用户指出“应用没有一个明确的入口，不好测试和分发”。结合之前反馈（趋势图空间、信息密度、左侧约束、inline 展开等），需要把分散的工程细节、历史优化、待办问题，系统地变成一条可执行的路径。同时把“欠下的债”集中记录，避免继续散落。
+
+### 下一步（按路线图 + tech-debt）
+1. 验证 `tauri build` 能产出 NSIS/MSI，整理到 `release/`（已完成 NSIS + MSI）
+2. 在干净 Windows 环境测试安装 + WebView2
+3. 处理 ISSUE-022 重新定义
+4. 推进内置登录向导 + 采集状态机
+
+---
+
+### 核心结论（路线图要点）
+**P0（先做，否则无法测试和分发）**
+1. 入口脚本 + README（已完成）
+2. 固定发布产物目录 + 版本规范
+3. ISSUE-022 重新定义方向（从 disabled 字段转向“专业可见性 + 可查询性 + 状态”）
+
+**P1（核心产品能力）**
+- 内置登录向导 + 原子启动锁 + 采集五状态机
+- 统一数据模型：专业 → 院校 → 院系所 → 研究方向/招生计划 → 年份数据
+- 工作区信息密度（方向区分、动态图高、自适应详情高度、多个院校展开）
+- 分层测试 + 发布前验收矩阵
+- 所有外部边界的清晰错误处理
+
+**阶段顺序建议**
+阶段 1 可测试 → 阶段 2 可分发 → 阶段 3 稳定采集 → 阶段 4 核心分析 → 阶段 5 可维护
+
+**不要现在做的事**
+- 没有明确入口前继续堆新视觉功能
+- 把删除 Electron 目录作为第一优先级
+- 在没有 E2E 回归前大规模重构 Tauri 架构
+- 在 ISSUE-022 未重新定义前继续在 disabled 字段打补丁
+
+### 下一步（按路线图）
+1. 验证 `tauri build` 能产出 NSIS/MSI，整理到 `release/`
+2. 在干净 Windows 环境测试安装 + WebView2
+3. 处理 ISSUE-022 重新定义
+4. 推进内置登录向导 + 采集状态机
+
+---
+
+> **已完成**：ISSUE-025 分数线分级匹配（98.5% 覆盖率）、ISSUE-029 httpx 并发优化（271/271 100% 成功，5 分钟）、ISSUE-023 目录更新 httpx 方案（7-8 分钟）、ISSUE-026 导出 CSV、ISSUE-027 阶段 1 工作区多专业合并展示 + 双视图切换、ISSUE-027 多专业 Tab 多选支持 + syncedMajorsRef 优化、ISSUE-027 阶段 2 招生计划视图、ISSUE-017 300s 自适应超时 + 种子抓取心跳（运行时验证通过）、ISSUE-019 专业选择页不全（确认 realtime 数据源已彻底解决，标记 fixed）、ISSUE-022 严重程度文档对齐（high→medium）、ISSUE-028 导出格式扩展 CSV/Excel/JSON（2026-07-24 用户桌面手动测试三格式 × 双视图通过，标记 fixed）、**2026-07-25 项目路线图与入口整理（roadmap + 脚本 + README + 端口修正）**、**2026-07-25 文档与债务系统化整理（session-handoff.md + tech-debt.md + README 文档索引更新 + progress 同步）**、**2026-07-25 代码清理：删除废弃前端（SchoolsPage/SchoolDetailPage/schools/layout 等）及 Electron 目录，构建验证通过**。
 >
 > **剩余 ISSUE**（按优先级）：
 > - ISSUE-022（open，需重新定义方向）：选择 disabled=true 的专业后采集卡住——数据层已不可达（majors.yaml 0 个 disabled，realtime 无 enabled 字段），但本质诉求仍在：要消灭 disabled 的专业，要让专业可见即可查
@@ -613,6 +904,323 @@ ISSUE-025 修复后 081200 仅 242/271 有分数（89%），29 所 985 自划线
 - 登录状态判断：真正凭证为 `account.chsi.com.cn` 域下的 `CASTGC`（排除 JSESSIONID 等干扰）
 - 研招网 URL 构造支持动态 `sign`/`sign2`
 
+### 阶段 3 原子启动边界补齐（2026-07-27）
+- 盘点结论：`run_crawl` 的原子锁已存在，但旧 `reset_crawl` 会在运行中 kill 子进程并清空状态，形成绕过原子锁的旁路。
+- Rust 修复：`reset_crawl` 仅允许重置已结束状态；检测到 `running=true` 时返回“采集任务正在运行，请先取消当前任务”，不再终止子进程。
+- 前端修复：`CrawlingPage.startCrawl` 不再在启动前无条件 reset，直接依赖 `run_crawl` 的原子检查；启动失败时释放 `isLaunchingRef`，允许重试。
+- 专业选择/更新入口：仍尝试清理已结束状态以支持重新采集；若任务正在运行，后端安全拒绝重置，页面随后恢复当前任务或显示“已有其他采集任务”。
+- 自动化调试入口不再调用 reset，避免测试辅助函数意外终止真实采集。
+- 结论：只有显式 `cancel_crawl` 可以终止运行中的采集；阶段 3“原子启动锁”验收项完成。
+- 验证：`npm run build` ✅；`cargo check` ✅（仅 `db.rs` 预存 unused_assignments warning）；VS Code diagnostics 为空。
+
+### 阶段 3 登录向导闭环（2026-07-27）
+- `CrawlingPage.startCrawl` 在启动 Python 采集前调用 `checkLoginStatus()` 检查本地 CASTGC/SESSION 凭证。
+- 未登录：不启动 Python 采集任务，直接展示 `LoginRequiredModal`，避免“先失败一次再登录”的等待和失败日志。
+- 登录成功：`login_yanzhao` 保存 cookie 并抓取专业种子，随后重新进入 `startCrawl`；预检通过后启动采集。
+- 兜底保留：本地 Cookie 存在但服务端已失效时，Python `LoginRequiredError` / `YAM_ERROR` 仍会触发登录向导。
+- 路线图“内置登录向导”验收项完成。
+- 验证：`npm run build` ✅；`cargo check` ✅（仅 `db.rs` 预存 warning）；VS Code diagnostics 为空。
+
+### 阶段 3 采集五状态机（2026-07-27）
+- 统一任务状态口径：`idle / running / completed / failed / cancelled`，解决历史文档“五状态却列出六/七值”的冲突。
+- Rust 新增 `CrawlStatus` 枚举，并在 `CrawlProgress.status` 序列化输出；启动、成功、失败、零数据和取消均有明确迁移。
+- Rust 后端成为任务状态唯一事实源；原有 `running / done / error` 字段暂时保留以兼容现有接口，但前端不再通过其组合猜测状态。
+- `CrawlingPage` 初始化、后台恢复、轮询结束判断均改用 `status`；页面本地只保留 `checking / syncing / no-target` 等展示阶段。
+- `BackgroundTaskPanel` 改用 `status` 判断运行、完成、失败、取消和自动隐藏。
+- 路线图“采集状态机 + 五种状态”验收项完成。
+- 验证：`npm run build` ✅；`cargo check` ✅（仅 `db.rs` 预存 warning）；VS Code diagnostics 为空。
+
+### 阶段 3 ISSUE-022 闭环（2026-07-27）
+- `Config.get_major()` 改为优先读取 `data/majors_realtime.json`，与桌面端专业选择页使用同一主数据源；`majors.yaml` 仅作 fallback。
+- 删除 `yam.cli fetch` 的 `enabled` 拒绝分支，消除“前端可见、CLI 却因静态 enabled 拒绝”的分裂路径。
+- 专业识别验证：`140700 区域国别学`、`0101J1 中国古典学` 从实时目录命中；`085410` 静态 fallback 正常。
+- `YAM_ERROR` 协议增加结构化分类：`UNKNOWN_MAJOR / LOGIN_REQUIRED / NO_PUBLIC_DATA / UNREACHABLE / FAILED`；Rust 解析并输出 `CrawlProgress.error_code`。
+- 无公开院校数据会明确返回 `NO_PUBLIC_DATA`，网络/种子接口异常返回 `UNREACHABLE`，不再全部落入通用失败文案。
+- ISSUE-022 标记 fixed；路线图“专业可见即可进入采集”的最小闭环完成。
+- 验证：Python `compileall` 通过；无效专业返回预期 `YAM_ERROR UNKNOWN_MAJOR`；`npm run build` ✅；`cargo check` ✅（仅预存 warning）；VS Code diagnostics 为空。
+
+### 阶段 3 采集失败局部恢复 + 专业级重试（2026-07-27）
+- 修正桌面端默认采集语义：Rust 不再固定向 Python 传 `--force`，失败后再次采集会复用 `fetch_log`，跳过已成功院校，仅处理未成功/失败项。
+- `run_crawl` 新增可选 `force` 参数；只有专业管理页点击“更新”时传 `force=true`，用于用户明确要求的全量刷新。
+- `CrawlTarget.force` 在任务成功启动后立即清除，后续失败重试不会再次清空历史成功记录。
+- `CrawlingPage` 失败/取消横幅新增“重试失败项”按钮，直接从上次成功位置继续。
+- 既有 Python 三阶段降级重试继续负责单次任务内的临时网络/限流失败；`fetch_log` 负责跨任务断点恢复，两层职责分离。
+- 路线图“采集失败局部恢复 + 专业级重试”验收项完成，阶段 3 的 5.2 采集与登录条目全部闭环。
+- 验证：Python `compileall` ✅；`npm run build` ✅；`cargo check` ✅（仅 `db.rs` 预存 warning）；VS Code diagnostics 为空。
+
+### 阶段 4 首项：分数线粒度与可信度显式化（2026-07-27）
+- 问题确认：当前同步按 `school_id + major_code + year` 聚合最低分，再挂到该校各方向；此前 UI 标为“最低分/方向趋势”，容易被误解为方向精确分数线。
+- 同步表 `workspace_department_years` 新增 `score_scope / source / updated_at / match_note`，Python 同步脚本和 Rust migration 均支持旧库增量加列。
+- `score_scope` 当前区分：`school_major / first_level_reference / category_reference`；预留 `department / exact_direction` 供未来精确模型使用。
+- Python 同步保留 `score_lines.source / updated_at / note`，并根据 note 识别一级学科参考线和门类参考线；普通聚合值明确标为 `school_major`，不冒充方向线。
+- Rust `WorkspaceYear` DTO、单院校 years 查询、计划视图批量 years 查询及 TypeScript 类型已完整贯通新字段。
+- 工作区院校详情、年份详情、趋势图、计划视图展开和计划导出统一显示“院校专业参考线/一级学科参考线/门类参考线”、来源、更新时间和匹配说明。
+- 删除院校详情中硬编码的学费 8000、学制 3 年、更新时间 2025-05-20；更新时间改为真实同步字段，无数据时显示“暂无”。
+- 隔离迁移验证：临时 Tauri DB 同步 `081200` 成功（271 所、1043 个院系、3567 条年份数据）；新列完整，样例为 `school_major / zhangshangkaoyan / 2026-07-22T09:50:56`。
+- 验证：Python `compileall` ✅；`npm run build` ✅；`cargo check` ✅（仅 `db.rs` 预存 warning）；VS Code diagnostics 为空。
+- 结论：阶段 4 的数据可信度垂直闭环已完成首步；后续应建立稳定 Direction/Plan ID 和真实方向级 YearScore，再做方向比较与收藏。
+
+### 阶段 4 研究方向 fallback 统一（2026-07-27）
+- 提取 `getDirectionLabel()`，统一规则：研究方向 → 考试科目 → 专项计划 → “未注明研究方向”。
+- 院校详情方向列表、展开正文、招生计划视图与 CSV/Excel 导出全部使用同一函数，消除空白和 `—` 的不一致。
+- 路线图“研究方向为空时的 fallback 规则”验收项完成。
+- 验证：`npm run build` ✅（仅既有 chunk 警告）；VS Code diagnostics 为空。
+
+### 阶段 4 数据质量检测补齐（2026-07-27）
+- `DataAuditor` 新增空方向检测：研究方向、考试科目、专项计划均为空时，记录为 INFO 并说明 UI 将 fallback 为“未注明研究方向”。
+- 重复招生计划检测改用完整业务键：学校、院系、年份、plan_id、spe_id、研究方向、考试科目，避免把同院系同年的合法不同方向误判为重复。
+- 新增计划/方向年份断档检测：按稳定计划组合聚合年份，报告中间缺失年份及最多 20 个样例。
+- 保留既有校级招生计划/分数线年份覆盖交叉检查，两层检测分别覆盖“跨数据源年份不一致”和“单计划内部断档”。
+- 验证：Python `compileall` ✅；真实 `081200` 审计命令运行通过；隔离样本准确触发 1 条空方向与 1 组 2024 年断档；VS Code diagnostics 为空。
+- 路线图“重复计划检测、年份缺失检测、空方向检测”验收项完成。
+
+### 阶段 4 多方向并行展开（2026-07-27）
+- 院校视图由“每所学校只能展开一个方向”改为 `expandedDepartmentIds: Set<number>`，同一学校可同时展开多个院系/研究方向。
+- 每个方向独立维护选中年份与历年分析开关（`activeYearByDepartment` / `historicalDepartmentIds`），互不干扰。
+- 招生计划视图由单一 `expandedPlanId` 改为 `expandedPlanIds: Set<number>`，支持多条计划同时展开；重新加载计划数据时统一清空集合。
+- 删除学校级单选方向状态及无用索引计算，展开内容直接绑定当前 `dept` 数据。
+- 路线图“多院校、多方向并行展开”完成：多院校能力沿用既有 Set + localStorage，多方向能力本次补齐。
+- 验证：`npm run build` ✅（仅既有 chunk 警告）；旧单选状态标识搜索无残留；VS Code diagnostics 为空。
+
+### 阶段 4 研究方向关键词筛选（2026-07-27）
+- `WorkspaceFilters` / Tauri command / Rust `WorkspaceFilterParams` 新增 `researchDirection` 参数。
+- 院校视图和招生计划视图 SQL 均增加 `d.research_direction LIKE` 条件；浏览器 mock 筛选保持同样语义。
+- 高级筛选面板新增“研究方向关键词”输入，支持应用、重开回填、重置和已应用状态提示。
+- 路线图“方向级筛选”取得首个明确闭环；方向级比较与更多方向排序仍待后续实现。
+- 验证：`npm run build` ✅；`cargo check` ✅（仅 `db.rs` 预存 warning）；VS Code diagnostics 为空。
+
+### 阶段 4 方向级排序（2026-07-27）
+- `WorkspaceFilters.sortBy` 增加 `department_name / research_direction`。
+- 筛选组件接收当前 `viewMode`，仅在招生计划视图展示“按院系名称 / 按研究方向”排序，避免院校视图出现无意义选项。
+- Rust 计划行排序新增院系名称和研究方向比较，保留分数、招生人数、学校名称、代码与默认排序。
+- 阶段 4“方向级筛选 + 排序”完成；方向级比较仍待后续。
+- 验证：`npm run build` ✅；`cargo check` ✅（仅 `db.rs` 预存 warning）；VS Code diagnostics 为空。
+
+### 阶段 4 真实方向/计划比较（2026-07-27）
+- 招生计划视图每行新增比较选择，按 `department_id` 唯一标识，最多选择 3 条真实计划/方向。
+- 比较浮动按钮仅在计划视图显示，并把实际 `WorkspacePlanRow[]` 传给 App；学校视图不再打开 mock 比较。
+- App 删除 `MOCK_COMPARE_SCHOOLS` 依赖，改为保存真实待比较计划行；清空全部会清空状态并关闭弹窗。
+- CompareModal 改为“方向/计划比较”，展示真实院校、地区、层次、专业代码、院系、方向 fallback、学习/考试方式、特殊计划、最新年份、分数与粒度、招生人数、四科分数、来源和更新时间。
+- 比较表使用内联 `gridTemplateColumns`，避免动态 Tailwind 类无法生成。
+- 路线图“方向级比较 + 筛选 + 排序”完成闭环。
+- 验证：`npm run build` ✅（仅既有 chunk 警告）；`MOCK_COMPARE_SCHOOLS` 搜索无残留；VS Code diagnostics 为空。
+
+### 阶段 4 方向/计划收藏（2026-07-27）
+- 新增独立 `plan_favorites` 表，不影响既有学校+专业 `favorites`；同步重建工作区表时计划收藏保留。
+- 稳定唯一键使用 `school_id + major_code + department_name + research_direction + exam_subjects`，不依赖会变化的自增 `department_id`。
+- Rust 新增 `PlanFavorite` DTO、查询与无 panic 的 toggle API；Tauri commands 已注册。
+- TypeScript 新增 PlanFavorite API 和一致的业务 key，浏览器模式使用 localStorage/内存 fallback。
+- 招生计划行操作区新增收藏星，与展开、比较互不干扰；切换专业或重新加载计划时刷新收藏状态，成功/失败接入现有 toast/reportError。
+- 路线图“趋势 + 分数线 + 收藏 + 导出增强”中的方向收藏完成；FavoritesPage 聚合展示计划收藏留待后续。
+- 验证：`cargo check` ✅（仅 `db.rs` 预存 warning）；`npm run build` ✅（仅既有 chunk 警告）；VS Code diagnostics 为空。
+
+### 阶段 4 收藏页方向/计划分区（2026-07-27）
+- FavoritesPage 并行加载学校收藏与方向/计划收藏，页面文案更新为“快速访问关注的学校与研究方向”。
+- 新增“研究方向与招生计划”分区，展示学校、专业、院系、方向 fallback、考试科目、学习/考试方式、专项计划和收藏时间。
+- 搜索框同时匹配学校名、院系、方向与专业代码；原 WorkspaceFilterPanel 继续只作用于学校收藏。
+- 新增稳定业务键删除命令 `remove_plan_favorite`，Rust/Tauri/TypeScript/localStorage fallback 全链路支持，不伪造不完整 WorkspacePlanRow。
+- 路线图“趋势 + 分数线 + 收藏 + 导出增强”完成闭环。
+- 验证：`cargo check` ✅（仅 `db.rs` 预存 warning）；`npm run build` ✅（仅既有 chunk 警告）；VS Code diagnostics 为空。
+
+### 阶段 4 稳定计划身份（2026-07-27）
+- `workspace_departments` 新增 `source_department_id` 与 `plan_key`，Python/Rust schema 及旧库迁移全覆盖。
+- `source_department_id` 保留源库院系编号；`plan_key` 对学校、专业、源院系、院系名、方向、科目、学习/考试方式、专项计划的规范 JSON 做 SHA-256，跨同步稳定。
+- Rust `WorkspaceDepartment / WorkspacePlanRow` 和 TypeScript 类型贯通新字段；旧库空 key 使用 `legacy:school|major|department_id` 过渡，避免 UI 冲突。
+- 院系/方向展开、独立年份/历年状态、计划展开、方向比较选择及 CompareModal React key 已切换为 `plan_key`；`department_id` 仅继续承担年份表数据库外键。
+- 隔离同步真实 `081200`：1043 条计划，1043 个唯一非空 plan_key，source_department_id 非空 1043 条，摘要长度 64；临时 DB 已删除。
+- 这是正式五层模型的第一步；后续仍需把 Department、Direction/Plan、YearScore 拆为独立实体并建立稳定外键。
+- 验证：Python `compileall` ✅；`cargo check` ✅（仅 `db.rs` 预存 warning）；`npm run build` ✅（仅既有 chunk 警告）；VS Code diagnostics 为空。
+
+### 阶段 4 实体来源与更新时间贯通（2026-07-27）
+- `workspace_schools` 新增 `source/updated_at`，学校主来源明确为 `yanzhao`；源更新时间动态兼容新旧 schema。
+- `workspace_departments` 新增 `source/updated_at`，从 Python departments 原样同步；Python/Rust 迁移支持旧库。
+- Rust/TypeScript DTO 全链路贯通：学校实体使用 `source/updated_at`，计划行区分 `school_source/school_updated_at` 与 `department_source/department_updated_at`。
+- 院校详情显示真实院校来源/更新时间；方向展开显示计划来源/更新时间；分数年份继续独立显示分数来源、更新时间、粒度与匹配说明。
+- 计划 CSV/Excel 导出增加院校来源/时间与计划来源/时间；比较弹窗明确区分计划来源和分数来源。
+- 隔离同步真实 `081200`：学校 271/271、院系 1043/1043 的 source 和 updated_at 均非空；临时 DB 已删除。
+- 路线图“数据来源、更新时间、可信度字段”完成闭环。
+- 验证：Python `compileall` ✅；`cargo check` ✅（仅 `db.rs` 预存 warning）；`npm run build` ✅（仅既有 chunk 警告）；VS Code diagnostics 为空。
+
+### 阶段 4 正式五层规范化模型（2026-07-27）
+- 新增 `workspace_majors / workspace_department_entities / workspace_plans / workspace_plan_years / workspace_model_state`，形成 Major → School → Department → Plan → YearScore 正式层级；旧三表完整保留。
+- Department 使用 `department:v1:<sha256>` 稳定键，同院系多方向归并为一个实体；Plan 沿用跨同步稳定 `plan_key`，plan_id 显式继承旧 department_id 以保持 DTO 兼容。
+- 当前计划如实标记 `source_record_kind=yanzhao_department_derived`，不冒充覆盖不足的掌上考研 admission_plans；YearScore 保留分数粒度、来源、更新时间与匹配说明。
+- Python 按专业单事务双写新旧模型，失败整体回滚；ready 前校验非空/唯一键及新旧计划、年份计数。
+- Rust 仅在请求内所有专业均 `ready + model_version>=2 + 新旧计数一致` 时切读规范化模型；否则整次请求使用 legacy 模型。学校、筛选选项、院系详情、招生计划、收藏详情均已切换。
+- 老旧库迁移不再 DROP 工作区表，新表不存在或未就绪自动兼容旧模型；`get_available_majors` 继续使用稳定的 workspace_schools。
+- 隔离同步真实 `081200`：学校 271；计划 1043/1043；年份 3567/3567；院系实体 321；空/重复键、孤儿记录均 0；计划与年份双向 EXCEPT 均 0；临时 DB 已删除。
+- 路线图正式五层模型与阶段 4 核心分析能力完成。
+- 验证：Python `compileall` ✅；`cargo test` 1/1 ✅；`npm run build` ✅；VS Code diagnostics 为空。仅保留既有 Rust idx warning 与 Vite chunk warning。
+
+### 阶段 5 单元测试基础（2026-07-27）
+- 前端接入 Vitest，新增 `npm run test:unit`；纯逻辑提取到 `workspace-utils.ts` 并由 WorkspacePage/CompareModal 实际复用。
+- 15 条前端单测覆盖：4 条方向 fallback、5 种分数粒度映射、平坦/正常/空/单值 Y 轴 domain、计划导出 23 列及来源/时间/匹配说明。
+- Rust 新增 2 条规范化模型测试，加上既有 1 条共 3 条：覆盖无状态、ready、failed、计数不一致、多专业未全 ready，以及 legacy→normalized 切读关键 DTO 一致性。
+- 路线图“单元测试”完成基础闭环；组件测试、Tauri E2E 与发布前验收矩阵仍待后续。
+- 验证：`npm run test:unit` 15/15 ✅；`cargo test` 3/3 ✅；`npm run build` ✅；VS Code diagnostics 为空。仅保留既有 warning。
+
+### 阶段 5 关键组件测试（2026-07-27）
+- 接入 Testing Library、user-event、jest-dom 与 jsdom，Vitest 增加统一 setup/cleanup。
+- TrendChart 从 WorkspacePage 提取为独立组件并复用 `getTrendScaleDomain`；测试空态、平坦/单点数据无 NaN、标题/年份/数值渲染。
+- WorkspaceFilterPanel 测试 school/plan 模式排序差异、研究方向排序回调、研究方向关键词应用与重置。
+- 前端测试扩展为 3 个文件、22 条全部通过；路线图“组件测试”完成基础闭环，后续可继续补院校行/方向条目细粒度用例。
+- 验证：`npm run test:unit` 22/22 ✅；`npm run build` ✅；VS Code diagnostics 为空。仅保留既有 chunk warning。
+
+### 阶段 5 Tauri CDP E2E + 真实旧库迁移修复（2026-07-27）
+- 首次真实桌面启动发现旧用户库 `workspace_department_years` 缺少 `score_scope/source/updated_at/match_note`，同步报 OperationalError，Rust 查询 unwrap 导致进程崩溃。
+- Rust `migrate_schema` 与 Python `ensure_target_schema` 补齐四列增量迁移；修复后同一真实桌面库启动稳定，无 panic/同步异常。
+- 新增 `scripts/test_stage4_e2e.cjs` 与 `npm run test:e2e:stage4`：通过 CDP 9223 调用真实 Tauri commands，验证已同步专业、规范化计划查询、稳定 plan_key/源院系ID、学校/计划/分数来源元数据、方向筛选排序、计划收藏往返及 WebView UI 交互。
+- E2E 收藏测试执行后自动恢复原状态，不启动网络采集，不污染正式业务数据。
+- 实测 `081200`：271 所学校；计划稳定 key 非 legacy；收藏 false→true→自动恢复；脚本 PASS。
+- 路线图 Tauri E2E 基础与 CDP 脚本分层完成。
+- 验证：Python `compileall` ✅；`cargo test` 3/3 ✅；真实 `desktop:dev` 启动 ✅；`test:e2e:stage4` ✅；进程日志无 panic/error。
+
+### 阶段 5 发布前验收矩阵（2026-07-27）
+- 新增 `npm run test:rust` 与 `npm run test:release:auto`，一键执行 Vitest 单元/组件、Rust 测试和前端生产构建。
+- `full-ui-test-prompt.md` 增加固定发布前执行顺序：自动门禁 → desktop:dev → stage4 E2E → v3 全流程。
+- 人工边界矩阵明确窗口 1200×800/1024×700/800×600、缩放 80/100/125/150%、单/多/全专业数据量、空库、登录失效、失败态、旧库迁移与收藏恢复的步骤和验收条件。
+- 空库/登录清除等破坏性场景明确只能使用隔离 HOME/cookie，不操作用户正式环境。
+- 路线图“发布前验收矩阵”和“CDP脚本分层”完成。
+- 实测 `npm run test:release:auto`：前端 22/22、Rust 3/3、生产构建全部通过；仅保留既有 warning。
+
+### 阶段 5 结构化采集错误闭环（2026-07-27）
+- 前端新增 `AppErrorCode / AppError / normalizeAppError / invokeApp`，统一处理 Tauri 拒绝对象、JSON字符串、普通字符串与原生 Error；常用同步/收藏/最近查看/采集 IPC 已接入。
+- `CrawlProgress.error_code` 正式进入 TS 类型；采集页按 LOGIN_REQUIRED / UNKNOWN_MAJOR / NO_PUBLIC_DATA / UNREACHABLE / TIMEOUT / FAILED 展示原因、影响、下一步和可重试操作。
+- 登录错误直接打开登录向导；未知专业返回专业选择；暂无公开数据不误导为程序故障；网络/超时/普通失败真正接通“重试失败项”。
+- BackgroundTaskPanel 移除 nullable error 非空断言，失败无详情和取消状态安全显示。
+- Python fetch 全流程统一输出带码 `YAM_ERROR`，`asyncio.run(_fetch_async)` 外层异常纳入结构化边界，不再默认打印 traceback；Rust内部超时补 TIMEOUT。
+- 新增 16 条错误归一化与错误码映射测试；前端测试总数增至 38 条。
+- 路线图“采集错误用户文案”和“Python traceback不透传”完成；数据库查询全面去 unwrap/启动损坏恢复仍作为外部边界剩余项。
+- 验证：Python `compileall` ✅；Vitest 38/38 ✅；Rust 3/3 ✅；前端 build ✅；VS Code diagnostics 为空。
+
+### 阶段 5 数据库命令边界 panic 隔离（2026-07-27）
+- Rust 新增可序列化 `AppError` 与 `db_guard/db_query/db_write`，通过 `catch_unwind(AssertUnwindSafe)` 阻止 db.rs 内部 unwrap panic 越过 Tauri FFI。
+- Mutex poisoned 时恢复内部连接并继续隔离执行；失败返回 `DB_LOCK_POISONED`，查询/写入分别返回 `DB_QUERY_FAILED / DB_WRITE_FAILED`，文案说明影响和重试方式。
+- 高频只读命令（学校、分数、工作区、计划、筛选、可用专业、两类收藏、最近查看）和收藏/历史写入命令已改为 `Result<_, AppError>`，移除 command 层 unwrap。
+- 前端 AppErrorCode/normalizeAppError 支持三类数据库错误。
+- 新增损坏 schema panic 隔离和 poisoned mutex 恢复 Rust 测试；Rust测试增至 5 条，前端错误归一化测试增至39条总测试。
+- 剩余：main.rs setup数据库损坏启动恢复、低频数据库命令和db.rs内部全面Result化。
+- 验证：`npm run test:release:auto` ✅（前端39/39、Rust5/5、build通过）；VS Code diagnostics 为空。
+
+### 阶段 5 数据库损坏启动恢复（2026-07-27）
+- 启动流程新增 `open_or_recover_database`：已有库先执行 `PRAGMA quick_check`、schema迁移和seed，任一步失败都进入安全恢复。
+- 损坏/不可迁移原库不删除、不覆盖，重命名为 `yam-desktop.db.corrupt-YYYYMMDD-HHMMSS`；冲突自动加序号，WAL/SHM存在时尽量同步保留。
+- 备份完成后创建健康新库；备份或新库创建失败明确返回错误，不静默丢数据。main setup移除数据库expect，Tauri运行错误改为清晰日志。
+- 新增 `DatabaseStatus/get_database_status`；设置页“本地数据”卡展示数据库路径、正常状态，恢复时说明影响、重新同步操作和备份路径，不提供自动删除。
+- 隔离测试覆盖不存在库正常创建，以及非SQLite字节文件原样备份+健康新库；Rust测试增至7条，全程不访问正式~/.yam。
+- 路线图核心外部边界结构化错误与恢复完成；低频命令后续渐进收敛。
+- 验证：`npm run test:release:auto` ✅（前端39/39、Rust7/7、build通过）；VS Code diagnostics 为空。
+
+### 阶段 5 安全与合规收敛（2026-07-27）
+- 安全审查覆盖当前改动的Cookie、日志、导出、CDP、数据库备份与Tauri命令边界；未发现本次变更引入且可利用的漏洞。
+- CDP `--remote-debugging-port=9223` 从主发布 `tauri.conf.json` 移到独立 `tauri.dev.conf.json`，仅 `npm run desktop:dev` 显式合并；发布构建不再暴露调试端口。
+- Cookie 仍只保存于 `~/.yam/cookies`，写入后尝试 `chmod 0600`；日志/IPC不返回Cookie值，登录状态仅返回布尔状态和过期时间。
+- 导出转换只包含学校、计划、分数和来源元数据，不包含认证信息；网络请求保留分批/冷却，数据来源全层可追溯。
+- 验证：`npm run test:release:auto` ✅；Python `compileall` ✅；项目内 `npm exec tauri build -- --debug --no-bundle` ✅；主配置搜索无remote-debugging，仅dev配置包含；diagnostics为空。
+
+### 阶段 5 导出目录设置（2026-07-27）
+- 新增 `~/.yam/config/desktop-settings.json` 本地偏好，不写数据库；设置文件通过临时文件+原子替换保存。
+- 设置页新增“导出”卡片，展示当前目录并支持系统目录选择器选择/清除；未设置或目录失效时说明会回退保存对话框。
+- CSV/JSON/Excel 导出优先写入有效偏好目录，目录不存在/不可写或实际写入失败均回退原保存对话框，不阻断导出。
+- 导出文件名仅取 `Path.file_name` 并强制允许扩展名，阻止 `../evil.csv` 等路径穿越；目录只能由系统选择器产生。
+- 新增设置读写清除、文件名净化、有效/失效目录解析测试；Rust测试增至11条。
+- 路线图设置页登录/cookie/数据库路径/导出目录完成。
+- 验证：`npm run test:release:auto` ✅（前端39/39、Rust11/11、build通过）；VS Code diagnostics 为空。
+
+### 阶段 5 同步查询去重与关键索引（2026-07-27）
+- 性能盘点确认计划查询仍全量返回，但当前React只渲染分页行；虚拟滚动不是首要瓶颈。最明显浪费是同校同专业分数按每个方向重复查询。
+- `sync_to_tauri` 将 `load_score_lines` 提升到学校循环：`081200` 理论查询次数从1043次降为271次，分数复制语义不变；隔离同步实测约0.73秒。
+- Python源库新增 `score_lines(school_id,major_code,year DESC)` 与 `departments(major_code,school_id)` 索引。
+- 桌面库新增学校专业+分数、学校代码、legacy院系、legacy年份关键索引；迁移顺序修复为先补 `school_code` 列再建索引。
+- 隔离同步真实081200保持计划1043/1043、年份3567/3567；EXPLAIN确认默认分数排序使用 `idx_workspace_schools_major_score` SEARCH而非SCAN；临时DB已删除。
+- 期间基准测试发现并修复Python schema建索引顺序和 score_lines 变量作用域两个回归，随后全量验证通过。
+- 验证：Python compileall ✅；`npm run test:release:auto` ✅（前端39/39、Rust11/11、build通过）；diagnostics为空。
+
+### 阶段 5 院系详情按需缓存与批量读取（2026-07-27）
+- 新增独立 `fetch_workspace_departments` Tauri command；展开院校不再复用全量 `fetch_workspace_data`，不会额外重查/覆盖学校列表。
+- Rust院系详情从“1次基础行+N次years”改为固定“1次基础行+1次IN批量years”，规范化模型按plan_key映射，legacy按department_id。
+- 前端缓存key使用 `activeMajorCodesKey|schoolId`，缓存命中0请求；同key并发共享一个Promise；专业切换天然隔离，显式刷新/同步清缓存。
+- 快速切专业时旧请求只写对应cache，不覆盖当前专业展示，消除响应竞态。
+- 新增多plan多年份批量结果/降序Rust测试；Rust测试增至12条。
+- 路线图“院系详情按需加载+缓存”完成；后端分页仍待补。
+- 验证：`npm run test:release:auto` ✅（前端39/39、Rust12/12、build通过）；diagnostics为空。
+
+### 阶段 5 招生计划服务端分页（2026-07-27）
+- 新增 `WorkspacePlanPage {items,total}` 与 `fetch_workspace_plans_page`；筛选后total准确，page最小1、pageSize限制1..100。
+- Rust计划查询先读取每计划latest摘要用于稳定筛选/排序，只为当前页批量加载完整years；原全量接口保留给导出/E2E兼容。
+- 计划搜索统一进入Rust，覆盖院校名/代码、院系和方向，分页total与全量导出结果一致。
+- 前端列表只保存当前页，request id防旧响应覆盖；筛选/专业/搜索回第一页，翻页保留最多3条跨页比较（Map保存完整row）。
+- 计划导出点击时单独请求全量当前筛选结果，不影响当前页列表；学校视图导出不变。
+- 真实081200：页1/页2各20条、total1043、页间重复0；全量1043。当前页20 rows/80 years/32,619B，相比原1043 rows/3567 years/1,568,993B，列表IPC下降约97.9%。搜索“计算机”分页/全量均798。
+- 新增稳定分页/排序/页内years Rust测试；Rust测试增至13条。
+- 验证：`npm run test:release:auto` ✅（前端39/39、Rust13/13、build通过）；diagnostics为空。
+
+### 阶段 5 工作区静默刷新（2026-07-27）
+- 切换专业时未同步专业在后台同步，已有院校/计划保持显示；仅首次且无数据时展示全局loading。
+- 专业/筛选变化采用stale-while-revalidate，成功后原子替换；院校与计划各自request id防旧响应覆盖。
+- 计划翻页保留上一页并显示局部“正在刷新招生计划”；不再整页闪空。
+- 刷新失败保留旧结果，横幅明确“当前仍显示上次结果”并提供重试；专业切换的详情缓存按major key隔离。
+- 新增刷新状态/保留数据纯逻辑测试，前端测试增至42条。
+- 路线图“切换专业静默刷新”完成。
+- 验证：`npm run test:release:auto` ✅（前端42/42、Rust13/13、build通过）；diagnostics为空。
+
+### 阶段 5 计划大数据后台导出（2026-07-27）
+- 新增 `ExportProgress/ExportState` 与 start/get/cancel commands；start立即返回，重复启动返回结构化 TASK_RUNNING。
+- 计划CSV/JSON/Excel由Rust后台线程用独立SQLite连接查询和写入，不再全量IPC到WebView；前端仅传专业/筛选/格式/文件名。
+- 后台按行更新状态并emit `export-progress/export-done`，前端显示current/total、禁用重复导出、完成/失败toast；浏览器fallback和学校视图保持旧链路。
+- 有效偏好目录直接写；否则主线程先弹保存对话框。所有格式先写`.part`，成功原子替换，取消/失败清理半文件。
+- Rust导出字段与前端23列一致；CSV带BOM和标准转义，Excel沿用rust_xlsxwriter。
+- 真实081200临时目录导出1043数据行+表头，无part残留，不污染用户目录。Rust测试增至17条。
+- 路线图“导出大数据时不阻塞UI”完成。
+- 验证：`npm run test:release:auto` ✅（前端42/42、Rust17/17、build通过）；diagnostics为空。
+
+### 阶段 5 院校视图服务端分页（2026-07-27）
+- 新增 `WorkspaceSchoolPage` 与 `fetch_workspace_schools_page`；分页单位为唯一school_id，页内返回该校全部命中专业行，不拆分多专业学校。
+- total按唯一学校数；聚合排序保持现有语义：最低分MIN、招生人数SUM、默认顺序MIN(display_order)，school_id稳定兜底。
+- 搜索覆盖学校名、学校代码、school_id，分页total与全量导出一致；原全量接口保留导出/兼容。
+- 前端只保存当前页专业行，不再二次slice；搜索/筛选/页码/页大小触发服务端分页，展开localStorage和详情cache跨页保持，收藏全局独立。
+- 真实081200全量271行/271校，pageSize20返回20、total271；真实多专业同校样本验证不拆页。JSON IPC约88,978B→6,652B，下降约92.5%。
+- 新增多专业聚合、页间不重复、排序/搜索/边界分页测试；Rust测试增至18条。
+- 路线图数据库索引+分页+批量读取完成。两视图页上限100已控制DOM，现阶段以服务端分页替代虚拟滚动。
+- 验证：`npm run test:release:auto` ✅（前端42/42、Rust18/18、build通过）；diagnostics为空。
+
+### 阶段 5 本地诊断与崩溃日志（2026-07-27）
+- Rust新增本地JSON行诊断模块：`~/.yam/logs/yam-desktop.log`，2MB轮转、保留`.1-.3`，线程安全追加UTC/level/event/safe_message。
+- main安装panic hook；数据库恢复/启动失败/Tauri run错误、DB AppError、采集/同步结构化失败写安全日志，不记录SQL参数和完整stderr traceback。
+- Python新增 `yam-python.log` 同规格轮转，CLI异常记录本地脱敏traceback，stdout仍只输出安全YAM_ERROR协议。
+- Rust/Python日志均脱敏Cookie、Authorization、CASTGC、JSESSIONID、token、session值；日志只本地保存，无远程上报。
+- 设置页新增“诊断日志”卡，展示目录和两个日志路径，可打开目录，并明确不会自动上传。
+- 新增Rust脱敏/append/三份轮转测试；Rust测试增至21条。Python脱敏和异常实际落盘已验证。
+- 验证：仓库根Python compileall ✅；`npm run test:release:auto` ✅（前端42/42、Rust21/21、build通过）；diagnostics为空。
+
+### 阶段 5 Windows CI 与发布流水线（2026-07-27）
+- 新增Windows CI：push/PR自动配置Node22、Python3.12、Rust缓存，执行npm ci、pip install、Python compileall和test:release:auto，不依赖GUI E2E。
+- 新增tag `v*` / workflow_dispatch发布流程：版本检查→自动门禁→NSIS/MSI构建→Portable复制→staging统一命名→SHA256→artifact上传；tag非dry-run创建draft GitHub Release。
+- `check-version.cjs`校验package.json、tauri.conf、Cargo.toml、tag和RELEASE-NOTES版本/semver一致；workflow解析tag或手动输入后写GITHUB_OUTPUT。
+- `build-release.ps1`统一执行门禁、bundle、glob定位、Setup/MSI/Portable命名、总/单文件checksums和模板发布说明；仅CI传入release/staging输出目录。
+- package.json保留version:check/release:dry-run/release:build单一入口；删除重复PowerShell版本检查/打包脚本，未触发真实发布。
+- 版本1.0.0检查及ReleaseMode通过，错误版本1.0.1按预期非零；自动门禁前端42/42、Rust21/21、build通过。
+- 路线图发布流水线与版本一致性机制完成；应用内自动更新仍留后续。
+
+### 阶段 5 贡献与问题反馈规范（2026-07-27）
+- 新增CONTRIBUTING：Windows/Node/Rust/Python环境、开发入口、最小改动原则、隐私边界、数据库兼容、自动门禁和Tauri E2E要求。
+- 新增SECURITY：最新版本支持范围、GitHub Private vulnerability reporting、未启用时先建立私密联系、禁止公开Cookie/数据库/未脱敏日志。
+- 新增Bug与Feature表单，强制版本/环境/复现/隐私确认；关闭空白Issue并提供安全问题私密报告入口。
+- 新增PR模板，要求说明用户影响、兼容性、测试、风险，并确认未提交用户数据或生成安装包。
+- 仓库URL仍为占位符，因此未虚构安全邮箱；规范仅引用GitHub通用私密报告能力和维护者公开联系方式。
+- 5个GitHub YAML均通过PyYAML解析；自动门禁前端42/42、Rust21/21、build通过；diagnostics为空。
+- 阶段5目标（测试、迁移恢复、发布流水线、本地诊断、贡献规范）已形成完整维护闭环；远程上报和应用内自动更新保留后续且需明确产品决策。
+
+### 发布包内置Python采集后端（2026-07-28）
+- 新增 `yam.backend_entry` dispatcher，统一sync/fetch/login/refresh/search/catalog/doctor七类桌面后端入口；Rust开发模式继续调用系统Python，release模式不再依赖源码目录。
+- PyInstaller在仓库build隔离venv中生成约60.5MB `yam-backend.exe`，嵌入Python、playwright/httpx/aiohttp和静态majors.yaml；浏览器自动化复用系统Microsoft Edge，不需额外Chromium下载。
+- Release Rust通过`include_bytes!`将后端嵌入桌面exe，首次调用原子释放到`~/.yam/runtime/yam-backend-<version>.exe`；NSIS/MSI/Portable均无需用户安装Python或携带旁边资源文件。
+- Config在frozen模式优先使用PyInstaller `_MEIPASS`静态资源，实时专业目录写用户`~/.yam/data`；doctor会验证依赖、Edge和内置majors资源。
+- 发布脚本先构建后端再编译Tauri；desktop:build/nsis/msi也统一走后端构建入口。staging只覆盖已知同名产物，不清空目录；后端exe/venv/pyinstaller/staging均gitignore。
+- 新增严格`tsc --noEmit`发布门禁并修复历史类型错误；补齐clsx/tailwind-merge，PostCSS升级到无已知高危版本，npm audit为0。
+- 验证：后端doctor在限制PATH、无PYTHONPATH、非仓库工作目录通过；四类参数入口help通过；Python dispatcher测试7/7、前端44/44、Rust23/23、types/build/compileall/npm audit均通过；diagnostics为空。
+- 新产物内嵌后端：Portable约74.2MB（后端约60.5MB），NSIS/MSI构建通过，SHA256已重算。
+
 ### UI bug 修复 + 采集流程优化（2026-07-21）
 - **子专业多时右边栏上方空白**：`AnimatePresence` 直接包裹 `motion.div`（整体 enter/exit），不再逐个 button exit（详见 ISSUE-005）
 - **DONE 后误 kill Python**：取消条件改为 `!running && !done`（仅用户取消时 kill）
@@ -984,3 +1592,28 @@ M1 启动健康 / M2 导航 / M3 工作区下拉 / M4 院校视图（表格/多�
 
 ### 下一步
 将 docs/full-ui-test-prompt.md 全文粘贴给多模态会话执行；测试报告输出到 docs/test-report-YYYYMMDD.md
+
+---
+
+## ISSUE-030 分数语义与研究方向闭环（2026-07-31）
+
+- ISSUE-030 用户可见问题已关闭：原始分数证据和逐年请求状态已持久化，分数任务与院系任务解耦，同步不再按列 `MIN` 拼接不存在的记录。
+- 院校主分数使用最新可用专业级记录；一级学科/门类参考线退出精确专业分数排序和筛选，并在页面中显式标注粒度与请求状态。
+- 当前计划招生人数与历史分数年份解绑；同一来源计划按院系、学习方式和考试方式去重，武汉大学与西北农林黄金样本已通过真实库审计和用户界面复验。
+- 研究方向关键词已贯通 Rust/SQLite 服务端筛选、分页和前端筛选面板；考试科目、专项计划等 fallback 带 `label_type/is_fallback`，不再冒充真实研究方向。
+- 院校视图保留默认最低分与详细状态两种显示；招生计划保留紧凑/舒适视图。筛选标签维持原排列，结果数和视图切换位于右侧。
+- 清理 `WorkspacePage.tsx` 文件头重复 UTF-8 BOM；视图切换按钮统一显示目标模式。
+- 最终门禁：前端 48/48、Rust 24/24、Python 12/12；TypeScript、生产构建、Python `compileall`、`npm audit --audit-level=high` 和 `git diff --check` 均通过。
+- 通用数据模型边界转入 ISSUE-031：来源实体映射、当前快照/历史事实版本、未知状态、共享参考实体、稳定计划键和录取统计模型，不阻塞当前发布。
+
+---
+
+## ISSUE-031 第一阶段：共享分数证据实体（2026-07-31）
+
+- 新增 `workspace_score_evidence`：按学校、专业、年份保存唯一共享分数证据，包含粒度、来源、更新时间、说明、原始证据 JSON、来源记录数和选中来源院系。
+- 新增 `workspace_plan_score_evidence`：计划仅引用共享证据，不再把同一学校专业参考值复制进每条 `workspace_plan_years`。
+- normalized 模型升级为 v3；Rust `workspace_years_source` 联合直接计划年份与共享证据引用，现有 DTO、分页、筛选、排序、导出和页面展示无需改变。
+- legacy `workspace_department_years` 暂时继续写入兼容投影，旧库回退行为保持不变；模型状态以“直接年份 + 共享证据引用”核对投影行数。
+- 同步校验新增悬空引用、跨学校引用和跨专业引用门禁；专业清理同时删除证据引用与共享证据。
+- 真实 `085410` 只读源库 → 临时目标库同步验证：217所学校、514个计划、668条共享证据、1624个计划引用、0条直接复制的normalized计划年份、0组重复证据；legacy与normalized投影均为1624条，模型状态v3/ready。
+- 最终门禁：前端48/48、Rust25/25、Python13/13；TypeScript、生产构建、Python `compileall`、Rust格式检查和`npm audit --audit-level=high`通过。

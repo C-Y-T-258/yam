@@ -1,0 +1,90 @@
+name: Windows Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to validate and package
+        required: true
+        type: string
+      dry_run:
+        description: Build and upload workflow artifacts without creating a GitHub release
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: yam-desktop/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: yam-desktop/src-tauri -> target
+
+      - name: Resolve and check release version
+        id: version
+        shell: pwsh
+        run: |
+          $requested = if ('${{ github.event_name }}' -eq 'push') { '${{ github.ref_name }}' } else { '${{ inputs.version }}' }
+          $version = $requested -replace '^v', ''
+          node ./scripts/check-version.cjs --release --tag "v$version"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Install frontend dependencies
+        working-directory: yam-desktop
+        run: npm ci
+
+      - name: Install Python package
+        run: pip install -e .
+
+      - name: Run release automation tests
+        working-directory: yam-desktop
+        run: npm run test:release:auto
+
+      - name: Stage and checksum release artifacts
+        shell: pwsh
+        run: ./scripts/build-release.ps1 -Version "${{ steps.version.outputs.version }}" -SkipTests -OutputDir ./release/staging
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: YAM-Windows-${{ steps.version.outputs.version }}
+          path: release/staging/*
+          if-no-files-found: error
+
+      - name: Create draft GitHub release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release/staging/RELEASE-NOTES.md
+          draft: true
+          files: release/staging/*
+          fail_on_unmatched_files: true

@@ -41,7 +41,9 @@ class DataAuditor:
         issues.extend(self._audit_score_line_validity(major_code))
         issues.extend(self._audit_enrollment_validity(major_code))
         issues.extend(self._audit_internal_consistency(major_code))
+        issues.extend(self._audit_direction_quality(major_code))
         issues.extend(self._audit_duplicates(major_code))
+        issues.extend(self._audit_plan_year_gaps(major_code))
         issues.extend(self._audit_fetch_failures(major_code))
         issues.extend(self._audit_cross_source_consistency(major_code))
         return issues
@@ -356,6 +358,27 @@ class DataAuditor:
                 details={"count": row["c"]},
             )
 
+    def _audit_direction_quality(self, major_code: str) -> Iterator[AuditIssue]:
+        """检查无法生成任何研究方向 fallback 的记录."""
+        row = self.db.conn.execute(
+            """
+            SELECT COUNT(*) AS c
+            FROM departments
+            WHERE major_code = ?
+              AND TRIM(COALESCE(research_direction, '')) = ''
+              AND TRIM(COALESCE(exam_subjects, '')) IN ('', '[]')
+              AND TRIM(COALESCE(special_plans, '')) IN ('', '[]')
+            """,
+            (major_code,),
+        ).fetchone()
+        if row and row["c"] > 0:
+            yield AuditIssue(
+                level="INFO",
+                category="空方向",
+                message=f"{row['c']} 条院系记录无研究方向、考试科目或专项计划，将显示‘未注明研究方向’",
+                details={"count": row["c"]},
+            )
+
     def _audit_duplicates(self, major_code: str) -> Iterator[AuditIssue]:
         """检查重复记录."""
         # 重复分数线：同一学校、院系、年份多条 total 不为空
@@ -378,13 +401,17 @@ class DataAuditor:
                 details={"group_count": len(rows), "redundant_count": total_dup},
             )
 
-        # 重复招生计划
+        # 重复招生计划：使用完整业务键，避免把同院系同年下的合法不同方向误判为重复。
         rows = self.db.conn.execute(
             """
-            SELECT school_id, department_id, year, COUNT(*) AS c
+            SELECT school_id, department_id, year, plan_id, spe_id,
+                   COALESCE(research_direction, '') AS research_direction,
+                   COALESCE(exam_subjects, '') AS exam_subjects,
+                   COUNT(*) AS c
             FROM admission_plans
             WHERE major_code = ?
-            GROUP BY school_id, department_id, year
+            GROUP BY school_id, department_id, year, plan_id, spe_id,
+                     research_direction, exam_subjects
             HAVING c > 1
             """,
             (major_code,),
@@ -396,6 +423,41 @@ class DataAuditor:
                 category="重复数据",
                 message=f"发现 {len(rows)} 组重复招生计划记录，涉及 {total_dup} 条冗余数据",
                 details={"group_count": len(rows), "redundant_count": total_dup},
+            )
+
+    def _audit_plan_year_gaps(self, major_code: str) -> Iterator[AuditIssue]:
+        """检查同一计划/方向的年份序列是否存在中间断档."""
+        rows = self.db.conn.execute(
+            """
+            SELECT school_id, department_id, plan_id, spe_id,
+                   COALESCE(research_direction, '') AS research_direction,
+                   GROUP_CONCAT(DISTINCT year) AS years
+            FROM admission_plans
+            WHERE major_code = ? AND year > 0
+            GROUP BY school_id, department_id, plan_id, spe_id, research_direction
+            """,
+            (major_code,),
+        ).fetchall()
+        gap_groups = []
+        for row in rows:
+            years = sorted({int(year) for year in (row["years"] or "").split(",") if year})
+            if len(years) < 2:
+                continue
+            missing = sorted(set(range(years[0], years[-1] + 1)) - set(years))
+            if missing:
+                gap_groups.append({
+                    "school_id": row["school_id"],
+                    "department_id": row["department_id"],
+                    "research_direction": row["research_direction"],
+                    "years": years,
+                    "missing": missing,
+                })
+        if gap_groups:
+            yield AuditIssue(
+                level="INFO",
+                category="年份缺失",
+                message=f"发现 {len(gap_groups)} 个招生计划/方向存在年份断档",
+                details={"group_count": len(gap_groups), "samples": gap_groups[:20]},
             )
 
     def _audit_fetch_failures(self, major_code: str) -> Iterator[AuditIssue]:

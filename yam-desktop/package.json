@@ -5,27 +5,48 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "tauri": "tauri"
+    "test:unit": "vitest run",
+    "test:types": "tsc --noEmit",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "test:release:auto": "npm run test:types && npm run test:unit && npm run test:rust && npm run build",
+    "version:check": "node ../scripts/check-version.cjs",
+    "release:dry-run": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/build-release.ps1 -DryRun",
+    "release:build": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/build-release.ps1",
+    "tauri": "tauri",
+    "desktop:dev": "tauri dev --config src-tauri/tauri.dev.conf.json",
+    "desktop:build": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/build-desktop.ps1 -Bundle all",
+    "desktop:build:nsis": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/build-desktop.ps1 -Bundle nsis",
+    "desktop:build:msi": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/build-desktop.ps1 -Bundle msi",
+    "test:ui": "node ../scripts/test_full_ui_v3.cjs",
+    "test:e2e:stage4": "node ../scripts/test_stage4_e2e.cjs",
+    "test:ux": "node ../scripts/test_ux_cdp.cjs"
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4.3.2",
+    "clsx": "^2.1.1",
     "framer-motion": "^12.42.2",
     "lucide-react": "^1.23.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
+    "tailwind-merge": "^3.6.0",
     "zustand": "^5.0.14"
   },
   "devDependencies": {
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/cli": "^2.11.4",
+    "@testing-library/jest-dom": "^7.0.0",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
     "autoprefixer": "^10.5.2",
-    "postcss": "^8.5.16",
+    "jsdom": "^29.1.1",
+    "postcss": "^8.5.24",
     "tailwindcss": "^4.3.2",
     "typescript": "^6.0.3",
     "vite": "^8.1.3",
+    "vitest": "^4.1.10",
     "ws": "^8.21.1"
   }
 }

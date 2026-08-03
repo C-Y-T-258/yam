@@ -30,12 +30,12 @@ export function BackgroundTaskPanel() {
         setLastUpdate(new Date());
         // 检测新任务启动：running 从 false 变为 true 时重置开始时间。
         // 之前只在 startTimeRef.current === null 时设置，导致跨任务累计（ISSUE-020）。
-        if (p.running && !prevRunningRef.current) {
+        if (p.status === 'running' && !prevRunningRef.current) {
           startTimeRef.current = Date.now();
         }
-        prevRunningRef.current = p.running;
-        // 任务结束（done=true）后 8 秒自动隐藏（仅当无错误时）
-        if (p.done && !p.error && p.success > 0) {
+        prevRunningRef.current = p.status === 'running';
+        // 任务完成后 8 秒自动隐藏
+        if (p.status === 'completed') {
           setTimeout(() => active && setProgress(null), 8000);
         }
       } catch {
@@ -55,10 +55,8 @@ export function BackgroundTaskPanel() {
 
   // 不显示面板的条件：无进度信息 / 已隐藏
   if (!progress || dismissed) return null;
-  // 只在有采集任务时显示（running=true 或 done 但有 error）
-  if (!progress.running && !progress.done) return null;
-  // 如果采集已完成且无错误，不显示（正常流程会自动跳转）
-  if (progress.done && !progress.error && progress.success > 0) return null;
+  // 空闲和正常完成不显示；运行、失败、取消时显示。
+  if (progress.status === 'idle' || progress.status === 'completed') return null;
 
   const percent = progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0;
   const majorName = crawlTarget?.name || '未知专业';
@@ -69,10 +67,10 @@ export function BackgroundTaskPanel() {
   const elapsedSec = Math.floor(elapsedMs / 1000);
   const elapsedStr = `${Math.floor(elapsedSec / 60)}:${String(elapsedSec % 60).padStart(2, '0')}`;
 
-  // 状态判断
-  const isError = !!progress.error;
-  const isRunning = progress.running;
-  const isDoneNoData = progress.done && !progress.error && progress.success === 0;
+  // 状态判断以 Rust 后端结构化状态为准。
+  const isRunning = progress.status === 'running';
+  const isDoneNoData = progress.status === 'failed' && !progress.error && progress.success === 0;
+  const isError = progress.status === 'failed' || progress.status === 'cancelled';
 
   // 头部样式
   const headerBg = isError
@@ -92,10 +90,13 @@ export function BackgroundTaskPanel() {
     } else {
       statusText = '正在获取院校列表...';
     }
-  } else if (isError) {
-    statusText = progress.error!.length > 30 ? progress.error!.slice(0, 30) + '...' : progress.error!;
   } else if (isDoneNoData) {
     statusText = '采集未取得数据';
+  } else if (progress.status === 'cancelled') {
+    statusText = progress.error || '采集已取消';
+  } else if (isError) {
+    const detail = progress.error || '采集失败，未返回错误详情';
+    statusText = detail.length > 30 ? detail.slice(0, 30) + '...' : detail;
   } else {
     statusText = `完成：${progress.success} 所`;
   }
@@ -171,7 +172,7 @@ export function BackgroundTaskPanel() {
           </div>
 
           {/* Counts (only when total > 0 or done) */}
-          {(progress.total > 0 || progress.done) && (
+          {(progress.total > 0 || progress.status !== 'running') && (
             <div className="flex items-center gap-3 text-[11px] text-gray-500 mb-1">
               <span className="text-green-600">✓ {progress.success}</span>
               <span className="text-red-500">✗ {progress.failed}</span>

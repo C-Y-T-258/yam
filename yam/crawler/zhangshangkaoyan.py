@@ -358,7 +358,8 @@ class ZhangShangKaoYanCrawler(BaseCrawler):
         *,
         concurrency: int = 15,
         on_progress: "Callable[[int, int, str], None] | None" = None,
-    ) -> dict[str, list[dict[str, Any]]]:
+        return_status: bool = False,
+    ) -> dict[str, list[dict[str, Any]]] | dict[str, Any]:
         """并发获取多所院校的历年分数线（ISSUE-029 httpx 并发版）.
 
         两阶段策略：
@@ -386,7 +387,7 @@ class ZhangShangKaoYanCrawler(BaseCrawler):
         from yam.crawler.httpx_client import call_api_with_retry
 
         if not schools or not years:
-            return {}
+            return {"scores": {}, "statuses": {}} if return_status else {}
 
         # 第 1 步：串行预解析 school_id（带本地缓存，命中后纯本地操作）
         school_id_map: dict[str, int | None] = {}  # school_name -> school_id
@@ -403,6 +404,7 @@ class ZhangShangKaoYanCrawler(BaseCrawler):
         headers = self._headers()
         sem = asyncio.Semaphore(concurrency)
         results: dict[str, list[dict[str, Any]]] = {}
+        statuses: dict[str, dict[int, dict[str, Any]]] = {}
         completed = 0
         total = len(schools)
         lock = asyncio.Lock()
@@ -418,10 +420,12 @@ class ZhangShangKaoYanCrawler(BaseCrawler):
                     school_id = school_id_map.get(name)
                     school_key = school.get("school_id", "")
 
-                    # school_id 未找到：失败，不写入 results
+                    year_status: dict[int, dict[str, Any]] = {}
+                    # school_id 未找到：为每个请求年份保留明确状态
                     if school_id is not None:
                         all_scores: list[dict[str, Any]] = []
-                        for year in years:
+                        request_years = school.get("_score_years", years)
+                        for year in request_years:
                             data = {
                                 "school_id": str(school_id),
                                 "year": str(year),
@@ -434,6 +438,7 @@ class ZhangShangKaoYanCrawler(BaseCrawler):
                                 rate_limit_keywords=(),
                             )
                             if err or not result or result.get("code") != "0000":
+                                year_status[year] = {"status": "api_error", "error": str(err or (result or {}).get("message", "API error"))}
                                 continue
                             body_data = result.get("data")
                             items = (
@@ -441,7 +446,7 @@ class ZhangShangKaoYanCrawler(BaseCrawler):
                                 else (body_data or {}).get("data", [])
                                 if isinstance(body_data, dict) else []
                             )
-                            # 分级匹配：6位精确 > 4位一级学科 > 2位门类
+                            # 按代码粒度分级匹配，优先级：6位专业 > 4位一级学科 > 2位门类
                             # 掌上考研对不同学校返回的 code 粒度不同：
                             #   - 6位（081200）：专业级分数线（最精确）
                             #   - 4位（0812）：一级学科级分数线
@@ -472,6 +477,12 @@ class ZhangShangKaoYanCrawler(BaseCrawler):
                                         "department_id": str(item.get("depart_id", "")),
                                         "department_name": item.get("depart_name", ""),
                                         "year": year,
+                                        "raw_code": str(item.get("code", "")),
+                                        "raw_department_name": item.get("depart_name", ""),
+                                        "metric_type": "score_line",
+                                        "match_scope": {6: "major", 4: "discipline", 2: "category"}[level],
+                                        "confidence": {6: 1.0, 4: 0.8, 2: 0.6}[level],
+                                        "raw_evidence": item,
                                         "total": self._parse_int(item.get("total")),
                                         "politics": self._parse_int(item.get("politics")),
                                         "english": self._parse_int(item.get("english")),
@@ -482,8 +493,17 @@ class ZhangShangKaoYanCrawler(BaseCrawler):
                                         "fetched_at": now_str(),
                                     })
                                 break  # 只取最高优先级的匹配
-                        # 成功（含空列表：school_id 找到但该专业无分数线数据）
+                            year_status[year] = {
+                            "status": (
+                                "success_with_data"
+                                if any(matched_by_level.values())
+                                else "success_empty"
+                            )
+                        }
                         results[school_key] = all_scores
+                    else:
+                        year_status = {year: {"status": "school_not_found", "error": f"未找到学校: {name}"} for year in school.get("_score_years", years)}
+                    statuses[school_key] = year_status
 
                     async with lock:
                         completed += 1
@@ -492,7 +512,7 @@ class ZhangShangKaoYanCrawler(BaseCrawler):
 
             await asyncio.gather(*[_fetch_one(s) for s in schools])
 
-        return results
+        return {"scores": results, "statuses": statuses} if return_status else results
 
     def fetch_admission_plans(
         self, school: dict[str, Any], years: list[int]

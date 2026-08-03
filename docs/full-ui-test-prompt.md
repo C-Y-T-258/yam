@@ -192,6 +192,25 @@ async function clickByTitle(api, title) {
 
 ## 测试矩阵
 
+### 发布前固定执行顺序
+
+1. 在 `d:\yam\yam-desktop` 执行 `npm run test:release:auto`（Vitest 单元/组件 + Rust 单测 + 前端生产构建）。
+2. 启动 `npm run desktop:dev`，等待 CDP 9223 就绪。
+3. 执行 `npm run test:e2e:stage4`（真实 Tauri 命令、规范化模型、筛选排序、方向收藏往返）。
+4. 执行 `npm run test:ui -- --skip-export` 做全流程 UI 回归；发布候选包最终验收时去掉 `--skip-export`。
+5. 按下表完成人工边界矩阵并记录截图：
+
+| 维度 | 测试值/步骤 | 验收条件 |
+|---|---|---|
+| 窗口尺寸 | 1200×800、1024×700、800×600 | 无控件重叠；表格可横向滚动；浮动按钮不遮挡关键操作 |
+| 缩放 | WebView 80%、100%、125%、150% | 文本不截断到不可理解；弹窗可滚动；筛选与分页仍可操作 |
+| 数据量 | 单专业、多专业、全部专业；计划页 20/50/100 条 | 排序/分页稳定；展开状态不串行；无明显阻塞 |
+| 空库 | 使用隔离临时 HOME 或备份后空桌面 DB 启动 | 展示明确空态和添加专业入口，不白屏、不 panic；不得操作正式库 |
+| 登录失效 | 调用 `check_login_status`，仅在测试账号/隔离 cookie 下清除后验证 | 显示发生原因与登录操作；取消后可返回；不得清除用户正式 cookie |
+| 失败态 | 断网/无效专业/接口不可达在隔离环境验证 | 结构化错误；说明影响与可重试操作；无 Python traceback |
+| 数据库迁移 | 复制旧 schema 到临时 DB 后启动 | 自动补列；无 DROP 旧表；同步与查询不崩溃 |
+| 收藏恢复 | `test:e2e:stage4` 切换计划收藏 | 测试结束恢复原收藏状态 |
+
 每个 case 记录：**步骤 / 功能断言 / 视觉断言（截图名 + 看点）/ 体验观察 / 结果**。
 
 ### 体验观察维度清单（跑每个 case 时对照留意，发现即记入体验清单）
@@ -353,10 +372,10 @@ await api.eval(`(() => {
 
 | ISSUE | 严重程度 | 状态 | 说明 |
 |---|---|---|---|
-| ISSUE-022 | medium | open | disabled 专业相关，数据层已不可达，留待重新定义方向 |
-| ISSUE-028 | low | in-progress | 导出格式扩展（CSV/Excel/JSON）代码已实现，待完整测试 ← **本次测试重点验证此项** |
+| ISSUE-022 | medium | fixed | 已统一实时专业目录与采集入口，移除 enabled 拒绝分支，并增加结构化错误分类 |
+| ISSUE-028 | low | fixed | 导出格式扩展（CSV/Excel/JSON）已实现并完成手动验证 |
 
-其余 ISSUE-001~021/023~027/029 均已 fixed。完整清单见 `d:\yam\docs\known-issues.md`。
+ISSUE-001~029 均已 fixed。完整清单见 `d:\yam\docs\known-issues.md`。
 
 **已知限制（非 bug，不要报）**：
 - 专业学位（0854 等）研招网按一级学科招生，zys.do 返回 totalCount=0 是真实情况

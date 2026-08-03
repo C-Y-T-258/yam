@@ -28,6 +28,7 @@ export interface CrawlingProgress {
 export interface CrawlTarget {
   code: string;
   name: string;
+  force?: boolean;
 }
 
 interface AppState {

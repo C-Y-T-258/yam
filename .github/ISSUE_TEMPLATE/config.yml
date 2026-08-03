@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全问题
+    url: https://docs.github.com/code-security/security-advisories/working-with-repository-security-advisories/privately-reporting-a-security-vulnerability
+    about: 请阅读 SECURITY.md，并使用仓库私密漏洞报告，不要公开披露。

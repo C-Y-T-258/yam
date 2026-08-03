@@ -1,0 +1,384 @@
+{
+  "admission_cycles": [
+    2023,
+    2024,
+    2025,
+    2026
+  ],
+  "admission_statistics_coverage_at_school_major_cycle": {
+    "admitted_count": {
+      "denominator": 3420,
+      "numerator": 0,
+      "percent": 0.0,
+      "reason": "No admission-statistics fact is present in the local product database."
+    },
+    "final_score": {
+      "denominator": 3420,
+      "numerator": 0,
+      "percent": 0.0,
+      "reason": "No admission-statistics fact is present in the local product database."
+    },
+    "initial_score_avg": {
+      "denominator": 3420,
+      "numerator": 0,
+      "percent": 0.0,
+      "reason": "No admission-statistics fact is present in the local product database."
+    },
+    "initial_score_max": {
+      "denominator": 3420,
+      "numerator": 0,
+      "percent": 0.0,
+      "reason": "No admission-statistics fact is present in the local product database."
+    },
+    "initial_score_min": {
+      "denominator": 3420,
+      "numerator": 0,
+      "percent": 0.0,
+      "reason": "No admission-statistics fact is present in the local product database."
+    },
+    "retest_score": {
+      "denominator": 3420,
+      "numerator": 0,
+      "percent": 0.0,
+      "reason": "No admission-statistics fact is present in the local product database."
+    }
+  },
+  "artifact_schema": "yam.year_source_coverage.v1",
+  "catalog_exact_mapping_by_level": {
+    "department": {
+      "denominator": 4868,
+      "numerator": 0,
+      "percent": 0.0,
+      "reason": "No local catalog fact has a declared cycle and a confirmed mapping at this level."
+    },
+    "major": {
+      "denominator": 16,
+      "numerator": 0,
+      "percent": 0.0,
+      "reason": "No local catalog fact has a declared cycle and a confirmed mapping at this level."
+    },
+    "plan": {
+      "denominator": 11844,
+      "numerator": 0,
+      "percent": 0.0,
+      "reason": "No local catalog fact has a declared cycle and a confirmed mapping at this level."
+    },
+    "school": {
+      "denominator": 1844,
+      "numerator": 0,
+      "percent": 0.0,
+      "reason": "No local catalog fact has a declared cycle and a confirmed mapping at this level."
+    },
+    "school_major": {
+      "denominator": 3420,
+      "numerator": 0,
+      "percent": 0.0,
+      "reason": "No local catalog fact has a declared cycle and a confirmed mapping at this level."
+    }
+  },
+  "catalog_field_coverage_at_plan_cycle": {
+    "department": {
+      "denominator": 11844,
+      "numerator": 0,
+      "percent": 0.0,
+      "reason": "All current plan snapshots have catalog_year_status=unknown."
+    },
+    "direction": {
+      "denominator": 11844,
+      "numerator": 0,
+      "percent": 0.0,
+      "reason": "All current plan snapshots have catalog_year_status=unknown."
+    },
+    "exam_mode": {
+      "denominator": 11844,
+      "numerator": 0,
+      "percent": 0.0,
+      "reason": "All current plan snapshots have catalog_year_status=unknown."
+    },
+    "exam_subjects": {
+      "denominator": 11844,
+      "numerator": 0,
+      "percent": 0.0,
+      "reason": "All current plan snapshots have catalog_year_status=unknown."
+    },
+    "offered_status": {
+      "denominator": 11844,
+      "numerator": 0,
+      "percent": 0.0,
+      "reason": "All current plan snapshots have catalog_year_status=unknown."
+    },
+    "planned_enrollment": {
+      "denominator": 11844,
+      "numerator": 0,
+      "percent": 0.0,
+      "reason": "All current plan snapshots have catalog_year_status=unknown."
+    },
+    "special_plan": {
+      "denominator": 11844,
+      "numerator": 0,
+      "percent": 0.0,
+      "reason": "All current plan snapshots have catalog_year_status=unknown."
+    },
+    "study_mode": {
+      "denominator": 11844,
+      "numerator": 0,
+      "percent": 0.0,
+      "reason": "All current plan snapshots have catalog_year_status=unknown."
+    }
+  },
+  "current_product_universe": {
+    "department": {
+      "cycles": 4,
+      "entities": 1217,
+      "entity_cycles": 4868
+    },
+    "major": {
+      "cycles": 4,
+      "entities": 4,
+      "entity_cycles": 16
+    },
+    "plan": {
+      "cycles": 4,
+      "entities": 2961,
+      "entity_cycles": 11844
+    },
+    "school": {
+      "cycles": 4,
+      "entities": 461,
+      "entity_cycles": 1844
+    },
+    "school_major": {
+      "cycles": 4,
+      "entities": 855,
+      "entity_cycles": 3420
+    }
+  },
+  "input": {
+    "artifact_schema": "yam.year_source_local_audit.v1",
+    "query_ids": [
+      "desktop.current_entities",
+      "desktop.catalog_year_status",
+      "desktop.score_evidence_by_year_scope",
+      "desktop.plan_year_rows",
+      "desktop.source_mapping_status"
+    ]
+  },
+  "legacy_plan_rows": {
+    "confirmed_current_plan_mappings": 0,
+    "coverage_numerator": 0,
+    "reason": "Only 085410 is present and all observed third-party source entities are unmapped.",
+    "rows": 781
+  },
+  "nationwide_admission_combination_coverage": {
+    "denominator": null,
+    "numerator": null,
+    "percent": null,
+    "reason": "No authoritative, versioned nationwide universe of school-department-major-direction-plan combinations for all four cycles was obtained.",
+    "status": "not_computable"
+  },
+  "rules": {
+    "confirmed_absence": "requires a complete official annual catalog after entity reconciliation",
+    "empty_query": "unknown",
+    "external_depth_samples": "never extrapolate into the all-product numerator",
+    "projected_score_rows": "never count as historical catalog coverage",
+    "publication_or_collection_time": "never substitutes for admission_cycle"
+  },
+  "score_coverage_at_school_major_cycle": {
+    "reference": {
+      "by_year": [
+        {
+          "admission_cycle": 2023,
+          "denominator": 855,
+          "numerator": 490,
+          "percent": 57.3099
+        },
+        {
+          "admission_cycle": 2024,
+          "denominator": 855,
+          "numerator": 595,
+          "percent": 69.5906
+        },
+        {
+          "admission_cycle": 2025,
+          "denominator": 855,
+          "numerator": 670,
+          "percent": 78.3626
+        },
+        {
+          "admission_cycle": 2026,
+          "denominator": 855,
+          "numerator": 699,
+          "percent": 81.7544
+        }
+      ],
+      "classification": "untyped_score_reference",
+      "denominator": 3420,
+      "entity_granularity": "school_major",
+      "numerator": 2454,
+      "percent": 71.7544,
+      "warning": "Reference rows are not classified as national, school, department, major, or direction score lines."
+    },
+    "strict_types": {
+      "department_score_line": {
+        "by_year": [
+          {
+            "admission_cycle": 2023,
+            "denominator": 855,
+            "numerator": 0,
+            "percent": 0.0
+          },
+          {
+            "admission_cycle": 2024,
+            "denominator": 855,
+            "numerator": 0,
+            "percent": 0.0
+          },
+          {
+            "admission_cycle": 2025,
+            "denominator": 855,
+            "numerator": 0,
+            "percent": 0.0
+          },
+          {
+            "admission_cycle": 2026,
+            "denominator": 855,
+            "numerator": 0,
+            "percent": 0.0
+          }
+        ],
+        "denominator": 3420,
+        "numerator": 0,
+        "percent": 0.0,
+        "reason": "The local model has no provenance-backed strict score-line type for this category."
+      },
+      "direction_score_line": {
+        "by_year": [
+          {
+            "admission_cycle": 2023,
+            "denominator": 855,
+            "numerator": 0,
+            "percent": 0.0
+          },
+          {
+            "admission_cycle": 2024,
+            "denominator": 855,
+            "numerator": 0,
+            "percent": 0.0
+          },
+          {
+            "admission_cycle": 2025,
+            "denominator": 855,
+            "numerator": 0,
+            "percent": 0.0
+          },
+          {
+            "admission_cycle": 2026,
+            "denominator": 855,
+            "numerator": 0,
+            "percent": 0.0
+          }
+        ],
+        "denominator": 3420,
+        "numerator": 0,
+        "percent": 0.0,
+        "reason": "The local model has no provenance-backed strict score-line type for this category."
+      },
+      "major_score_line": {
+        "by_year": [
+          {
+            "admission_cycle": 2023,
+            "denominator": 855,
+            "numerator": 0,
+            "percent": 0.0
+          },
+          {
+            "admission_cycle": 2024,
+            "denominator": 855,
+            "numerator": 0,
+            "percent": 0.0
+          },
+          {
+            "admission_cycle": 2025,
+            "denominator": 855,
+            "numerator": 0,
+            "percent": 0.0
+          },
+          {
+            "admission_cycle": 2026,
+            "denominator": 855,
+            "numerator": 0,
+            "percent": 0.0
+          }
+        ],
+        "denominator": 3420,
+        "numerator": 0,
+        "percent": 0.0,
+        "reason": "The local model has no provenance-backed strict score-line type for this category."
+      },
+      "national_score_line": {
+        "by_year": [
+          {
+            "admission_cycle": 2023,
+            "denominator": 855,
+            "numerator": 0,
+            "percent": 0.0
+          },
+          {
+            "admission_cycle": 2024,
+            "denominator": 855,
+            "numerator": 0,
+            "percent": 0.0
+          },
+          {
+            "admission_cycle": 2025,
+            "denominator": 855,
+            "numerator": 0,
+            "percent": 0.0
+          },
+          {
+            "admission_cycle": 2026,
+            "denominator": 855,
+            "numerator": 0,
+            "percent": 0.0
+          }
+        ],
+        "denominator": 3420,
+        "numerator": 0,
+        "percent": 0.0,
+        "reason": "The local model has no provenance-backed strict score-line type for this category."
+      },
+      "school_score_line": {
+        "by_year": [
+          {
+            "admission_cycle": 2023,
+            "denominator": 855,
+            "numerator": 0,
+            "percent": 0.0
+          },
+          {
+            "admission_cycle": 2024,
+            "denominator": 855,
+            "numerator": 0,
+            "percent": 0.0
+          },
+          {
+            "admission_cycle": 2025,
+            "denominator": 855,
+            "numerator": 0,
+            "percent": 0.0
+          },
+          {
+            "admission_cycle": 2026,
+            "denominator": 855,
+            "numerator": 0,
+            "percent": 0.0
+          }
+        ],
+        "denominator": 3420,
+        "numerator": 0,
+        "percent": 0.0,
+        "reason": "The local model has no provenance-backed strict score-line type for this category."
+      }
+    }
+  }
+}

@@ -144,16 +144,22 @@ async def _run_fetch_async(
 
     with Database() as db:
         fetched_school_ids = _get_fetched_school_ids(db, major_code, "departments")
-        fetched_score_ids = (
-            set() if skip_scores else _get_fetched_school_ids(db, major_code, "score_lines")
+        score_years = (
+            {
+                school["school_id"]: db.get_pending_score_years(
+                    major_code, school["school_id"], target_years, score_crawler.source
+                )
+                for school in schools
+            }
+            if not skip_scores else {}
         )
         updated_at = now_str()
 
-        # 过滤出需要采集的学校
+        # 院系和分数分别计算待采集合，避免院系已成功后无法补采缺失分数年份。
         pending_schools = [s for s in schools if s["school_id"] not in fetched_school_ids]
         skipped_count = len(schools) - len(pending_schools)
         score_pending = (
-            [s for s in pending_schools if s["school_id"] not in fetched_score_ids]
+            [s for s in schools if score_years.get(s["school_id"])]
             if not skip_scores else []
         )
 
@@ -224,14 +230,19 @@ async def _run_fetch_async(
                 p.current = offset + current
                 p.current_school = name
 
-            scores_map = await score_crawler.fetch_score_lines_batch(
-                score_pending, target_years, on_progress=_score_progress
+            score_requests = [dict(s, _score_years=score_years.get(s["school_id"], target_years)) for s in score_pending]
+            score_result = await score_crawler.fetch_score_lines_batch(
+                score_requests, target_years, on_progress=_score_progress, return_status=True
             )
+            scores_map = score_result["scores"]
+            score_statuses = score_result["statuses"]
 
             for school in score_pending:
                 school_id = school["school_id"]
                 name = school["name"]
                 if school_id not in scores_map:
+                    for year, state in score_statuses.get(school_id, {}).items():
+                        db.save_score_request_status(major_code, school_id, year, score_crawler.source, state["status"], state.get("error"))
                     db.log_fetch(
                         major_code, school_id, "score_lines", "failed",
                         "school_id 未找到或网络错误",
@@ -239,8 +250,10 @@ async def _run_fetch_async(
                     p.score_failed += 1
                     _log(major_code, f"  {name} 分数线失败")
                     continue
-                scores = scores_map[school_id]
+                scores = scores_map.get(school_id, [])
                 try:
+                    for year, state in score_statuses.get(school_id, {}).items():
+                        db.save_score_request_status(major_code, school_id, year, score_crawler.source, state["status"], state.get("error"))
                     for score in scores:
                         db.save_score_line(
                             major_code,

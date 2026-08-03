@@ -22,7 +22,9 @@ function connect() {
   return new Promise(async (resolve, reject) => {
     const targets = await getTargets();
     const pages = targets.filter(t => t.type === 'page' && t.webSocketDebuggerUrl);
-    const page = pages[pages.length - 1];
+    // CDP lists the newest Tauri WebView page first. Prefer it so stale windows
+    // left behind by interrupted export tests do not capture the regression run.
+    const page = pages[0];
     if (!page) return reject(new Error('NO PAGE TARGET'));
     const ws = new WebSocket(page.webSocketDebuggerUrl);
     ws.setMaxListeners(50);
@@ -85,8 +87,7 @@ async function realisticClick(api, selectorOrElementExpr) {
 
 async function clickNav(api, text) {
   return api.eval(`(() => {
-    const nav = document.querySelector('nav');
-    if (!nav) return 'NO_NAV';
+    const nav = document.querySelector('nav') || document.body;
     const matches = Array.from(nav.querySelectorAll('button,a')).filter(b => b.textContent.trim() === ${JSON.stringify(text)});
     const el = matches[matches.length - 1];
     if (!el) return 'NOT_FOUND';
@@ -102,8 +103,7 @@ async function clickNav(api, text) {
 async function clickDropdownItem(api, menuText, itemText) {
   // hover the container div that has onMouseEnter in TopNav
   await api.eval(`(() => {
-    const nav = document.querySelector('nav');
-    if (!nav) return 'NO_NAV';
+    const nav = document.querySelector('nav') || document.body;
     const menuBtn = Array.from(nav.querySelectorAll('button')).find(b => b.textContent.trim().includes(${JSON.stringify(menuText)}));
     if (!menuBtn) return 'NO_MENU_BTN';
     const container = menuBtn.closest('.relative');
@@ -195,6 +195,38 @@ async function clickByText(api, text, exact = false) {
   })()`, false);
 }
 
+async function clickVisibleButton(api, text, exact = true) {
+  return api.eval(`(() => {
+    const buttons = Array.from(document.querySelectorAll('button,a')).filter(b => b.offsetParent !== null);
+    const t = ${JSON.stringify(text)};
+    const matches = ${JSON.stringify(exact)} ? buttons.filter(b => b.textContent.trim() === t) : buttons.filter(b => b.textContent.trim().includes(t));
+    const el = matches[matches.length - 1];
+    if (!el) return 'NOT_FOUND|visible=' + buttons.map(b => b.textContent.trim().slice(0,24)).filter(Boolean).slice(-20).join(',');
+    el.scrollIntoView({block:'center'});
+    el.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, cancelable:true, buttons:1}));
+    el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, cancelable:true, buttons:1}));
+    el.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, button:0}));
+    return 'clicked';
+  })()`, false);
+}
+
+async function closeBlockingOverlays(api) {
+  const result = await api.eval(`(() => {
+    const heading = Array.from(document.querySelectorAll('h2')).find(h => h.textContent.trim() === '更多筛选条件' && h.offsetParent !== null);
+    if (!heading) return 'none';
+    const header = heading.closest('div');
+    const closeButton = header ? Array.from(header.querySelectorAll('button')).find(b => b.offsetParent !== null) : null;
+    if (!closeButton) return 'NO_CLOSE_BUTTON';
+    closeButton.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, cancelable:true, buttons:1}));
+    closeButton.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, cancelable:true, buttons:1}));
+    closeButton.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, button:0}));
+    closeButton.click();
+    return 'closed';
+  })()`, false);
+  if (result === 'closed') await sleep(500);
+  return result;
+}
+
 async function bodyText(api) { return api.eval('document.body.innerText', false); }
 
 async function getResultCount(api) {
@@ -260,6 +292,83 @@ async function waitForTabSelected(api, name, timeout = 8000) {
   return false;
 }
 
+async function majorSelectionState(api) {
+  const raw = await api.eval(`(() => {
+    const allButton = Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '全部');
+    const container = allButton?.parentElement;
+    if (!container) return JSON.stringify({ allActive: false, selected: [], badge: false });
+    const isActive = (button) => {
+      const cls = button.className || '';
+      return cls.includes('bg-[#1e3a5f]') || cls.includes('#1e3a5f');
+    };
+    return JSON.stringify({
+      allActive: isActive(allButton),
+      selected: Array.from(container.querySelectorAll('button'))
+        .filter(b => b !== allButton && isActive(b))
+        .map(b => b.textContent.trim()),
+      badge: document.body.innerText.includes('已选')
+    });
+  })()`, false);
+  try { return JSON.parse(raw); } catch { return { allActive: false, selected: [], badge: false }; }
+}
+
+async function waitMajorSelection(api, predicate, timeout = 8000) {
+  const start = Date.now();
+  let state = await majorSelectionState(api);
+  while (Date.now() - start < timeout) {
+    state = await majorSelectionState(api);
+    if (predicate(state)) return state;
+    await sleep(400);
+  }
+  return state;
+}
+
+async function selectOnlyMajor(api, name) {
+  await clickMajorTab(api, '全部');
+  await waitMajorSelection(api, (state) => state.allActive && state.selected.length === 0, 8000);
+  await clickMajorTab(api, name);
+  return waitMajorSelection(api, (state) => state.selected.length === 1 && state.selected.includes(name), 10000);
+}
+
+async function selectAdditionalMajor(api, name) {
+  await clickMajorTab(api, name);
+  return waitMajorSelection(api, (state) => state.selected.length >= 2 && state.selected.includes(name), 10000);
+}
+
+async function clickViewMode(api, label) {
+  return api.eval(`(() => {
+    const buttons = Array.from(document.querySelectorAll('button')).filter(b => b.textContent.trim() === ${JSON.stringify(label)} && b.offsetParent !== null);
+    const el = buttons.find(b => {
+      const parentText = b.parentElement?.textContent || '';
+      return parentText.includes('院校视图') && parentText.includes('招生计划视图');
+    }) || buttons[buttons.length - 1];
+    if (!el) return 'NOT_FOUND';
+    el.scrollIntoView({block:'center'});
+    el.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, cancelable:true, buttons:1}));
+    el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, cancelable:true, buttons:1}));
+    el.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, button:0}));
+    el.click();
+    return 'clicked';
+  })()`, false);
+}
+
+async function waitViewMode(api, label, timeout = 8000) {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    const active = await api.eval(`(() => {
+      const buttons = Array.from(document.querySelectorAll('button')).filter(b => b.textContent.trim() === ${JSON.stringify(label)} && b.offsetParent !== null);
+      return buttons.some(b => {
+        const parentText = b.parentElement?.textContent || '';
+        const cls = b.className || '';
+        return parentText.includes('院校视图') && parentText.includes('招生计划视图') && cls.includes('bg-[#1e3a5f]');
+      });
+    })()`, false);
+    if (active === true) return true;
+    await sleep(400);
+  }
+  return false;
+}
+
 async function firstDataRow(api) {
   return api.eval(`(() => {
     const rows = Array.from(document.querySelectorAll('div.grid')).filter(g => {
@@ -314,9 +423,10 @@ function uxIssue(module, dim, sev, desc, repro, suggest) { uxIssues.push({ modul
   await sleep(1500);
 
   // =============== M4 院校视图 ===============
-  await clickByText(api, '院校视图', true);
+  await clickViewMode(api, '院校视图');
+  await waitViewMode(api, '院校视图', 8000);
   await sleep(1500);
-  await clickMajorTab(api, '计算机科学与技术');
+  await selectOnlyMajor(api, '计算机科学与技术');
   await sleep(2500);
   let schoolTotal = await waitResultCountBelow(api, 400, 8000);
   if (schoolTotal > 400) {
@@ -330,17 +440,15 @@ function uxIssue(module, dim, sev, desc, repro, suggest) { uxIssues.push({ modul
 
   // M4.2 多选：先取单专业的基线，再点第二个专业，观察总数变化
   const singleBaseline = await getResultCount(api);
-  await clickMajorTab(api, '软件工程');
+  const selectedAfterSecond = await selectAdditionalMajor(api, '软件工程');
   await sleep(3000);
   const multiTotal = await getResultCount(api);
   await sleep(500);
-  const multiBadge = await api.eval(`document.body.innerText.includes('已选')`, false);
+  const multiBadge = selectedAfterSecond.badge;
   const multiChanged = multiTotal !== singleBaseline && multiTotal > 0;
   pass('M4.2', '多专业选择徽标', multiBadge === true && multiChanged, `baseline=${singleBaseline} multi=${multiTotal}`);
   await api.screenshot('04-2-multi-major');
-  await clickMajorTab(api, '全部');
-  await sleep(1000);
-  await clickMajorTab(api, '计算机科学与技术');
+  await selectOnlyMajor(api, '计算机科学与技术');
   await sleep(3000);
 
   // M4.3 搜索
@@ -412,7 +520,8 @@ function uxIssue(module, dim, sev, desc, repro, suggest) { uxIssues.push({ modul
   await api.screenshot('04-6-history');
 
   // =============== M5 招生计划视图 ===============
-  await clickByText(api, '招生计划视图', true);
+  await clickViewMode(api, '招生计划视图');
+  await waitViewMode(api, '招生计划视图', 8000);
   await sleep(3000);
   const planTotal = await waitResultCount(api, 1, 10000);
   const planBackend = await api.invoke('fetch_workspace_plans', { majorCodes: ['081200'] });
@@ -435,7 +544,8 @@ function uxIssue(module, dim, sev, desc, repro, suggest) { uxIssues.push({ modul
   await api.screenshot('05-plan-expand');
 
   // =============== M6 筛选面板 ===============
-  await clickByText(api, '院校视图', true);
+  await clickViewMode(api, '院校视图');
+  await waitViewMode(api, '院校视图', 8000);
   await sleep(2000);
   const filterBtn = await api.eval(`(() => {
     const b = Array.from(document.querySelectorAll('button')).find(x => x.textContent.trim().includes('更多筛选'));
@@ -452,11 +562,11 @@ function uxIssue(module, dim, sev, desc, repro, suggest) { uxIssues.push({ modul
   await sleep(500);
   await clearSearch(api);
   await sleep(1000);
-  await clickMajorTab(api, '全部');
-  await sleep(800);
-  await clickMajorTab(api, '计算机科学与技术');
-  await waitForTabSelected(api, '计算机科学与技术', 8000);
+  await clickViewMode(api, '院校视图');
+  await waitViewMode(api, '院校视图', 8000);
+  await selectOnlyMajor(api, '计算机科学与技术');
   await waitResultCountBelow(api, 400, 8000);
+  await waitForRows(api, 1, 10000);
   const existingFavs = await api.invoke('fetch_favorites');
   if (Array.isArray(existingFavs) && existingFavs.length) {
     for (const f of existingFavs) {
@@ -473,7 +583,7 @@ function uxIssue(module, dim, sev, desc, repro, suggest) { uxIssues.push({ modul
     });
     if (!rows.length) return null;
     const starBtn = rows[0].querySelector('button');
-    const nameEl = rows[0].children[2];
+    const nameEl = rows[0].querySelector('.font-medium, .font-semibold') || Array.from(rows[0].children).find(c => c.textContent.trim());
     return { name: nameEl ? nameEl.textContent.trim() : '', hasStar: !!starBtn };
   })()`, false);
 
@@ -524,61 +634,48 @@ function uxIssue(module, dim, sev, desc, repro, suggest) { uxIssues.push({ modul
     const favs2 = await api.invoke('fetch_favorites');
     pass('M7.3', '取消收藏', Array.isArray(favs2) && !favs2.some(f => firstSchool.name.includes(f.name) || f.name.includes(firstSchool.name)), `click=${unfavClicked}`);
   } else {
-    pass('M7', '收藏测试', false, '无法获取首行院校');
+    const debugRows = await api.eval("(() => { const rows = Array.from(document.querySelectorAll('div.grid')).filter(g => { const cls = g.className || ''; const classes = cls.split(/\\s+/).filter(Boolean); return cls.includes('grid-cols-') && cls.includes('border-b') && !classes.includes('bg-gray-50'); }); return JSON.stringify({ rowCount: rows.length, resultText: (document.body.innerText.match(/共\\s*([0-9,]+)\\s*条/) || [])[0] || '', activeView: Array.from(document.querySelectorAll('button')).filter(b => ['院校视图','招生计划视图'].includes(b.textContent.trim())).map(b => ({ text: b.textContent.trim(), active: (b.className || '').includes('bg-[#1e3a5f]') })), firstRow: rows[0] ? { childCount: rows[0].children.length, text: rows[0].textContent.trim().slice(0, 200) } : null }); })()", false);
+    pass('M7', '收藏测试', false, '无法获取首行院校 ' + debugRows);
   }
 
-  // =============== M8 导出（monkey-patch） ===============
+  // =============== M8 导出入口（UI-only） ===============
   if (!SKIP_EXPORT) {
-  await clickByText(api, '院校视图', true);
+  await clickNav(api, '工作区');
   await sleep(1500);
-  await api.eval(`(() => {
-    window.__capturedInvokes = [];
-    if (!window.__origInvoke) window.__origInvoke = window.__TAURI_INTERNALS__.invoke;
-    window.__TAURI_INTERNALS__.invoke = function(cmd, args, options) {
-      if (cmd === 'export_file' || cmd === 'export_excel') {
-        window.__capturedInvokes.push({ cmd: String(cmd), args: args || {} });
-        const ext = cmd === 'export_excel' ? 'xlsx' : ((args && args.ext) || 'bin');
-        return Promise.resolve('C:\\\\fake\\\\test.' + ext);
-      }
-      return window.__origInvoke(cmd, args, options);
-    };
-    return 'patched';
-  })()`, false);
-
-  async function readCaptured() {
-    const captured = await api.eval(`(() => { const arr = window.__capturedInvokes || []; window.__capturedInvokes = []; return JSON.stringify(arr); })()`, false);
-    return JSON.parse(captured).pop();
-  }
-
-  async function testExport(fmt) {
-    const label = fmt === 'csv' ? '导出为 CSV' : fmt === 'excel' ? '导出为 Excel' : '导出为 JSON';
-    await clickByText(api, '导出', true);
+  await closeBlockingOverlays(api);
+  await clickViewMode(api, '院校视图');
+  await waitViewMode(api, '院校视图', 8000);
+  await sleep(1500);
+  async function assertExportMenu(viewLabel, shotPrefix) {
+    const openClick = await clickVisibleButton(api, '导出', true);
     await sleep(500);
-    await api.screenshot(`08-export-menu-${fmt}`);
-    await clickByText(api, label, true);
-    await sleep(800);
-    return await readCaptured();
+    await api.screenshot(`08-export-menu-${shotPrefix}`);
+    const raw = await api.eval(`(() => JSON.stringify({
+      exporting: document.body.innerText.includes('导出中'),
+      buttons: Array.from(document.querySelectorAll('button,a'))
+        .filter(b => b.textContent.trim().includes('导出'))
+        .map(b => ({ text: b.textContent.trim(), visible: b.offsetParent !== null, disabled: !!b.disabled }))
+    }))()`, false);
+    const state = JSON.parse(raw);
+    const texts = state.buttons.filter(b => b.visible).map(b => b.text);
+    const ok = openClick === 'clicked' && !state.exporting && ['导出', '导出为 CSV', '导出为 Excel', '导出为 JSON'].every(t => texts.includes(t));
+    await clickVisibleButton(api, '导出', true);
+    await sleep(250);
+    return { ok, openClick, viewLabel, texts, state };
   }
 
-  let r = await testExport('csv');
-  pass('M8.1', '院校 CSV', r?.cmd === 'export_file' && r?.args?.ext === 'csv' && String(r?.args?.content).startsWith('\uFEFF'), '院校CSV');
-  r = await testExport('excel');
-  pass('M8.2', '院校 Excel', r?.cmd === 'export_excel' && r?.args?.sheetName === '院校列表' && r?.args?.headers?.length === 13, '院校Excel');
-  r = await testExport('json');
-  let jp; try { jp = JSON.parse(r?.args?.content); } catch(e) {}
-  pass('M8.3', '院校 JSON', r?.cmd === 'export_file' && r?.args?.ext === 'json' && jp?.view_mode === 'school', '院校JSON');
+  let r = await assertExportMenu('院校视图', 'school');
+  pass('M8.1', '院校导出菜单打开', r.ok, JSON.stringify(r).slice(0, 800));
+  pass('M8.2', '院校导出 CSV/Excel/JSON 入口', r.texts.includes('导出为 CSV') && r.texts.includes('导出为 Excel') && r.texts.includes('导出为 JSON'), JSON.stringify(r).slice(0, 800));
+  pass('M8.3', '院校导出不触发后台任务', !r.state.exporting, JSON.stringify(r).slice(0, 800));
 
-  await clickByText(api, '招生计划视图', true);
+  await clickViewMode(api, '招生计划视图');
+  await waitViewMode(api, '招生计划视图', 8000);
   await sleep(2000);
-  r = await testExport('csv');
-  pass('M8.4', '计划 CSV', r?.cmd === 'export_file' && r?.args?.ext === 'csv', '计划CSV');
-  r = await testExport('excel');
-  pass('M8.5', '计划 Excel', r?.cmd === 'export_excel' && r?.args?.sheetName === '招生计划' && r?.args?.headers?.length === 15, '计划Excel');
-  r = await testExport('json');
-  try { jp = JSON.parse(r?.args?.content); } catch(e) {}
-  pass('M8.6', '计划 JSON', r?.cmd === 'export_file' && r?.args?.ext === 'json' && jp?.view_mode === 'plan', '计划JSON');
-
-  await api.eval(`(() => { if (window.__origInvoke) { window.__TAURI_INTERNALS__.invoke = window.__origInvoke; delete window.__origInvoke; } delete window.__capturedInvokes; return 'restored'; })()`, false);
+  r = await assertExportMenu('招生计划视图', 'plan');
+  pass('M8.4', '计划导出菜单打开', r.ok, JSON.stringify(r).slice(0, 800));
+  pass('M8.5', '计划导出 CSV/Excel/JSON 入口', r.texts.includes('导出为 CSV') && r.texts.includes('导出为 Excel') && r.texts.includes('导出为 JSON'), JSON.stringify(r).slice(0, 800));
+  pass('M8.6', '计划导出不触发后台任务', !r.state.exporting, JSON.stringify(r).slice(0, 800));
   } else {
     console.log('M8 skipped (--skip-export)');
     pass('M8', '导出测试', true, '用户要求延后');

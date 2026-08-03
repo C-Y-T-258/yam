@@ -62,7 +62,6 @@ function getDisciplinesWithType(
 export function MajorSelectPage() {
   const {
     setPage,
-    addMajor,
     crawledMajors,
     setCrawlTarget,
     enableProfessionalThreeLevelMenu,
@@ -182,15 +181,14 @@ export function MajorSelectPage() {
 
   const handleConfirm = async () => {
     if (selectedMajor) {
-      // 不在此处添加专业；采集并同步成功后由 CrawlingPage 加入，
-      // 避免未采集成功就出现在专业管理页。
-      // 重置后端采集状态，避免 CrawlingPage 误判"后台运行回来"导致不启动新采集
+      // 仅允许清理已结束的状态；运行中的任务会由后端拒绝重置，不会被新请求终止。
       try {
         await resetCrawl();
       } catch (e) {
-        // 重置失败不阻塞流程，CrawlingPage 仍会处理
-        console.warn('reset crawl failed:', e);
+        console.warn('reset crawl rejected:', e);
       }
+      // 不在此处添加专业；采集并同步成功后由 CrawlingPage 加入，
+      // 避免未采集成功就出现在专业管理页。
       setCrawlTarget({ code: selectedMajor.code, name: selectedMajor.name });
       setPage('crawling');
     }

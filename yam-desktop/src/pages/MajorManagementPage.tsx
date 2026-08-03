@@ -31,13 +31,13 @@ export function MajorManagementPage() {
   const handleUpdate = async (code: string) => {
     const major = crawledMajors.find((m) => m.code === code);
     if (!major) return;
-    // 重置后端采集状态，避免 CrawlingPage 误判"后台运行回来"导致不启动新采集
+    // 仅允许清理已结束的状态；运行中的任务会由后端拒绝重置，不会被更新请求终止。
     try {
       await resetCrawl();
     } catch (e) {
-      console.warn('reset crawl failed:', e);
+      console.warn('reset crawl rejected:', e);
     }
-    setCrawlTarget({ code: major.code, name: major.name });
+    setCrawlTarget({ code: major.code, name: major.name, force: true });
     setPage('crawling');
   };
 

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useAppStore, type Page } from './stores/appStore';
-import { fetchAvailableMajors, isTauri, resetCrawl } from './lib/db';
+import { fetchAvailableMajors, isTauri, type WorkspacePlanRow } from './lib/db';
 import {
   ACADEMIC_CATEGORIES,
   PROFESSIONAL_CATEGORIES,
@@ -52,17 +52,11 @@ function findMajorName(code: string): string {
   return code;
 }
 
-// Mock compare data
-const MOCK_COMPARE_SCHOOLS = [
-  { id: '1', name: '清华大学', region: '北京', level: '985 / 211 / 双一流', tuition: 8000, duration: 3, enrollCount: 28, minScore: 681, politics: 70, english: 70, math: 110, specialized: 120 },
-  { id: '2', name: '浙江大学', region: '浙江', level: '985 / 211 / 双一流', tuition: 8000, duration: 3, enrollCount: 32, minScore: 672, politics: 68, english: 68, math: 105, specialized: 115 },
-  { id: '3', name: '北京航空航天大学', region: '北京', level: '985 / 211 / 双一流', tuition: 8000, duration: 3, enrollCount: 24, minScore: 663, politics: 67, english: 67, math: 105, specialized: 114 },
-];
-
 export default function App() {
   const { currentPage, setPage, crawledMajors, selectedMajorCodes, addMajor, setSelectedMajorCodes } = useAppStore();
   const [isManageMajorsOpen, setIsManageMajorsOpen] = useState(false);
   const [isCompareOpen, setIsCompareOpen] = useState(false);
+  const [comparePlans, setComparePlans] = useState<WorkspacePlanRow[]>([]);
   const [initialized, setInitialized] = useState(false);
   const [workspaceRefreshNonce, setWorkspaceRefreshNonce] = useState(0);
   // UX-1.2：首次启动（localStorage 未标记 seen）自动打开新手引导
@@ -121,11 +115,10 @@ export default function App() {
 
   // Expose a minimal debug helper for automated desktop testing
   useEffect(() => {
-    (window as unknown as Record<string, unknown>).yamSetCrawlTarget = async (
+    (window as unknown as Record<string, unknown>).yamSetCrawlTarget = (
       code: string,
       name: string
     ) => {
-      await resetCrawl();
       useAppStore.getState().setCrawlTarget({ code, name });
       useAppStore.getState().setPage('crawling');
     };
@@ -209,7 +202,10 @@ export default function App() {
       {/* Always keep WorkspacePage mounted so its state survives page switches */}
       <div className={effectivePage === 'workspace' ? '' : 'hidden'}>
         <WorkspacePage
-          onOpenCompare={() => setIsCompareOpen(true)}
+          onOpenCompare={(rows) => {
+            setComparePlans(rows);
+            setIsCompareOpen(true);
+          }}
           onOpenManageMajors={() => setIsManageMajorsOpen(true)}
           refreshNonce={workspaceRefreshNonce}
         />
@@ -227,7 +223,11 @@ export default function App() {
       <CompareModal
         isOpen={isCompareOpen}
         onClose={() => setIsCompareOpen(false)}
-        schools={MOCK_COMPARE_SCHOOLS}
+        onClear={() => {
+          setComparePlans([]);
+          setIsCompareOpen(false);
+        }}
+        plans={comparePlans}
       />
 
       {/* 全局后台任务面板：固定在左下角，显示采集任务进度 */}

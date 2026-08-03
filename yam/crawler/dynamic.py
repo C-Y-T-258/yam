@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from yam.browser import launch_browser
 from yam.config import config
 
 
@@ -189,7 +190,7 @@ class DynamicReader:
 
         self.cookie_dir.mkdir(parents=True, exist_ok=True)
         self.playwright = await async_playwright().start()
-        self.browser = await self.playwright.chromium.launch(headless=headless)
+        self.browser = await launch_browser(self.playwright.chromium, headless=headless)
         self.context = await self.browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -235,6 +236,12 @@ class DynamicReader:
             to_save = cookies if has_login else []
             with open(self.cookie_file, "w", encoding="utf-8") as f:
                 json.dump(to_save, f, ensure_ascii=False, indent=2)
+            # Cookie 只保存在本机，并尽量限制为当前用户可读写。
+            try:
+                self.cookie_file.chmod(0o600)
+            except OSError:
+                # Windows 的 chmod 语义有限；文件仍位于用户主目录下。
+                pass
         except Exception:
             pass
 
@@ -767,7 +774,7 @@ class DynamicYanZhaoCrawler:
         self.major_code = major_code
         self.major_name = major_name
         self.seed_file = (
-            config.project_dir / "data" / "seeds" / f"yan_zhao_{major_code}_all_regions.json"
+            config.data_dir / "seeds" / f"yan_zhao_{major_code}_all_regions.json"
         )
 
     @staticmethod
