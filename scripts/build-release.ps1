@@ -95,7 +95,7 @@ $checksumLines = foreach ($artifact in $artifacts) {
 }
 Set-Content -Path (Join-Path $OutputDir 'checksums.txt') -Value $checksumLines -Encoding ascii
 
-$templatePath = Join-Path $root 'release\RELEASE-NOTES.template.md'
+$templatePath = Join-Path $root 'docs\release\RELEASE-NOTES.template.md'
 if (-not (Test-Path $templatePath)) { throw "Missing release notes template: $templatePath" }
 $artifactRows = ($artifacts | ForEach-Object {
     $size = (Get-Item (Join-Path $OutputDir $_.Name)).Length
