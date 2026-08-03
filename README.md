@@ -1,70 +1,113 @@
 # 研喵 YAM
 
-本地优先的考研择校数据工具。
+一款面向考研择校场景的 Windows 桌面工具，帮助你在本地整理院校、专业、研究方向、招生计划和分数线数据，并通过工作区进行筛选、对比与导出。
 
-## 快速开始
+数据、登录状态和运行日志默认保存在你的电脑上，不会自动上传。
 
-### 开发 / 测试入口
+## 下载与安装
+
+前往 [GitHub Releases](https://github.com/C-Y-T-258/yam/releases/latest) 下载最新版。
+
+| 文件 | 适用场景 |
+| --- | --- |
+| `YAM-Setup-*.exe` | 推荐，大多数 Windows 用户直接安装 |
+| `YAM-Setup-*.msi` | 适合需要 MSI 部署的环境 |
+| `YAM-Portable-*.exe` | 免安装使用，需要系统已有 WebView2 Runtime |
+
+下载后可使用 Release 页面提供的 `checksums.txt` 或对应 `.sha256` 文件校验安装包。
+
+### 系统要求
+
+- Windows 10 或 Windows 11
+- Microsoft Edge 与 WebView2 Runtime
+- 可访问相关公开数据来源的网络环境
+
+安装版会在缺少 WebView2 时调用官方 bootstrapper；便携版不会自动安装 WebView2。应用已内置 Python 采集后端，用户无需另外安装 Python、Node.js 或 Rust。
+
+## 可以做什么
+
+- 在应用内完成登录状态管理和公开数据采集。
+- 按院校、专业和研究方向组织择校信息。
+- 查看招生计划、分数线证据和历年趋势。
+- 对不同院校或专业进行筛选、收藏和对比。
+- 将工作区数据导出为 CSV、Excel 或 JSON。
+- 明确展示来源未知或暂不可得的数据，不使用猜测值替代。
+- 在本地保存数据库、Cookie、运行时文件和诊断日志。
+
+## 开始使用
+
+1. 从 [Releases](https://github.com/C-Y-T-258/yam/releases/latest) 下载安装版或便携版。
+2. 启动 YAM，根据应用内提示完成登录状态检查。
+3. 选择需要的数据范围并开始采集，等待后台任务完成。
+4. 在工作区中按院校、专业、研究方向和年份浏览或对比数据。
+5. 将需要保存的数据导出为 CSV、Excel 或 JSON。
+
+如果采集失败，请先检查网络和登录状态。应用内诊断日志可以帮助定位问题，但提交问题前请确认日志中不包含个人信息。
+
+## 数据与隐私
+
+YAM 采用本地优先设计：
+
+- 数据库：`%USERPROFILE%\.yam\data\yam-desktop.db`
+- Cookie 与会话：`%USERPROFILE%\.yam\cookies\`
+- 内置运行时：`%USERPROFILE%\.yam\runtime\`
+- 日志和临时文件：`%USERPROFILE%\.yam\`
+
+应用不会自动上传这些数据。当前也没有默认启用的远程错误上报功能。
+
+## 使用限制
+
+- 数据来自公开渠道，可能受来源网站更新、登录状态、网络环境和页面结构变化影响。
+- 部分年份或字段可能无法从来源中可靠获得，应用会显示为未知，而不是推断或补造。
+- 分数线、招生人数和研究方向等信息应结合招生单位发布的正式文件复核。
+- 本项目提供的信息仅供学习和择校参考，不构成报考建议。
+
+## 参与开发
+
+普通用户不需要执行本节命令。
+
+开发环境需要 Node.js 22、Python 3.12 和 Rust stable。首次准备环境：
+
 ```powershell
-cd d:\yam\yam-desktop
-npm install                 # 首次需要
-npm run desktop:dev         # 启动 Tauri 桌面端（会打开窗口 + CDP 9223）
+cd D:\yam
+pip install -e .
+npm --prefix yam-desktop ci
 ```
 
-- 纯前端（不推荐用于功能测试）：`npm run dev`（仅浏览器，`http://localhost:1420`）
-- 全量 UI 测试脚本：`npm run test:ui` / `npm run test:ux`
+启动 Tauri 桌面端：
 
-### 构建 / 分发入口
 ```powershell
-npm run release:dry-run        # 校验版本并预览发布命令，不生成 bundle
-npm run release:build          # 测试并生成 Windows NSIS、MSI、便携版及 SHA256
+npm --prefix yam-desktop run desktop:dev
 ```
 
-推送 `v<semver>` tag（须与项目版本和发布说明一致）会触发 Windows 发布工作流；日常 `main` push / PR 只运行测试和版本一致性检查。
+常用验证命令：
 
-构建产物位于：
-```text
-yam-desktop/src-tauri/target/release/bundle/
+```powershell
+npm --prefix yam-desktop run test:ui
+npm --prefix yam-desktop run test:types
+npm --prefix yam-desktop run test:unit
+npm --prefix yam-desktop run test:release:auto
 ```
 
-建议整理到稳定发布目录：
-```text
-release/
-├── YAM-Setup-*.exe
-├── YAM-Portable-*.exe
-├── checksums.txt
-└── RELEASE-NOTES.md
+发布前检查与 Windows 构建：
+
+```powershell
+npm --prefix yam-desktop run release:dry-run
+npm --prefix yam-desktop run release:build
 ```
 
-**注意**：安装包（Setup / MSI）会在 WebView2 缺失时自动引导下载官方 bootstrapper 进行安装。便携版需要用户自行确保系统已安装 WebView2。
+推送与项目版本一致的 `v<semver>` tag 会触发 Windows Release 工作流，并生成安装包、便携版、发布说明和 SHA-256 校验文件。
 
-### 数据库位置
-```
-%USERPROFILE%\.yam\data\yam-desktop.db
-```
+## 项目文档
 
-## 当前状态
-
-桌面端已完成内置登录向导、采集状态机、工作区服务端分页、后台导出、数据库恢复、本地诊断日志和Windows发布流水线。发布构建会将Python采集后端及运行依赖嵌入桌面程序，首次使用相关功能时释放到 `%USERPROFILE%\.yam\runtime`；用户无需安装Python。
-
-浏览器自动化复用系统Microsoft Edge，安装包会处理WebView2 Runtime。Cookie、数据库、运行时文件和诊断日志均保存在用户本机，不会自动上传。
-
-后续产品决策集中在应用内自动更新和用户明确同意后的远程错误上报。历史设计和踩坑记录见 [`docs/session-handoff.md`](docs/session-handoff.md) 与 [`docs/data-collection-handoff-prompt.md`](docs/data-collection-handoff-prompt.md)。
-
-## 技术栈
-
-Tauri 2.x + React + TypeScript + Tailwind CSS v4 + Framer Motion，Python 后端负责研招网爬虫与 `yam.db`。
-
-## 路线图与文档
-
-- [docs/roadmap.md](docs/roadmap.md)：项目总路线图（P0/P1/P2 + 五阶段）
-- [docs/tech-debt.md](docs/tech-debt.md)：技术债务清单（废弃代码、文档缺失、中低优先级任务、发布验证）
-- [docs/known-issues.md](docs/known-issues.md)：Bug 跟踪与已知问题
-- [docs/progress.md](docs/progress.md)：已完成里程碑与上下文恢复
-- [docs/full-ui-test-prompt.md](docs/full-ui-test-prompt.md)：全流程 UI 测试提示词
-- [docs/session-handoff.md](docs/session-handoff.md)：方案 A（登录向导 + 原子锁 + 状态机）设计摘要
-- [docs/data-collection-handoff-prompt.md](docs/data-collection-handoff-prompt.md)：数据采集历史踩坑记录
+- [发布说明](docs/release/RELEASE-NOTES.md)
+- [路线图](docs/roadmap.md)
+- [已知问题](docs/known-issues.md)
+- [开发进度](docs/progress.md)
+- [技术债务](docs/tech-debt.md)
+- [数据采集设计记录](docs/data-collection-handoff-prompt.md)
+- [登录与任务状态机设计](docs/session-handoff.md)
 
 ## 免责声明
 
-数据来自公开渠道，仅供学习参考，不保证完全准确。使用本工具产生的任何决策，由用户自行承担责任。
+数据来自公开渠道，仅供学习参考，不保证完全准确。使用本工具产生的任何决策及后果由使用者自行承担。
