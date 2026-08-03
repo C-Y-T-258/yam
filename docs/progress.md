@@ -72,6 +72,7 @@
 - ISSUE-031 当前范围完成：阶段7至10按审计、展示、年份边界、录取统计设计顺序闭环；下一项固定为 ISSUE-032 官方录取统计接入。
 - 年度数据来源专项研究已合回主线：新增 `docs/research/year-source/`、只读审计/覆盖测算脚本和研究测试；确认当前产品年度目录覆盖 0%、严格分型分数覆盖 0%、录取统计覆盖 0%，另有 2454/3420 = 71.7544% 的未严格分型学校-专业-届次分数参考记录；ISSUE-032 下一步应先做小样本证据层与 `admission_cycle` 影子数据集。
 - UI 收口：招生计划列表移除全未知“目录年”主列，比较弹窗仅在至少一个计划有来源提供的目录年份时显示“计划年份”行；展开详情和导出继续保留目录年份状态与快照时间作为审计信息。
+- ISSUE-031 发布前回归收尾：全量 UI 回归脚本的 M8 导出段改为 UI-only 菜单验证，不再触发真实 Tauri 保存/后台导出；验证已通过 `npm --prefix yam-desktop run test:ui` 27/27、`test:types`、`test:unit` 57/57、`test:release:auto`（Rust 27/27 + Vite build）和 `git diff --check`。对应提交：`0b05a88 test(ui): stabilize export menu regression`。
 
 ---
 

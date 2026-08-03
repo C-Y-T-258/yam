@@ -48,7 +48,7 @@
 
 **统计**：共 32 个 ISSUE，31 个 fixed，0 个 partial-fixed，0 个 in-progress，1 个 open。
 
-**下一步优先级**：ISSUE-031 已按既定十阶段范围收尾；年度数据来源专项研究已纳入 `docs/research/year-source/`。ISSUE-032 下一步应先做小样本证据层与 `admission_cycle` 影子数据集，不阻塞当前发布。
+**下一步优先级**：ISSUE-031 已按既定十阶段范围收尾，发布前全量 UI、类型、单测、Rust、构建和 `git diff --check` 门禁已通过；年度数据来源专项研究已纳入 `docs/research/year-source/`。ISSUE-032 下一步应先做小样本证据层与 `admission_cycle` 影子数据集，不阻塞当前发布。
 
 ---
 
