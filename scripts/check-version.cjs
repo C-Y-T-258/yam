@@ -60,16 +60,16 @@ try {
   }
 
   if (releaseMode) {
-    const notesPath = path.join(root, 'release/RELEASE-NOTES.md');
+    const notesPath = path.join(root, 'docs/release/RELEASE-NOTES.md');
     let notes;
     try {
       notes = fs.readFileSync(notesPath, 'utf8');
     } catch (error) {
-      throw new Error(`正式发布需要 release/RELEASE-NOTES.md: ${error.message}`);
+      throw new Error(`正式发布需要 docs/release/RELEASE-NOTES.md: ${error.message}`);
     }
     const header = notes.replace(/^\uFEFF/, '').split(/\r?\n/, 1)[0];
     const notesVersion = header.match(/(?:^|\s)v?((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)\s*$/)?.[1];
-    if (!notesVersion) fail('release/RELEASE-NOTES.md 首行必须以发布 semver 版本结尾');
+    if (!notesVersion) fail('docs/release/RELEASE-NOTES.md 首行必须以发布 semver 版本结尾');
     else if (notesVersion !== version) fail(`发布说明版本 ${notesVersion} 与项目版本 ${version} 不一致`);
   }
 
