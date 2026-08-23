@@ -6,15 +6,41 @@
 
 import asyncio
 import json
+import os
+import time
 from pathlib import Path
 from typing import Any
 
 from yam.browser import launch_browser
 from yam.config import config
+from yam.diagnostics import log_event, safe_message
 
 
 BASE_URL = "https://yz.chsi.com.cn"
 COOKIE_DOMAIN = "yz.chsi.com.cn"
+
+
+def _emit_seed_log(level: str, message: str) -> None:
+    """Emit seed progress to the desktop protocol while keeping CLI output readable."""
+    log_event("seed_progress", message, level)
+    print(f"[{level.upper()}] {message}", flush=True)
+    if os.environ.get("YAM_DESKTOP"):
+        print(f"YAM_LOG {level} {message}", flush=True)
+
+
+def _parse_school_list_response(result: Any) -> tuple[list[dict[str, Any]], int]:
+    """Parse a successful zydws.do response; an empty list is a valid result."""
+    if not isinstance(result, dict):
+        raise RuntimeError("研招网院校接口返回了无效响应")
+    msg = result.get("msg", {})
+    if isinstance(msg, str):
+        raise LoginRequiredError(f"研招网接口返回异常：{msg}")
+    if not isinstance(msg, dict):
+        raise RuntimeError("研招网院校接口返回了无效数据")
+    schools = msg.get("list", [])
+    if not isinstance(schools, list):
+        raise RuntimeError("研招网院校列表格式无效")
+    return schools, int(msg.get("totalCount", 0) or 0)
 
 # 已知专业学位 4 位一级学科代码前缀（不完整列表，按需扩展）
 _PROFESSIONAL_PREFIXES: set[str] = {
@@ -188,6 +214,8 @@ class DynamicReader:
         """初始化浏览器."""
         from playwright.async_api import async_playwright
 
+        started = time.monotonic()
+        log_event("browser_init_started", f"headless={headless}")
         self.cookie_dir.mkdir(parents=True, exist_ok=True)
         self.playwright = await async_playwright().start()
         self.browser = await launch_browser(self.playwright.chromium, headless=headless)
@@ -199,6 +227,10 @@ class DynamicReader:
             )
         )
         await self._load_cookies()
+        log_event(
+            "browser_init_completed",
+            f"headless={headless} elapsed_ms={int((time.monotonic() - started) * 1000)}",
+        )
 
     async def close(self) -> None:
         """关闭浏览器并保存 cookie."""
@@ -207,6 +239,35 @@ class DynamicReader:
             await self.browser.close()
         if self.playwright:
             await self.playwright.stop()
+
+    @staticmethod
+    async def _goto_with_retry(page, url: str, *, attempts: int = 3) -> None:
+        """等待 DOM 就绪，并只对页面导航超时做有限重试。"""
+        from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+        from urllib.parse import urlsplit
+
+        path = urlsplit(url).path or "/"
+        for attempt in range(1, attempts + 1):
+            started = time.monotonic()
+            try:
+                await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                log_event(
+                    "browser_navigation",
+                    f"path={path} attempt={attempt}/{attempts} status=success "
+                    f"elapsed_ms={int((time.monotonic() - started) * 1000)}",
+                )
+                return
+            except PlaywrightTimeoutError as exc:
+                log_event(
+                    "browser_navigation",
+                    f"path={path} attempt={attempt}/{attempts} status=timeout "
+                    f"elapsed_ms={int((time.monotonic() - started) * 1000)} "
+                    f"error={safe_message(exc)}",
+                    "WARN",
+                )
+                if attempt == attempts:
+                    raise
+                await asyncio.sleep(attempt * 2)
 
     async def _load_cookies(self) -> None:
         """从本地加载 cookie."""
@@ -332,12 +393,12 @@ class DynamicReader:
         # 1. 通过浏览器获取 sign 元数据并建立 session
         sign_page = await self.context.new_page()
         try:
-            await sign_page.goto(f"{BASE_URL}/zsml/", wait_until="load", timeout=60000)
+            await self._goto_with_retry(sign_page, f"{BASE_URL}/zsml/")
             await sign_page.wait_for_timeout(1500)
             major = await self._fetch_major_sign(sign_page, major_code, major_name)
             detail_url = _build_detail_url_with_sign(major, study_mode="")
             # 访问详情页建立 session 上下文
-            await sign_page.goto(detail_url, wait_until="load", timeout=60000)
+            await self._goto_with_retry(sign_page, detail_url)
             await sign_page.wait_for_timeout(1500)
         finally:
             await sign_page.close()
@@ -394,21 +455,40 @@ class DynamicReader:
                 "totalPage": "0",
                 "totalCount": "0",
             }
-            r = sess.post(api_url, data=data, headers=headers, timeout=30)
-            result = r.json()
-            msg = result.get("msg", {})
-            if isinstance(msg, str):
-                raise LoginRequiredError(f"研招网接口返回异常：{msg}")
-            return msg.get("list", []), int(msg.get("totalCount", 0))
+            started = time.monotonic()
+            request_label = (
+                f"major_code={major_code} region={ssdm or 'all'} "
+                f"dwlxs={dwlxs or 'none'} study_mode={xxfs or 'all'} "
+                f"veteran={tydxs or 'all'} minority_plan={jsggjh or 'all'} "
+                f"keyword={dwmc or 'none'}"
+            )
+            try:
+                r = sess.post(api_url, data=data, headers=headers, timeout=30)
+                r.raise_for_status()
+                schools, total = _parse_school_list_response(r.json())
+                log_event(
+                    "seed_school_request",
+                    f"{request_label} status=success returned={len(schools)} total={total} "
+                    f"elapsed_ms={int((time.monotonic() - started) * 1000)}",
+                )
+                return schools, total
+            except Exception as exc:
+                log_event(
+                    "seed_school_request",
+                    f"{request_label} status=error "
+                    f"elapsed_ms={int((time.monotonic() - started) * 1000)} "
+                    f"error={safe_message(exc)}",
+                    "WARN",
+                )
+                raise
 
         # 3. 扫描所有省份
         all_schools: dict[str, dict[str, Any]] = {}  # schId → school
         provinces_over_10: list[tuple[str, str, int]] = []  # (code, name, total)
 
-        print(f"[INFO] 开始按省份扫描院校列表...")
+        seed_started = time.monotonic()
+        _emit_seed_log("info", "院校目录阶段 1/4：扫描 34 个省级地区...")
         for code, pname in _PROVINCES.items():
-            # 省份扫描：totalCount=0 时重试 2 次（间隔 8s）
-            # 实测湖南等省份偶发返回 totalCount=0（list 也为空），重试即可恢复
             schools: list[dict] = []
             total = 0
             for attempt in range(3):
@@ -416,33 +496,38 @@ class DynamicReader:
                     schools, total = _call(ssdm=code)
                 except LoginRequiredError as e:
                     print(f"[WARN] {pname} 调用失败（尝试 {attempt+1}/3）：{e}")
-                    await asyncio.sleep(8)
+                    if attempt < 2:
+                        await asyncio.sleep(4 * (attempt + 1))
                     continue
-                # totalCount>0 或重试次数用尽都退出
-                if total > 0 or attempt == 2:
-                    break
-                # total=0 但 schools 非空也退出（极少见，但视为成功）
-                if schools:
-                    break
-                print(f"[INFO] {pname} 返回 totalCount=0，{8*(attempt+1)}s 后重试...")
-                await asyncio.sleep(8)
+                # 正常响应中的 0 所是合法结果，不能把大量空省当成故障重试。
+                break
 
             for s in schools:
                 sid = s.get("schId", "")
                 if sid and sid not in all_schools:
                     all_schools[sid] = s
 
-            status = "✓" if total <= 10 else f"⚠ (仅获 {len(schools)}/{total})"
+            status = "OK" if total <= 10 else f"PARTIAL (仅获 {len(schools)}/{total})"
             print(f"[INFO] {pname}: {len(schools)} 所 {status}（累计 {len(all_schools)}）")
 
             if total > 10:
                 provinces_over_10.append((code, pname, total))
 
-            await asyncio.sleep(5)  # 避免"访问太频繁"
+            # 34 次不同参数组合低速串行即可；有数据时稍多留出服务端恢复时间。
+            await asyncio.sleep(2 if total > 0 else 0.5)
+
+        _emit_seed_log(
+            "info",
+            f"院校目录阶段 1/4 完成：已找到 {len(all_schools)} 所，"
+            f"耗时 {int(time.monotonic() - seed_started)} 秒",
+        )
 
         # 4. 对 >10 所的省份追加筛选组合
         if provinces_over_10:
-            print(f"[INFO] {len(provinces_over_10)} 个省份院校数 >10，追加筛选...")
+            _emit_seed_log(
+                "info",
+                f"院校目录阶段 2/4：{len(provinces_over_10)} 个密集地区追加筛选...",
+            )
             # 筛选组合：(筛选参数, 描述)
             # xxfs=1/2（全日制/非全日制）是关键扩展：不同学习方式返回不同前 10 所
             extra_filters = [
@@ -475,6 +560,10 @@ class DynamicReader:
 
                     await asyncio.sleep(5)
 
+            _emit_seed_log(
+                "info", f"院校目录阶段 2/4 完成：累计 {len(all_schools)} 所"
+            )
+
         if not all_schools:
             raise LoginRequiredError("研招网未返回任何院校数据，可能需要登录")
 
@@ -496,9 +585,10 @@ class DynamicReader:
 
             if missing_provinces:
                 total_missing = sum(t - f for _, _, t, f in missing_provinces)
-                print(
-                    f"[INFO] {len(missing_provinces)} 个省份仍有缺失"
-                    f"（共缺 {total_missing} 所），启动关键词搜索..."
+                _emit_seed_log(
+                    "info",
+                    f"院校目录阶段 3/4：{len(missing_provinces)} 个地区仍缺 "
+                    f"{total_missing} 所，启动关键词补全...",
                 )
                 await asyncio.sleep(10)  # 多筛选后缓冲，避免 zydws.do 频率限制
                 for code, pname, total, found in missing_provinces:
@@ -527,10 +617,14 @@ class DynamicReader:
                             if s.get("szssm", "") == code
                         )
                         if province_found[code] >= total:
-                            print(f"[INFO] {pname}: 全部 {total} 所已找到 ✓")
+                            print(f"[INFO] {pname}: 全部 {total} 所已找到 OK")
                             break
 
                         await asyncio.sleep(5)
+
+                _emit_seed_log(
+                    "info", f"院校目录阶段 3/4 完成：累计 {len(all_schools)} 所"
+                )
 
         # 5. dwzys.do 补缺：aiohttp 并发 + 精准遍历
         #    dwzys.do 按 dwdm 精确查询，不受 zydws.do "每参数组合一次" 限制
@@ -574,7 +668,10 @@ class DynamicReader:
         if to_search:
             import aiohttp
 
-            print(f"[INFO] dwzys.do 补缺：aiohttp 并发遍历 {len(to_search)} 个代码（段±10 + 小间隙）...")
+            _emit_seed_log(
+                "info",
+                f"院校目录阶段 4/4：校代码补缺 {len(to_search)} 项...",
+            )
 
             mldm = major_code[:2]
             yjxkdm = major_code[:4]
@@ -646,6 +743,7 @@ class DynamicReader:
 
             async with aiohttp.ClientSession() as session:
                 for bi in range(0, len(to_search), batch_size):
+                    batch_started = time.monotonic()
                     batch = [str(c) for c in to_search[bi:bi + batch_size]]
                     batch_num = bi // batch_size + 1
                     results = await asyncio.gather(
@@ -657,6 +755,14 @@ class DynamicReader:
                     batch_error = sum(1 for _, _, st in results if st == "error")
                     total_limited += batch_limited
                     total_ok += batch_ok
+                    log_event(
+                        "seed_code_batch",
+                        f"major_code={major_code} batch={batch_num}/{total_batches} "
+                        f"size={len(batch)} ok={batch_ok} limited={batch_limited} "
+                        f"errors={batch_error} "
+                        f"elapsed_ms={int((time.monotonic() - batch_started) * 1000)}",
+                        "WARN" if batch_limited or batch_error else "INFO",
+                    )
 
                     for code, schools, _ in results:
                         for s in schools:
@@ -669,6 +775,9 @@ class DynamicReader:
                     # - 限流率 >50%：sleep 60s（避免雪崩封禁）
                     # - 限流率 10-50%：sleep 30s（稳定状态）
                     # - 限流率 <10%：sleep 15s（加速）
+                    is_last_batch = bi + batch_size >= len(to_search)
+                    if is_last_batch:
+                        continue
                     if batch_limited > len(batch) * 0.5:
                         print(
                             f"[WARN] 批 {batch_num}/{total_batches}: "
@@ -689,12 +798,17 @@ class DynamicReader:
                         )
 
             dwzys_new = len(all_schools) - dwzys_before
-            print(
-                f"[INFO] dwzys.do 补缺完成：+{dwzys_new} 所（累计 {len(all_schools)}，"
-                f"成功 {total_ok}，限流 {total_limited}）"
+            _emit_seed_log(
+                "info",
+                f"院校目录阶段 4/4 完成：新增 {dwzys_new} 所，"
+                f"累计 {len(all_schools)} 所（成功请求 {total_ok}，限流 {total_limited}）",
             )
 
-        print(f"[INFO] 扫描完成，共获取 {len(all_schools)} 所唯一院校")
+        _emit_seed_log(
+            "success",
+            f"院校目录建立完成：共 {len(all_schools)} 所，"
+            f"总耗时 {int(time.monotonic() - seed_started)} 秒",
+        )
         return list(all_schools.values())
 
     async def _clear_session_cookies(self) -> None:
@@ -729,6 +843,8 @@ class DynamicReader:
 
         返回是否检测到登录凭证。
         """
+        login_started = time.monotonic()
+        log_event("interactive_login_started", f"major_code={major_code or 'none'}")
         await self.init(headless=False)
         await self.context.clear_cookies()
         await self._save_cookies()
@@ -736,28 +852,43 @@ class DynamicReader:
         # 打开查询页，让用户通过研招网正常入口登录；
         # 登录成功后重定向回本页，可在 yz.chsi.com.cn 域建立有效 session。
         # 打开研招网硕士目录首页（queryAction.do?m=query 在 2026 研招网返回 404）
-        await page.goto(f"{BASE_URL}/zsml/", wait_until="load", timeout=60000)
+        await self._goto_with_retry(page, f"{BASE_URL}/zsml/")
         # 等待用户手动完成登录，最多 5 分钟
         logged_in = False
+        polls = 0
         for _ in range(60):
             await asyncio.sleep(5)
+            polls += 1
             cookies = await self.context.cookies()
             if any(_is_login_cookie(c.get("name", ""), c.get("domain", "")) for c in cookies):
                 logged_in = True
                 break
 
+        log_event(
+            "interactive_login_detected",
+            f"major_code={major_code or 'none'} success={logged_in} polls={polls} "
+            f"elapsed_seconds={int(time.monotonic() - login_started)}",
+            "INFO" if logged_in else "WARN",
+        )
+
         if logged_in:
             # 再访问目标专业详情页，初始化该专业的查询 session 上下文，
             # 同时确保 CAS 登录态在 yz.chsi.com.cn 域下生效。
             detail_url = build_detail_url(major_code, major_name)
-            await page.goto(detail_url, wait_until="load", timeout=60000)
+            await self._goto_with_retry(page, detail_url)
             await page.wait_for_timeout(2000)
             # 回到查询页，保存最终 cookie 集合
-            await page.goto(f"{BASE_URL}/zsml/", wait_until="load", timeout=60000)
+            await self._goto_with_retry(page, f"{BASE_URL}/zsml/")
             await page.wait_for_timeout(1500)
 
         await self._save_cookies()
         await page.close()
+        log_event(
+            "interactive_login_completed",
+            f"major_code={major_code or 'none'} success={logged_in} "
+            f"elapsed_seconds={int(time.monotonic() - login_started)}",
+            "INFO" if logged_in else "WARN",
+        )
         return logged_in
 
     @staticmethod
@@ -798,6 +929,8 @@ class DynamicYanZhaoCrawler:
 
         返回包含 school_count、seed_file 的字典，便于桌面端调用。
         """
+        started = time.monotonic()
+        log_event("seed_fetch_started", f"major_code={self.major_code} headless={headless}")
         if not self._has_login_cookie():
             raise LoginRequiredError("未检测到研招网登录凭证，请先完成登录")
         reader = DynamicReader()
@@ -810,10 +943,16 @@ class DynamicYanZhaoCrawler:
             with open(self.seed_file, "w", encoding="utf-8") as f:
                 json.dump(schools, f, ensure_ascii=False, indent=2)
 
-            return {
+            result = {
                 "school_count": len(schools),
                 "seed_file": str(self.seed_file),
             }
+            log_event(
+                "seed_fetch_completed",
+                f"major_code={self.major_code} school_count={len(schools)} "
+                f"elapsed_seconds={int(time.monotonic() - started)}",
+            )
+            return result
         finally:
             await reader.close()
 
@@ -822,11 +961,18 @@ class DynamicYanZhaoCrawler:
 
         返回包含 school_count、seed_file、cookie_path 的字典。
         """
+        started = time.monotonic()
+        log_event("login_and_seed_started", f"major_code={self.major_code}")
         reader = DynamicReader()
         try:
-            await reader.init(headless=False)
             logged_in = await reader.interactive_login(self.major_code, self.major_name)
             if not logged_in:
+                log_event(
+                    "login_and_seed_completed",
+                    f"major_code={self.major_code} success=False school_count=0 "
+                    f"elapsed_seconds={int(time.monotonic() - started)}",
+                    "WARN",
+                )
                 return {
                     "success": False,
                     "school_count": 0,
@@ -840,12 +986,18 @@ class DynamicYanZhaoCrawler:
             self.seed_file.parent.mkdir(parents=True, exist_ok=True)
             with open(self.seed_file, "w", encoding="utf-8") as f:
                 json.dump(schools, f, ensure_ascii=False, indent=2)
-            return {
+            result = {
                 "success": len(schools) > 0,
                 "school_count": len(schools),
                 "seed_file": str(self.seed_file),
                 "cookie_path": str(reader.cookie_file),
             }
+            log_event(
+                "login_and_seed_completed",
+                f"major_code={self.major_code} success={result['success']} "
+                f"school_count={len(schools)} elapsed_seconds={int(time.monotonic() - started)}",
+            )
+            return result
         finally:
             await reader.close()
 

@@ -13,6 +13,18 @@ export function getWorkspaceRefreshError(message: string, hasData: boolean): str
   return hasData ? `刷新失败，当前仍显示上次结果：${message}` : message;
 }
 
+export function getCrawlStatusLabel(
+  status: 'idle' | 'checking' | 'running' | 'syncing' | 'completed' | 'failed' | 'cancelled' | 'no-target',
+): string {
+  if (status === 'syncing') return '同步数据中';
+  if (status === 'completed') return '采集完成';
+  if (status === 'failed') return '采集失败';
+  if (status === 'cancelled') return '已取消';
+  if (status === 'checking') return '检查登录状态';
+  if (status === 'idle' || status === 'no-target') return '等待开始';
+  return '采集中';
+}
+
 type DirectionLike = Pick<WorkspaceDepartment, 'research_direction' | 'exam_subjects' | 'special_plans'>;
 
 type ScoreScope = NonNullable<WorkspaceYear['score_scope']>;

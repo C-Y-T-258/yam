@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from typing import Optional
 
 import typer
@@ -16,7 +17,7 @@ from yam.config import config
 from yam.crawler.dynamic import DynamicYanZhaoCrawler, LoginRequiredError
 from yam.crawler.yanzhao import YanZhaoCrawler
 from yam.crawler.zhangshangkaoyan import ZhangShangKaoYanCrawler
-from yam.diagnostics import log_exception, safe_message
+from yam.diagnostics import log_event, log_exception, safe_message
 from yam.storage.db import Database
 from yam.utils import now_str
 from yam.verify import CrossSourceVerifier
@@ -71,6 +72,8 @@ def fetch(
         raise typer.Exit(1)
 
     target_years = years or [2026, 2025, 2024, 2023]
+    fetch_started = time.monotonic()
+    log_event("fetch_started", f"major_code={major} target_years={','.join(map(str, target_years))}")
 
     console.print(f"[bold]开始抓取 {major} {major_info['name']} 数据...[/bold]")
     console.print(f"目标年份：{target_years}")
@@ -129,7 +132,7 @@ def fetch(
 
     # ISSUE-029：httpx 并发采集（套用 ISSUE-023 验证可行的 15 并发 + 限流退避）
     try:
-        asyncio.run(
+        result = asyncio.run(
             _fetch_async(
                 major=major,
                 major_info=major_info,
@@ -137,6 +140,12 @@ def fetch(
                 target_years=target_years,
                 skip_scores=skip_scores,
             )
+        )
+        log_event(
+            "fetch_completed",
+            f"major_code={major} school_count={len(schools)} "
+            f"success={result['success']} failed={result['failed']} skipped={result['skipped']} "
+            f"elapsed_seconds={int(time.monotonic() - fetch_started)}",
         )
     except RuntimeError as e:
         log_exception("fetch_async_unreachable", e)
@@ -158,7 +167,7 @@ async def _fetch_async(
     schools: list[dict],
     target_years: list[int],
     skip_scores: bool,
-) -> None:
+) -> dict[str, int]:
     """ISSUE-029 异步并发采集核心逻辑.
 
     两阶段并发：
@@ -315,6 +324,7 @@ async def _fetch_async(
         console.print(f"分数线失败：{score_failed} 所")
 
     print(f"YAM_DONE {success} {failed} {skipped}", flush=True)
+    return {"success": success, "failed": failed, "skipped": skipped}
 
 
 def _get_fetched_school_ids(db: Database, major_code: str, task_type: str) -> set[str]:

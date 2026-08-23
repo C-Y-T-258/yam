@@ -16,7 +16,6 @@ pub struct DatabaseStatus {
 
 fn initialize_database(conn: &Connection) -> Result<(), String> {
     init_schema(conn).map_err(|err| format!("初始化数据库结构失败: {err}"))?;
-    seed_data(conn).map_err(|err| format!("初始化数据库数据失败: {err}"))?;
     Ok(())
 }
 
@@ -503,7 +502,66 @@ pub fn migrate_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
         "TEXT NOT NULL DEFAULT ''",
     )?;
 
+    remove_legacy_demo_workspace(conn)?;
+
     Ok(())
+}
+
+fn remove_legacy_demo_workspace(conn: &Connection) -> Result<(), rusqlite::Error> {
+    let expected = [
+        ("1", "清华大学", "北京", 672, 45),
+        ("2", "北京大学", "北京", 669, 40),
+        ("3", "上海交通大学", "上海", 660, 50),
+        ("4", "浙江大学", "浙江", 657, 48),
+        ("5", "南京大学", "江苏", 650, 42),
+        ("6", "中国科学技术大学", "安徽", 645, 35),
+        ("7", "哈尔滨工业大学", "黑龙江", 642, 60),
+        ("8", "北京航空航天大学", "北京", 641, 55),
+        ("9", "同济大学", "上海", 637, 45),
+        ("10", "华中科技大学", "湖北", 635, 50),
+    ];
+    let total: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM workspace_schools WHERE major_code='085400'",
+        [],
+        |row| row.get(0),
+    )?;
+    if total != expected.len() as i64 {
+        return Ok(());
+    }
+    for (school_id, name, province, min_score, enroll_count) in expected {
+        let matches: bool = conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM workspace_schools
+                WHERE school_id=?1 AND major_code='085400' AND name=?2 AND province=?3
+                  AND min_score=?4 AND enroll_count=?5
+                  AND school_code='' AND updated_at=''
+            )",
+            (school_id, name, province, min_score, enroll_count),
+            |row| row.get(0),
+        )?;
+        if !matches {
+            return Ok(());
+        }
+    }
+
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "DELETE FROM workspace_department_years WHERE department_id IN (
+            SELECT department_id FROM workspace_departments WHERE major_code='085400'
+        )",
+        [],
+    )?;
+    tx.execute(
+        "DELETE FROM workspace_departments WHERE major_code='085400'",
+        [],
+    )?;
+    tx.execute("DELETE FROM favorites WHERE major_code='085400'", [])?;
+    tx.execute("DELETE FROM recent_views WHERE major_code='085400'", [])?;
+    tx.execute(
+        "DELETE FROM workspace_schools WHERE major_code='085400'",
+        [],
+    )?;
+    tx.commit()
 }
 
 const SCHEMA: &str = "
@@ -723,7 +781,9 @@ const SCHEMA: &str = "
     );
 ";
 
-pub fn seed_data(conn: &Connection) -> Result<(), rusqlite::Error> {
+#[cfg(test)]
+#[allow(dead_code)]
+fn seed_demo_data(conn: &Connection) -> Result<(), rusqlite::Error> {
     let has_data: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM workspace_schools LIMIT 1)",
         [],
@@ -3062,6 +3122,47 @@ mod tests {
         assert!(!status.recovered);
         assert_eq!(status.backup_path, None);
         assert_eq!(check_database(&conn), Ok(()));
+        assert!(get_available_majors(&conn).is_empty());
+        let school_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM workspace_schools", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(school_count, 0);
+    }
+
+    #[test]
+    fn removes_only_the_exact_legacy_demo_workspace() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        seed_demo_data(&conn).unwrap();
+
+        migrate_schema(&conn).unwrap();
+
+        assert!(get_available_majors(&conn).is_empty());
+        let department_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM workspace_departments", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(department_count, 0);
+    }
+
+    #[test]
+    fn preserves_real_workspace_when_legacy_fingerprint_does_not_match() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        seed_demo_data(&conn).unwrap();
+        conn.execute(
+            "UPDATE workspace_schools SET school_code='10003', updated_at='2026-08-13' \
+             WHERE school_id='1' AND major_code='085400'",
+            [],
+        )
+        .unwrap();
+
+        migrate_schema(&conn).unwrap();
+
+        assert_eq!(get_available_majors(&conn)[0].school_count, 10);
     }
 
     #[test]

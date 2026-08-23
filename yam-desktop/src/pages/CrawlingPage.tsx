@@ -4,10 +4,10 @@ import { Building2, Calendar, X, Cloud, Loader2, AlertCircle, Database, ChevronD
 import { useAppStore } from '../stores/appStore';
 import { TopNav } from '../components/TopNav';
 import { LoginRequiredModal } from '../components/LoginRequiredModal';
+import { getCrawlStatusLabel } from '../lib/workspace-utils';
 import {
   runCrawl,
   getCrawlProgress,
-  syncWorkspaceData,
   fetchAvailableMajors,
   cancelCrawl,
   checkLoginStatus,
@@ -73,6 +73,7 @@ export function CrawlingPage() {
     updateMajor,
     addMajor,
     crawledMajors,
+    setSelectedMajorCodes,
   } = useAppStore();
   const logContainerRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
@@ -84,6 +85,7 @@ export function CrawlingPage() {
   const lastSchoolRef = useRef<string>('');
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isLaunchingRef = useRef<boolean>(false);
+  const isFinalizingRef = useRef<boolean>(false);
   // ISSUE-029 日志细节优化：已耗时显示 + 折叠日志面板 + 复制日志
   const startTimeRef = useRef<number | null>(null);
   const [elapsed, setElapsed] = useState(0);
@@ -197,7 +199,7 @@ export function CrawlingPage() {
               }
             } else if (p.success > 0) {
               addCrawlingLog('正在同步数据到工作区...');
-              handleSync();
+              void finalizeCompletedCrawl();
             } else {
               setStatus('failed');
               setErrorCode(p.error_code);
@@ -292,7 +294,7 @@ export function CrawlingPage() {
               setShowLoginModal(true);
             }
           } else {
-            await handleSync();
+            await finalizeCompletedCrawl();
           }
         }
       } catch (err) {
@@ -319,6 +321,9 @@ export function CrawlingPage() {
       unlisten = await listen<{ level: string; message: string }>('crawl-log', (event) => {
         const { level, message } = event.payload;
         const lvl = (['info', 'warn', 'success', 'error'].includes(level) ? level : 'info') as 'info' | 'warn' | 'success' | 'error';
+        if (message.includes('正在同步数据到工作区')) {
+          setSyncing(true);
+        }
         addCrawlingLog(message, lvl);
       });
     })();
@@ -346,13 +351,12 @@ export function CrawlingPage() {
     }
   }, [crawlingProgress?.logs]);
 
-  const handleSync = async () => {
-    if (!crawlTarget) return;
+  const finalizeCompletedCrawl = async () => {
+    if (!crawlTarget || isFinalizingRef.current) return;
+    isFinalizingRef.current = true;
     setSyncing(true);
     setStatus('syncing');
-    addCrawlingLog('正在同步数据到工作区...');
     try {
-      await syncWorkspaceData(crawlTarget.code);
       let schoolCount = 0;
       try {
         const available = await fetchAvailableMajors();
@@ -366,10 +370,11 @@ export function CrawlingPage() {
       }
 
       if (schoolCount === 0) {
-        addCrawlingLog(`同步完成，但专业 ${crawlTarget.code} 无数据，未添加到管理列表`);
+        addCrawlingLog(`同步完成，但专业 ${crawlTarget.code} 无数据，未添加到管理列表`, 'error');
         setStatus('failed');
         setError('同步后无数据，请确认采集任务是否成功完成');
         setSyncing(false);
+        isFinalizingRef.current = false;
         return;
       }
 
@@ -389,19 +394,21 @@ export function CrawlingPage() {
           lastUpdated: '刚刚',
         });
       }
-      addCrawlingLog('数据同步完成，即将进入数据就绪页面');
-      setTimeout(() => {
-        setCrawlingProgress(null);
-        setCrawlTarget(null);
-        setPage('data-ready');
-      }, 1000);
+      setSelectedMajorCodes([crawlTarget.code]);
+      addCrawlingLog('数据同步完成，正在进入工作区', 'success');
+      setStatus('completed');
+      setSyncing(false);
+      setCrawlingProgress(null);
+      setCrawlTarget(null);
+      setPage('workspace');
     } catch (err) {
-      const appError = normalizeAppError(err, '同步工作区数据失败');
-      addCrawlingLog(`同步失败：${appError.message}`);
+      const appError = normalizeAppError(err, '加载已同步数据失败');
+      addCrawlingLog(`加载已同步数据失败：${appError.message}`, 'error');
       setStatus('failed');
       setErrorCode(appError.code === 'UNKNOWN' ? 'FAILED' : appError.code);
       setError(appError.message);
       setSyncing(false);
+      isFinalizingRef.current = false;
     }
   };
 
@@ -657,7 +664,7 @@ export function CrawlingPage() {
               当前状态
             </div>
             <div className="font-medium text-gray-900">
-              {syncing ? '同步数据中' : crawlingProgress?.percent === 100 ? '采集完成' : '采集中'}
+              {getCrawlStatusLabel(syncing ? 'syncing' : status)}
             </div>
           </div>
           <div className="bg-gray-50 rounded-lg px-6 py-4">

@@ -11,11 +11,13 @@ import hashlib
 import json
 import sqlite3
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from yam.config import config
+from yam.diagnostics import log_event
 
 TARGET_SCHEMA = """
 CREATE TABLE IF NOT EXISTS workspace_schools (
@@ -1345,13 +1347,26 @@ def sync_major(source: sqlite3.Connection, target: sqlite3.Connection, major_cod
 
 def main() -> int:
     args = parse_args()
+    sync_started = time.monotonic()
+    sync_scope = args.major_code or "all"
+    log_event("workspace_sync_started", f"major_code={sync_scope}")
 
     source_path = Path(args.source) if args.source else config.data_dir / "yam.db"
     target_path = Path(args.target) if args.target else Path.home() / ".yam" / "data" / "yam-desktop.db"
 
     if not source_path.exists():
-        print(f"源数据库不存在: {source_path}", file=sys.stderr)
-        return 1
+        log_event(
+            "workspace_sync_completed",
+            f"major_code={sync_scope} success=true source_missing=true elapsed_milliseconds="
+            f"{int((time.monotonic() - sync_started) * 1000)}",
+            "WARN",
+        )
+        print(
+            "YAM_SYNC_EMPTY "
+            + json.dumps({"source": str(source_path)}, ensure_ascii=True),
+            flush=True,
+        )
+        return 0
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1383,8 +1398,15 @@ def main() -> int:
                 major_codes = [r["major_code"] for r in cur.fetchall()]
 
             for major_code in major_codes:
+                major_started = time.monotonic()
                 with target:
                     stats = sync_major(source, target, major_code)
+                log_event(
+                    "workspace_sync_major_completed",
+                    f"major_code={major_code} schools={stats['schools']} "
+                    f"departments={stats['departments']} years={stats['years']} "
+                    f"elapsed_milliseconds={int((time.monotonic() - major_started) * 1000)}",
+                )
                 print(
                     f"同步完成 {major_code}: "
                     f"{stats['schools']} 所学校, "
@@ -1392,6 +1414,11 @@ def main() -> int:
                     f"{stats['years']} 条年份数据"
                 )
 
+    log_event(
+        "workspace_sync_completed",
+        f"major_code={sync_scope} success=true major_count={len(major_codes)} "
+        f"elapsed_milliseconds={int((time.monotonic() - sync_started) * 1000)}",
+    )
     return 0
 
 

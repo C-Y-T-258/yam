@@ -967,16 +967,37 @@ pub fn sync_workspace_data(app: tauri::AppHandle, major_code: String) -> Result<
 
 /// 内部复用函数：调用 Python 后端把采集结果同步进 SQLite。
 fn sync_workspace_data_inner(app: &tauri::AppHandle, major_code: &str) -> Result<String, String> {
-    let output = backend_command(app, "sync-to-tauri")?
+    let sync_started = std::time::Instant::now();
+    diagnostics::log(
+        "INFO",
+        "workspace_sync_started",
+        &format!("major_code={major_code}"),
+    );
+    let mut command = backend_command(app, "sync-to-tauri").map_err(|err| {
+        diagnostics::log(
+            "ERROR",
+            "workspace_sync_completed",
+            &format!(
+                "major_code={} success=false elapsed_milliseconds={} phase=resolve message={}",
+                major_code,
+                sync_started.elapsed().as_millis(),
+                diagnostics::safe_message(&err, 500)
+            ),
+        );
+        err
+    })?;
+    let output = command
         .arg("--major-code")
         .arg(major_code)
         .output()
         .map_err(|err| {
             diagnostics::log(
                 "ERROR",
-                "workspace_sync_failed",
+                "workspace_sync_completed",
                 &format!(
-                    "code=SPAWN_FAILED message={}",
+                    "major_code={} success=false elapsed_milliseconds={} phase=spawn code=SPAWN_FAILED message={}",
+                    major_code,
+                    sync_started.elapsed().as_millis(),
                     diagnostics::safe_message(&err.to_string(), 500)
                 ),
             );
@@ -984,6 +1005,15 @@ fn sync_workspace_data_inner(app: &tauri::AppHandle, major_code: &str) -> Result
         })?;
 
     if output.status.success() {
+        diagnostics::log(
+            "INFO",
+            "workspace_sync_completed",
+            &format!(
+                "major_code={} success=true elapsed_milliseconds={}",
+                major_code,
+                sync_started.elapsed().as_millis()
+            ),
+        );
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -995,9 +1025,11 @@ fn sync_workspace_data_inner(app: &tauri::AppHandle, major_code: &str) -> Result
         };
         diagnostics::log(
             "ERROR",
-            "workspace_sync_failed",
+            "workspace_sync_completed",
             &format!(
-                "code={} message={safe_message}",
+                "major_code={} success=false elapsed_milliseconds={} code={} message={safe_message}",
+                major_code,
+                sync_started.elapsed().as_millis(),
                 output.status.code().unwrap_or(-1)
             ),
         );
@@ -1171,6 +1203,12 @@ fn run_crawl_task(
     force: bool,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
+    let task_started = std::time::Instant::now();
+    diagnostics::log(
+        "INFO",
+        "crawl_started",
+        &format!("major_code={major_code} force={force}"),
+    );
     let mut cmd = backend_command(&app_handle, "fetch")?;
     cmd.arg("--major").arg(&major_code);
     if force {
@@ -1332,8 +1370,22 @@ fn run_crawl_task(
         let crawl_success = p.error.is_none() && p.success > 0;
         if crawl_success {
             drop(p);
+            let _ = app_handle.emit(
+                "crawl-log",
+                CrawlLogPayload {
+                    level: "info".to_string(),
+                    message: "采集完成，正在同步数据到工作区...".to_string(),
+                },
+            );
             match sync_workspace_data_inner(&app_handle, &major_code) {
                 Ok(_) => {
+                    let _ = app_handle.emit(
+                        "crawl-log",
+                        CrawlLogPayload {
+                            level: "success".to_string(),
+                            message: "数据同步完成".to_string(),
+                        },
+                    );
                     let _ = app_handle.emit(
                         "crawl-synced",
                         CrawlSyncedPayload {
@@ -1345,6 +1397,16 @@ fn run_crawl_task(
                 }
                 Err(err) => {
                     eprintln!("[run_crawl_task] sync_workspace_data_inner 失败: {}", err);
+                    let _ = app_handle.emit(
+                        "crawl-log",
+                        CrawlLogPayload {
+                            level: "error".to_string(),
+                            message: format!(
+                                "数据同步失败：{}",
+                                diagnostics::safe_message(&err, 300)
+                            ),
+                        },
+                    );
                     let mut p = state.lock().unwrap();
                     if p.error.is_none() {
                         p.error = Some(format!("数据同步失败: {}", err));
@@ -1361,6 +1423,23 @@ fn run_crawl_task(
             }
         }
         // 采集本身失败的情况：不调用同步、不 emit，前端通过轮询 p.error 已能感知
+    }
+    {
+        let p = state.lock().unwrap();
+        let level = if p.error.is_none() { "INFO" } else { "ERROR" };
+        diagnostics::log(
+            level,
+            "crawl_completed",
+            &format!(
+                "major_code={} success={} failed={} skipped={} has_error={} elapsed_seconds={}",
+                major_code,
+                p.success,
+                p.failed,
+                p.skipped,
+                p.error.is_some(),
+                task_started.elapsed().as_secs()
+            ),
+        );
     }
     Ok(())
 }
@@ -1651,6 +1730,12 @@ pub fn check_login_status(app: tauri::AppHandle) -> Result<LoginStatus, String> 
 /// 打开浏览器窗口引导用户登录研招网，登录成功后抓取该专业种子
 #[tauri::command]
 pub fn login_yanzhao(app: tauri::AppHandle, major_code: String) -> Result<LoginResult, String> {
+    let login_started = std::time::Instant::now();
+    diagnostics::log(
+        "INFO",
+        "login_seed_started",
+        &format!("major_code={major_code}"),
+    );
     let output = backend_command(&app, "login-yanzhao")?
         .arg("--major-code")
         .arg(&major_code)
@@ -1670,6 +1755,16 @@ pub fn login_yanzhao(app: tauri::AppHandle, major_code: String) -> Result<LoginR
                     filter_python_stderr(&stderr)
                 }
             });
+        diagnostics::log(
+            "ERROR",
+            "login_seed_completed",
+            &format!(
+                "major_code={} success=false school_count=0 elapsed_seconds={} message={}",
+                major_code,
+                login_started.elapsed().as_secs(),
+                diagnostics::safe_message(&error, 500)
+            ),
+        );
         return Ok(LoginResult {
             success: false,
             school_count: 0,
@@ -1687,13 +1782,34 @@ pub fn login_yanzhao(app: tauri::AppHandle, major_code: String) -> Result<LoginR
                         .get("error")
                         .and_then(|e| e.as_str())
                         .map(|s| s.to_string());
+                    let success = school_count > 0 && error.is_none();
+                    diagnostics::log(
+                        if success { "INFO" } else { "ERROR" },
+                        "login_seed_completed",
+                        &format!(
+                            "major_code={} success={} school_count={} elapsed_seconds={}",
+                            major_code,
+                            success,
+                            school_count,
+                            login_started.elapsed().as_secs()
+                        ),
+                    );
                     return Ok(LoginResult {
-                        success: school_count > 0 && error.is_none(),
+                        success,
                         school_count,
                         error,
                     });
                 }
                 Err(e) => {
+                    diagnostics::log(
+                        "ERROR",
+                        "login_seed_completed",
+                        &format!(
+                            "major_code={} success=false school_count=0 elapsed_seconds={} message=parse_failed",
+                            major_code,
+                            login_started.elapsed().as_secs()
+                        ),
+                    );
                     return Ok(LoginResult {
                         success: false,
                         school_count: 0,
@@ -1704,6 +1820,15 @@ pub fn login_yanzhao(app: tauri::AppHandle, major_code: String) -> Result<LoginR
         }
     }
 
+    diagnostics::log(
+        "ERROR",
+        "login_seed_completed",
+        &format!(
+            "major_code={} success=false school_count=0 elapsed_seconds={} message=result_missing",
+            major_code,
+            login_started.elapsed().as_secs()
+        ),
+    );
     Ok(LoginResult {
         success: false,
         school_count: 0,
@@ -1723,6 +1848,8 @@ pub fn login_yanzhao(app: tauri::AppHandle, major_code: String) -> Result<LoginR
 /// 独立调用。
 #[tauri::command]
 pub fn refresh_login(app: tauri::AppHandle) -> Result<RefreshLoginResult, String> {
+    let login_started = std::time::Instant::now();
+    diagnostics::log("INFO", "login_refresh_started", "interactive login started");
     let output = backend_command(&app, "refresh-login")?
         .output()
         .map_err(|e| format!("启动刷新登录脚本失败: {}", e))?;
@@ -1740,6 +1867,15 @@ pub fn refresh_login(app: tauri::AppHandle) -> Result<RefreshLoginResult, String
                     filter_python_stderr(&stderr)
                 }
             });
+        diagnostics::log(
+            "ERROR",
+            "login_refresh_completed",
+            &format!(
+                "success=false elapsed_seconds={} message={}",
+                login_started.elapsed().as_secs(),
+                diagnostics::safe_message(&error, 500)
+            ),
+        );
         return Ok(RefreshLoginResult {
             success: false,
             error: Some(error),
@@ -1752,6 +1888,15 @@ pub fn refresh_login(app: tauri::AppHandle) -> Result<RefreshLoginResult, String
                 .ok()
                 .and_then(|value| value.get("success").and_then(Value::as_bool))
                 .unwrap_or(false);
+            diagnostics::log(
+                if ok { "INFO" } else { "ERROR" },
+                "login_refresh_completed",
+                &format!(
+                    "success={} elapsed_seconds={}",
+                    ok,
+                    login_started.elapsed().as_secs()
+                ),
+            );
             return Ok(RefreshLoginResult {
                 success: ok,
                 error: if ok {
@@ -1763,6 +1908,14 @@ pub fn refresh_login(app: tauri::AppHandle) -> Result<RefreshLoginResult, String
         }
     }
 
+    diagnostics::log(
+        "ERROR",
+        "login_refresh_completed",
+        &format!(
+            "success=false elapsed_seconds={} message=result_missing",
+            login_started.elapsed().as_secs()
+        ),
+    );
     Ok(RefreshLoginResult {
         success: false,
         error: Some(if stderr.is_empty() {

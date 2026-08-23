@@ -1,21 +1,25 @@
-# YAM Release 1.0.0
+# YAM Release 1.0.1
 
-**Date:** 2026-08-03  
-**Version:** 1.0.0
+**Date:** 2026-08-23
+**Version:** 1.0.1
 
 ## Highlights
 
 - Preserves score-line evidence and research-direction semantics across workspace views.
 - Separates admission statistics from enrollment-plan snapshots and handles unknown values explicitly.
 - Stabilizes workspace and export regression coverage.
+- Avoids duplicate post-crawl synchronization and enters the workspace after a successful crawl.
+- Adds local diagnostics for crawl, backend startup, and workspace synchronization timings.
+- Improves bundled seed fallback, Windows UTF-8 output, and catalog update resilience.
 - Packages the React, Tauri, and Python application as Windows installer and portable artifacts.
 
 ## Validation
 
 - UI regression suite: 27 passed.
-- Frontend unit suite: 57 passed.
+- Frontend unit suite: 59 passed.
 - TypeScript type checks passed.
-- Rust suite: 27 passed.
+- Rust suite: 29 passed.
+- Python suite: 36 passed.
 - Production build and release automation gate passed.
 
 ## Release Safety

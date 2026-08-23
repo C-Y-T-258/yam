@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -16,6 +17,7 @@ import requests
 from yam.config import config
 from yam.crawler.base import BaseCrawler
 from yam.crawler.dynamic import LoginRequiredError, build_detail_url
+from yam.diagnostics import log_event, safe_message
 from yam.utils import now_str, sleep
 
 
@@ -40,9 +42,47 @@ class YanZhaoCrawler(BaseCrawler):
         self.session = requests.Session()
         self.timeout = config.get("request_timeout", 30)
         self.delay = config.get("delay_between_requests", 0.5)
-        self.seed_file = (
-            config.project_dir / "data" / "seeds" / f"yan_zhao_{major_code}_all_regions.json"
-        )
+        seed_name = f"yan_zhao_{major_code}_all_regions.json"
+        self.user_seed_file = config.data_dir / "seeds" / seed_name
+        self.bundled_seed_file = config.resource_root / "data" / "seeds" / seed_name
+        self.seed_file = self.user_seed_file
+
+    @staticmethod
+    def _load_valid_seed(path: Path) -> list[dict[str, Any]] | None:
+        """读取有效的非空种子列表；损坏或空文件视为不可用。"""
+        if not path.exists():
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return None
+        if not isinstance(raw, list) or not raw:
+            return None
+        if not all(
+            isinstance(item, dict)
+            and str(item.get("schId", "")).strip()
+            and str(item.get("dwmc", "")).strip()
+            for item in raw
+        ):
+            return None
+        return raw
+
+    def _find_seed(self) -> tuple[Path | None, list[dict[str, Any]] | None]:
+        """优先使用用户登录阶段生成的种子，源码种子仅作只读回退。"""
+        for source, path in (
+            ("user", self.user_seed_file),
+            ("bundled", self.bundled_seed_file),
+        ):
+            raw = self._load_valid_seed(path)
+            if raw is not None:
+                log_event(
+                    "seed_selected",
+                    f"major_code={self.major_code} source={source} school_count={len(raw)}",
+                )
+                return path, raw
+        log_event("seed_missing", f"major_code={self.major_code}", "WARN")
+        return None, None
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -64,7 +104,8 @@ class YanZhaoCrawler(BaseCrawler):
         优先读取本地种子文件。种子文件来自研招网公开查询结果。
         若种子文件不存在，尝试使用动态爬虫自动抓取并保存。
         """
-        if not self.seed_file.exists():
+        seed_file, raw = self._find_seed()
+        if raw is None:
             try:
                 from yam.crawler.dynamic import DynamicYanZhaoCrawler
 
@@ -102,13 +143,13 @@ class YanZhaoCrawler(BaseCrawler):
                     f"无法获取 {self.major_code} 的院校种子数据：{e}"
                 ) from e
 
-        if not self.seed_file.exists():
+            seed_file, raw = self._find_seed()
+
+        if seed_file is None or raw is None:
             raise RuntimeError(
                 f"无法获取 {self.major_code} 的院校种子数据"
             )
-
-        with open(self.seed_file, "r", encoding="utf-8") as f:
-            raw = json.load(f)
+        self.seed_file = seed_file
 
         schools = []
         for item in raw:
@@ -252,6 +293,7 @@ class YanZhaoCrawler(BaseCrawler):
             async def _fetch_one(school: dict[str, Any]) -> None:
                 nonlocal completed
                 async with sem:
+                    request_started = time.monotonic()
                     if request_delay > 0:
                         await asyncio.sleep(request_delay)
                     data = {
@@ -285,6 +327,16 @@ class YanZhaoCrawler(BaseCrawler):
                             errors[school_id] = f"flag={result.get('flag')}"
                         else:
                             errors[school_id] = "空响应"
+
+                    request_status = "success" if school_id in results else "failed"
+                    log_event(
+                        "department_request",
+                        f"major_code={self.major_code} school_id={school_id or 'unknown'} "
+                        f"status={request_status} departments={len(results.get(school_id, []))} "
+                        f"elapsed_ms={int((time.monotonic() - request_started) * 1000)} "
+                        f"error={safe_message(errors.get(school_id, 'none'))}",
+                        "INFO" if request_status == "success" else "WARN",
+                    )
 
                     async with lock:
                         completed += 1
@@ -339,7 +391,14 @@ class YanZhaoCrawler(BaseCrawler):
         for stage_name, conc, delay, cooldown in stages:
             if not pending:
                 break
+            stage_started = time.monotonic()
             if cooldown > 0:
+                log_event(
+                    "department_cooldown",
+                    f"major_code={self.major_code} stage={stage_name} seconds={cooldown} "
+                    f"pending={len(pending)}",
+                    "WARN",
+                )
                 if on_log is not None:
                     on_log("warn", f"{stage_name}：等待 {cooldown}s 限流冷却...")
                 await asyncio.sleep(cooldown)
@@ -380,6 +439,12 @@ class YanZhaoCrawler(BaseCrawler):
                     level,
                     f"{stage_name}完成：成功 {success_n}，剩余失败 {fail_n}",
                 )
+            log_event(
+                "department_stage_completed",
+                f"major_code={self.major_code} stage={stage_name} success={success_n} "
+                f"remaining_failed={fail_n} elapsed_seconds={int(time.monotonic() - stage_started)}",
+                "INFO" if fail_n == 0 else "WARN",
+            )
 
         # 清理：已成功的院校从 errors 中移除
         for sid in list(all_errors.keys()):

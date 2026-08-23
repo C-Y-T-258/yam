@@ -57,6 +57,23 @@ def log_exception(event: str, error: BaseException) -> None:
         pass
 
 
+def log_event(event: str, message: object, level: str = "INFO") -> None:
+    """Append a sanitized lifecycle event; logging failures are ignored."""
+    try:
+        _append(
+            {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace(
+                    "+00:00", "Z"
+                ),
+                "level": re.sub(r"[^A-Za-z]", "", level).upper()[:16] or "INFO",
+                "event": re.sub(r"[^A-Za-z0-9_-]", "_", event)[:64] or "python_event",
+                "safe_message": safe_message(message, "event"),
+            }
+        )
+    except Exception:
+        pass
+
+
 def _append(record: dict[str, str]) -> None:
     with _LOCK:
         LOG_DIRECTORY.mkdir(parents=True, exist_ok=True)
