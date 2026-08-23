@@ -5,6 +5,7 @@
 """
 
 import json
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -12,6 +13,7 @@ import requests
 
 from yam.config import config
 from yam.crawler.base import BaseCrawler
+from yam.diagnostics import log_event
 from yam.utils import now_str, sleep
 
 
@@ -394,10 +396,18 @@ class ZhangShangKaoYanCrawler(BaseCrawler):
         for school in schools:
             name = school.get("name", "")
             if name and name not in school_id_map:
+                lookup_started = time.monotonic()
                 try:
                     school_id_map[name] = self._search_school_id(name)
                 except Exception:
                     school_id_map[name] = None
+                log_event(
+                    "score_school_lookup",
+                    f"major_code={self.major_code} school_id={school.get('school_id', 'unknown')} "
+                    f"found={school_id_map[name] is not None} "
+                    f"elapsed_ms={int((time.monotonic() - lookup_started) * 1000)}",
+                    "INFO" if school_id_map[name] is not None else "WARN",
+                )
 
         # 第 2 步：并发拉取 schoolScore
         url = f"{self.API_BASE}/school/schoolScore"
@@ -416,6 +426,7 @@ class ZhangShangKaoYanCrawler(BaseCrawler):
             async def _fetch_one(school: dict[str, Any]) -> None:
                 nonlocal completed
                 async with sem:
+                    request_started = time.monotonic()
                     name = school.get("name", "")
                     school_id = school_id_map.get(name)
                     school_key = school.get("school_id", "")
@@ -504,6 +515,19 @@ class ZhangShangKaoYanCrawler(BaseCrawler):
                     else:
                         year_status = {year: {"status": "school_not_found", "error": f"未找到学校: {name}"} for year in school.get("_score_years", years)}
                     statuses[school_key] = year_status
+                    failed_years = sum(
+                        1
+                        for state in year_status.values()
+                        if state.get("status") in {"api_error", "school_not_found"}
+                    )
+                    log_event(
+                        "score_school_request",
+                        f"major_code={self.major_code} school_id={school_key or 'unknown'} "
+                        f"years={len(year_status)} failed_years={failed_years} "
+                        f"score_rows={len(results.get(school_key, []))} "
+                        f"elapsed_ms={int((time.monotonic() - request_started) * 1000)}",
+                        "WARN" if failed_years else "INFO",
+                    )
 
                     async with lock:
                         completed += 1
@@ -575,3 +599,4 @@ class ZhangShangKaoYanCrawler(BaseCrawler):
             return num if num >= 0 else None
         except (ValueError, TypeError):
             return None
+

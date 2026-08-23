@@ -1,6 +1,6 @@
 [package]
 name = "yam-desktop"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 
 [dependencies]
@@ -21,3 +21,4 @@ tempfile = "3"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+

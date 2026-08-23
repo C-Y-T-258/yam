@@ -6,10 +6,29 @@ import argparse
 import asyncio
 import json
 import sys
+import time
 from collections.abc import Callable
 
+
+def configure_standard_streams() -> None:
+    """Keep bundled Windows child-process output on the UTF-8 wire protocol."""
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="backslashreplace", line_buffering=True)
+        except (OSError, ValueError):
+            # Some embedded launchers expose a stream that cannot be reconfigured.
+            # Protocol emitters must still avoid locale-only status glyphs.
+            pass
+
+
+configure_standard_streams()
+
 from yam.browser import BrowserMissingError, edge_executable_path
-from yam.diagnostics import log_exception, safe_message
+from yam.diagnostics import log_event, log_exception, safe_message
 
 
 def _forward(main: Callable[[], object], args: list[str]) -> int:
@@ -37,8 +56,15 @@ def _run_cli(command: str, args: list[str]) -> int:
 def _login_yanzhao(major_code: str) -> int:
     from yam.crawler.dynamic import DynamicYanZhaoCrawler
 
+    started = time.monotonic()
+    log_event("login_seed_started", f"major_code={major_code}")
     crawler = DynamicYanZhaoCrawler(major_code, "")
     result = asyncio.run(crawler.login_and_fetch())
+    log_event(
+        "login_seed_completed",
+        f"major_code={major_code} school_count={result.get('school_count', 0)} "
+        f"success={bool(result.get('success'))} elapsed_seconds={int(time.monotonic() - started)}",
+    )
     print("YAM_LOGIN_RESULT " + json.dumps(result, ensure_ascii=False), flush=True)
     return 0
 
@@ -53,7 +79,13 @@ def _refresh_login() -> int:
         finally:
             await reader.close()
 
+    started = time.monotonic()
+    log_event("login_refresh_started", "interactive login started")
     ok = asyncio.run(run())
+    log_event(
+        "login_refresh_completed",
+        f"success={ok} elapsed_seconds={int(time.monotonic() - started)}",
+    )
     print("YAM_REFRESH_RESULT " + json.dumps({"success": ok}, ensure_ascii=False), flush=True)
     return 0
 
@@ -166,3 +198,4 @@ def run() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(run())
+

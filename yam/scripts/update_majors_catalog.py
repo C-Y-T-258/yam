@@ -43,8 +43,9 @@ INCREMENTAL_SAVE_INTERVAL = 5  # 每完成 5 个 yjxkdm 保存一次（保留用
 
 # ISSUE-023：httpx + Playwright 激活并发方案参数
 # CONCURRENCY=30 实测会触发 IP 级限流导致部分 yjxkdm 枚举失败（如 0270 单独跑 2 个，30 并发只拿到 1 个 fallback）。
-# 降到 15 + 限流指数退避重试（2s→4s→8s）后更稳，预计 6-8 分钟跑完 219 个。
-CONCURRENCY = 15  # 每 batch 并发数
+# 安装版需要兼顾普通电脑和不稳定网络。每项都会创建独立浏览器 context，
+# 过高并发会让首次导航同时超时并放大站点限流。
+CONCURRENCY = 5  # 每 batch 并发数
 ZYDM_SLEEP_MS = 400  # zys.do 调用间隔，避免触发"访问太频繁"限流
 
 BASE_URL = "https://yz.chsi.com.cn"
@@ -271,7 +272,22 @@ async def _playwright_activate_session(
             await context.add_cookies(saved_cookies)
 
         page = await context.new_page()
-        await page.goto(f"{BASE_URL}/zsml/", wait_until="domcontentloaded", timeout=30000)
+        last_navigation_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                await page.goto(
+                    f"{BASE_URL}/zsml/",
+                    wait_until="domcontentloaded",
+                    timeout=60000,
+                )
+                last_navigation_error = None
+                break
+            except Exception as error:
+                last_navigation_error = error
+                if attempt < 2:
+                    await page.wait_for_timeout(1000 * (attempt + 1))
+        if last_navigation_error is not None:
+            raise last_navigation_error
         await page.wait_for_timeout(150)
 
         async def _call_zys_do_initial():
@@ -812,3 +828,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

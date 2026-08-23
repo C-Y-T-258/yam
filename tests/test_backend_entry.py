@@ -50,6 +50,23 @@ def test_dispatcher_help_smoke(args: list[str]) -> None:
     assert "help" in result.stdout.lower() or "帮助" in result.stdout
 
 
+def test_backend_entry_forces_utf8_when_windows_parent_uses_cp936() -> None:
+    env = os.environ.copy()
+    env.update(PYTHONIOENCODING="cp936", PYTHONUTF8="0")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import yam.backend_entry; print('YAM_ENCODING_TEST 中文 check')",
+        ],
+        cwd=Path(__file__).parents[1],
+        env=env,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
+    assert result.stdout.decode("utf-8").strip() == "YAM_ENCODING_TEST 中文 check"
+
+
 def test_doctor_json_protocol(capsys: pytest.CaptureFixture[str]) -> None:
     assert backend_entry.main(["doctor", "--json"]) == 0
     line = capsys.readouterr().out.strip()
@@ -72,6 +89,33 @@ def test_sync_arguments_are_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(sys.modules, "yam.scripts.sync_to_tauri", fake_module)
     assert backend_entry.main(["sync-to-tauri", "--major-code", "081200", "--clear"]) == 0
     assert captured["args"] == ["--major-code", "081200", "--clear"]
+
+
+def test_sync_missing_source_is_a_normal_empty_state(tmp_path: Path) -> None:
+    source = tmp_path / "missing.db"
+    target = tmp_path / "target.db"
+    env = os.environ.copy()
+    env.update(PYTHONIOENCODING="cp936", PYTHONUTF8="0")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "yam.backend_entry",
+            "sync-to-tauri",
+            "--source",
+            str(source),
+            "--target",
+            str(target),
+        ],
+        cwd=Path(__file__).parents[1],
+        env=env,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
+    line = result.stdout.decode("utf-8").strip()
+    assert line.startswith("YAM_SYNC_EMPTY ")
+    assert json.loads(line.removeprefix("YAM_SYNC_EMPTY ")) == {"source": str(source)}
+    assert not target.exists()
 
 
 def test_enrollment_zero_is_provided_not_unknown() -> None:
@@ -522,3 +566,4 @@ def test_plan_identity_ignores_versioned_display_fields_and_migrates_v1_snapshot
         "SELECT plan_key FROM workspace_plan_snapshots WHERE snapshot_key='unmapped-snapshot'"
     ).fetchone()[0] == "orphan-v1"
     target.close()
+

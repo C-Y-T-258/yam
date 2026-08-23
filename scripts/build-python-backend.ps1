@@ -10,6 +10,7 @@ $venvDir = Join-Path $root 'build\python-backend-venv'
 $venvPython = Join-Path $venvDir 'Scripts\python.exe'
 $output = Join-Path $resourcesDir 'yam-backend.exe'
 $majorsData = Join-Path $root 'data\majors.yaml'
+$seedsData = Join-Path $root 'data\seeds'
 
 if (-not (Test-Path $venvPython -PathType Leaf)) {
     Write-Host '[python-backend] Creating isolated build environment'
@@ -18,10 +19,15 @@ if (-not (Test-Path $venvPython -PathType Leaf)) {
 }
 if (-not $SkipInstall) {
     Write-Host '[python-backend] Installing build dependencies in isolated environment'
-    & $venvPython -m pip install --upgrade pip
-    if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed with exit code $LASTEXITCODE" }
-    & $venvPython -m pip install '.[dynamic]' pyinstaller
-    if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed with exit code $LASTEXITCODE" }
+    Push-Location $root
+    try {
+        & $venvPython -m pip install --upgrade pip
+        if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed with exit code $LASTEXITCODE" }
+        & $venvPython -m pip install '.[dynamic]' pyinstaller
+        if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed with exit code $LASTEXITCODE" }
+    } finally {
+        Pop-Location
+    }
 }
 
 New-Item -ItemType Directory -Force -Path $resourcesDir | Out-Null
@@ -39,6 +45,7 @@ try {
         --workpath $workDir `
         --specpath $workDir `
         --add-data "$majorsData;data" `
+        --add-data "$seedsData;data/seeds" `
         --collect-all playwright `
         --hidden-import yam.scripts.sync_to_tauri `
         --hidden-import yam.scripts.update_majors_catalog `
@@ -54,3 +61,4 @@ if (-not (Test-Path $output -PathType Leaf) -or (Get-Item $output).Length -eq 0)
     throw "Missing or empty Python backend: $output"
 }
 Write-Host "[python-backend] Built $output ($((Get-Item $output).Length) bytes)"
+
