@@ -3,6 +3,7 @@ import type { WorkspacePlanRow, WorkspaceYear } from './db';
 import {
   getDirectionInfo,
   getDirectionLabel,
+  getCrawlStatusLabel,
   getEnrollmentCountLabel,
   getLatestScoreYear,
   getPlanEnrollmentLabel,
@@ -88,6 +89,14 @@ describe('workspace stale-while-revalidate', () => {
   it('刷新失败明确说明仍显示上次结果', () => {
     expect(getWorkspaceRefreshError('网络不可用', true)).toBe('刷新失败，当前仍显示上次结果：网络不可用');
     expect(getWorkspaceRefreshError('网络不可用', false)).toBe('网络不可用');
+  });
+});
+
+describe('crawl status label', () => {
+  it('does not describe terminal states as running when progress is zero', () => {
+    expect(getCrawlStatusLabel('failed')).toBe('采集失败');
+    expect(getCrawlStatusLabel('cancelled')).toBe('已取消');
+    expect(getCrawlStatusLabel('completed')).toBe('采集完成');
   });
 });
 
@@ -307,3 +316,4 @@ describe('getPlanExportCells', () => {
     expect(getPlanExportCells(providedZero, '电子信息')[24]).toBe(0);
   });
 });
+
