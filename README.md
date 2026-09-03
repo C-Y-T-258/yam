@@ -34,6 +34,38 @@
 - 明确展示来源未知或暂不可得的数据，不使用猜测值替代。
 - 在本地保存数据库、Cookie、运行时文件和诊断日志。
 
+## 功能界面
+
+研喵把院校、专业、研究方向、招生计划和分数线集中在一个本地工作区中，支持筛选、排序、收藏、趋势查看和数据导出。
+
+### 工作区
+
+按地区、院校层次、考试科目、学习方式等条件浏览院校专业，并快速切换院校视图和招生计划视图。
+
+![研喵工作区](docs/screenshots/workspace.png)
+
+### 院校筛选
+
+使用关键词、分数线、招生人数和院系/研究方向条件组合筛选结果。
+
+![院校列表与筛选](docs/screenshots/school-list.png)
+
+![更多筛选条件](docs/screenshots/filter-panel.png)
+
+### 招生计划与研究方向
+
+查看专业代码、院系、研究方向、考试科目、分数线和招生人数等信息。
+
+![招生计划](docs/screenshots/admission-plan.png)
+
+### 历史趋势与导出
+
+展开院校记录查看分数线趋势，并将当前结果导出为 CSV、Excel 或 JSON。
+
+![分数线历史趋势](docs/screenshots/score-trend.png)
+
+![数据导出菜单](docs/screenshots/export-menu.png)
+
 ## 开始使用
 
 1. 从 [Releases](https://github.com/C-Y-T-258/yam/releases/latest) 下载安装版或便携版。
